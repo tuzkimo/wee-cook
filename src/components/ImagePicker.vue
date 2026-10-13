@@ -126,6 +126,14 @@ function remove(): void {
 </template>
 
 <!--
-真机结论（Task 7 Step 7，见 .superpowers/sdd/2026-10-13-recipe-crud/task-7-report.md）：
-拍照走 webview 的 capture，零依赖。
+Task 7 Step 7 真机结论（2026-10-13，设备 24091RPADC / HyperOS 16）：**未完成，不是已通过**。
+APK 本身构建通过（`npm run tauri android build --apk --debug` → app-universal-debug.apk），
+但 HyperOS 拒绝安装：`adb install` 报 `INSTALL_FAILED_USER_RESTRICTED: Install canceled by user`
+（系统通知「应用安装拦截 — 已拦截通过 USB 安装的一起做饭」，即「通过 USB 安装」开关未开）；
+改走文件管理器的用户安装流程，点到「继续安装」后弹的是小米账号登录（com.xiaomi.account
+QuickLoginActivity），装不下来。所以「<input capture> 能不能唤起相机」（规格 §12 风险 1）与
+「asset protocol + CSP 能不能显示图片」（风险 2）**都没有实测证据**。
+保留 capture 写法是因为它零依赖、也没有反证据；谁把它在真机上跑通后，把这段改成
+「拍照走 webview 的 capture，零依赖」或按计划改走社区插件即可。详细命令与输出见
+.superpowers/sdd/2026-10-13-recipe-crud/task-7-report.md 的 Step 7 一节。
 -->
