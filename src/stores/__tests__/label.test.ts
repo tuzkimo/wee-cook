@@ -211,4 +211,28 @@ describe("labelStore", () => {
     await refStore.remove(added.id);
     expect(refStore.items.value.some((item) => item.id === added.id)).toBe(false);
   });
+
+  it("两个 asRefStore 实例各自持有列表，后一次 fetchAll 不会清空另一个", async () => {
+    const store = useLabelStore();
+    const categories = store.asRefStore("category");
+    const tags = store.asRefStore("tag");
+    await seedLabel("category", "炒菜");
+    await seedLabel("tag", "吐司");
+
+    await tags.fetchAll();
+    await categories.fetchAll();
+    expect(categories.items.value.map((item) => item.name)).toEqual(["炒菜"]);
+    expect(tags.items.value.map((item) => item.name)).toEqual(["吐司"]);
+
+    // 反向再来一次，后 fetchAll 的那个不能把先前的挤空
+    await categories.fetchAll();
+    await tags.fetchAll();
+    expect(tags.items.value.map((item) => item.name)).toEqual(["吐司"]);
+    expect(categories.items.value.map((item) => item.name)).toEqual(["炒菜"]);
+
+    // add 只进自己的列表，不串到另一个 kind
+    await categories.add("面食");
+    expect(categories.items.value.map((item) => item.name)).toContain("面食");
+    expect(tags.items.value.map((item) => item.name)).toEqual(["吐司"]);
+  });
 });

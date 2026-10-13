@@ -1,8 +1,8 @@
 import { defineStore } from "pinia";
-import { computed, ref, type Ref } from "vue";
+import { ref, type Ref } from "vue";
 import { getDb } from "@/db";
-import type { LabelKind, LabelWithUsage } from "@/types";
-import type { RefStore } from "@/stores/refStore";
+import type { LabelKind, LabelWithUsage, WithUsage } from "@/types";
+import type { RefRow, RefStore } from "@/stores/refStore";
 
 export interface LabelStore {
   labels: Ref<LabelWithUsage[]>;
@@ -31,7 +31,12 @@ export const useLabelStore = defineStore("label", (): LabelStore => {
   const labels = ref<LabelWithUsage[]>([]);
 
   async function fetchAll(kind: LabelKind): Promise<void> {
-    labels.value = await getDb().select<LabelWithUsage[]>(
+    labels.value = await selectByKind(kind);
+  }
+
+  /** kind 过滤的取数只有这一份；store 与 asRefStore 共用，SQL 形状不变。 */
+  async function selectByKind(kind: LabelKind): Promise<LabelWithUsage[]> {
+    return getDb().select<LabelWithUsage[]>(
       `SELECT l.id, l.name, l.kind, l.created_at, l.updated_at, l.deleted_at,
               COALESCE(u.cnt, 0) AS usage_count
        FROM labels l
@@ -113,12 +118,27 @@ export const useLabelStore = defineStore("label", (): LabelStore => {
   }
 
   function asRefStore(kind: LabelKind): RefStore {
+    // 每个实例自己存一份列表：分类 sheet 与标签 sheet 同时打开时互不覆盖。
+    const items = ref<WithUsage<RefRow>[]>([]);
+    const refresh = async (): Promise<void> => {
+      items.value = await selectByKind(kind);
+    };
     return {
-      items: computed(() => labels.value.filter((label) => label.kind === kind)),
-      fetchAll: () => fetchAll(kind),
-      add: (name: string) => add(kind, name),
-      update,
-      remove,
+      items,
+      fetchAll: refresh,
+      add: async (name: string) => {
+        const row = await add(kind, name);
+        await refresh();
+        return row;
+      },
+      update: async (id: string, name: string) => {
+        await update(id, name);
+        await refresh();
+      },
+      remove: async (id: string) => {
+        await remove(id);
+        await refresh();
+      },
     };
   }
 
