@@ -97,9 +97,23 @@ describe("saveImageBytes", () => {
       },
     });
 
-    const result = await saveImageBytes(new Uint8Array([1, 2, 3]), deps);
-    expect(result.ok).toBe(false);
-    expect(result).toHaveProperty("message");
+    // 与解码失败分开：用户能做的是重试，不是换一张图
+    expect(await saveImageBytes(new Uint8Array([1, 2, 3]), deps)).toEqual({
+      ok: false,
+      message: "图片保存失败，稍后再试",
+    });
+  });
+
+  it("解码结果为空 → 归「读不出来」，不落一个 0 字节文件", async () => {
+    const { deps, writes } = fakeDeps({
+      decodeToJpeg: async () => ({ dataUrl: "data:image/jpeg;base64,", width: 0, height: 0 }),
+    });
+
+    expect(await saveImageBytes(new Uint8Array([1, 2, 3]), deps)).toEqual({
+      ok: false,
+      message: "这张图读不出来，换一张试试",
+    });
+    expect(writes).toHaveLength(0);
   });
 });
 

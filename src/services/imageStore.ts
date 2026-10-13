@@ -28,7 +28,7 @@ export const JPEG_QUALITY = 0.72;
 /** 解码失败的唯一文案（规格 §7、§10.4） */
 const MSG_DECODE_FAILED = "这张图读不出来，换一张试试";
 /** 写盘失败（磁盘满、目录没权限）—— 与「读不出来」分开，用户能做的是重试而不是换图 */
-const MSG_WRITE_FAILED = "图片保存失败，换一张试试";
+const MSG_WRITE_FAILED = "图片保存失败，稍后再试";
 
 /** 选择器里列的扩展名：**只是 UX 过滤**，不参与准入判断（准入只看解码器能不能解开） */
 const PICK_EXTENSIONS = ["jpg", "jpeg", "png", "webp", "heic", "heif"];
@@ -155,7 +155,7 @@ async function decodeToJpeg(bytes: Uint8Array): Promise<{ dataUrl: string; width
   return { dataUrl: canvas.toDataURL("image/jpeg", JPEG_QUALITY), width: target.width, height: target.height };
 }
 
-/** 生产默认依赖：真插件 + 真 canvas。测试**故意不注入**它之外的东西也证明不了什么（happy-dom 没 canvas）。 */
+/** 生产默认依赖：真插件 + 真 canvas。happy-dom 里三样都没有（没有真 canvas、没有 IPC），测试一律注入假 deps。 */
 const realDeps: ImageDeps = {
   async pickFromGallery() {
     const selected = await open({
@@ -182,6 +182,8 @@ export async function saveImageBytes(bytes: Uint8Array, deps: ImageDeps = realDe
   let jpeg: Uint8Array;
   try {
     jpeg = dataUrlToBytes((await deps.decodeToJpeg(bytes)).dataUrl);
+    // 空结果别落成 0 字节文件：以后只会显示成坏图，不如现在就说读不出来
+    if (jpeg.length === 0) throw new Error("empty-jpeg");
   } catch {
     // 解不开 / canvas 拿不到 2d context / 编出来的 data URL 不是 base64 —— 都归"读不出来"
     return { ok: false, message: MSG_DECODE_FAILED };
