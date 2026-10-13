@@ -7,7 +7,8 @@ import { useRoute, useRouter } from "vue-router";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import { imageSrc } from "@/services/imageStore";
 import { useRecipeStore } from "@/stores/recipe";
-import type { RecipeDetail, RecipeIngredientRow } from "@/types";
+import type { RecipeDetail } from "@/types";
+import { amountText } from "@/utils/amount";
 
 const route = useRoute();
 const router = useRouter();
@@ -23,12 +24,6 @@ const deleteError = ref("");
 const steps = computed(() =>
   [...(detail.value?.steps ?? [])].sort((a, b) => a.sort_order - b.sort_order),
 );
-
-/** 规格 §10.6：数量与单位都为空渲染成「适量」，只填数字不填单位就只显示数字。 */
-function amountText(line: RecipeIngredientRow): string {
-  const parts = [line.amount === null ? "" : String(line.amount), line.unit_name ?? ""];
-  return parts.filter(Boolean).join(" ") || "适量";
-}
 
 onMounted(async () => {
   const id = recipeId.value;

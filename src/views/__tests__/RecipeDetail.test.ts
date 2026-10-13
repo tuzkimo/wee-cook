@@ -162,6 +162,16 @@ describe("RecipeDetail", () => {
     expect(rowTexts(wrapper)).toEqual(["2 个 鸡蛋", "200 克 五花肉", "适量 盐", "3 蒜"]);
   });
 
+  it("数量为空但有单位时读「适量 克」，不出现裸单位", async () => {
+    const data = detail();
+    data.ingredients = [line("ri1", "五花肉", null, "克")];
+    mocks.getDetail.mockResolvedValue(data);
+
+    const wrapper = await page();
+
+    expect(rowTexts(wrapper)).toEqual(["适量 克 五花肉"]);
+  });
+
   it("步骤按 sort_order 渲染，带序号", async () => {
     const data = detail();
     data.steps = [step("s2", 1, "下锅"), step("s1", 0, "切块")];

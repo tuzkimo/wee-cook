@@ -58,6 +58,7 @@ watch(
     editingId.value = null;
     formName.value = "";
     formError.value = "";
+    deleteError.value = "";
     void props.store.fetchAll();
   },
   { immediate: true },

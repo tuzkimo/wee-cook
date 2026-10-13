@@ -293,6 +293,57 @@ describe("recipeStore", () => {
     }
   });
 
+  it("update 把步骤与食材全清空：旧行软删，详情两段为空，父行照常 bump", async () => {
+    const categoryId = await newCategory();
+    const pork = await newIngredient("五花肉");
+    const store = useRecipeStore();
+    const id = await store.create(
+      input({
+        category_id: categoryId,
+        steps: [
+          { text: "腌肉", image_path: null },
+          { text: "下锅", image_path: null },
+        ],
+        ingredients: [{ ingredient_id: pork, amount: 100, unit_id: null }],
+      }),
+    );
+    const before = await store.getDetail(id);
+    const oldStepIds = before.steps.map((step) => step.id);
+    const oldLineIds = before.ingredients.map((row) => row.id);
+
+    await sleep();
+    await store.update(id, input({ category_id: categoryId, steps: [], ingredients: [] }));
+
+    const after = await store.getDetail(id);
+    expect(after.steps).toEqual([]);
+    expect(after.ingredients).toEqual([]);
+
+    // 旧行没被物理删，只是软删：直接查表看
+    for (const stepId of oldStepIds) {
+      expect(await deletedAtOf("recipe_steps", stepId)).not.toBeNull();
+    }
+    for (const lineId of oldLineIds) {
+      expect(await deletedAtOf("recipe_ingredients", lineId)).not.toBeNull();
+    }
+    expect(
+      await countRows(
+        "SELECT COUNT(*) AS n FROM recipe_steps WHERE recipe_id = ? AND deleted_at IS NULL",
+        [id],
+      ),
+    ).toBe(0);
+    expect(
+      await countRows(
+        "SELECT COUNT(*) AS n FROM recipe_ingredients WHERE recipe_id = ? AND deleted_at IS NULL",
+        [id],
+      ),
+    ).toBe(0);
+
+    // 清空子表也是改动，父行 updated_at 要 bump（规格 §10.7）
+    expect(new Date(after.recipe.updated_at).getTime()).toBeGreaterThan(
+      new Date(before.recipe.updated_at).getTime(),
+    );
+  });
+
   /** 只改一处就 update 一次，断言父菜谱 updated_at 变大（规格 §10.7）。 */
   async function expectParentBump(mutate: (base: RecipeInput) => RecipeInput): Promise<void> {
     const categoryId = await newCategory();

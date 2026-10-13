@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   push: vi.fn(),
   back: vi.fn(),
   routeParams: {} as Record<string, string>,
+  leaveGuard: undefined as undefined | (() => boolean),
   getDetail: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
@@ -33,6 +34,9 @@ const mocks = vi.hoisted(() => ({
 vi.mock("vue-router", () => ({
   useRouter: () => ({ push: mocks.push, back: mocks.back }),
   useRoute: () => ({ params: mocks.routeParams }),
+  onBeforeRouteLeave: (callback: () => boolean) => {
+    mocks.leaveGuard = callback;
+  },
 }));
 
 vi.mock("@/stores/recipe", () => ({
@@ -96,6 +100,7 @@ const wrappers: VueWrapper[] = [];
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.leaveGuard = undefined;
   mocks.routeParams = {};
   mocks.ingredientStore = fakeRefStore([row("i1", "鸡蛋", 5), row("i2", "盐", 0)]);
   mocks.unitStore = fakeRefStore([row("u1", "克", 3), row("u2", "个", 1)]);
@@ -472,5 +477,77 @@ describe("RecipeEdit", () => {
 
     expect(wrapper.get('[data-test="form-error"]').text()).toContain("数据库未打开");
     expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it("保存进行中再点一次不会创建两道菜谱", async () => {
+    let finishCreate!: (id: string) => void;
+    mocks.create.mockImplementation(
+      () =>
+        new Promise<string>((resolve) => {
+          finishCreate = resolve;
+        }),
+    );
+    const wrapper = await page();
+    await wrapper.get('[data-test="name"]').setValue("红烧肉");
+    await chooseCategory(wrapper, "家常菜");
+
+    await wrapper.get('[data-test="save"]').trigger("click");
+    expect(wrapper.get('[data-test="save"]').attributes("disabled")).toBeDefined();
+    await wrapper.get('[data-test="save"]').trigger("click");
+
+    expect(mocks.create).toHaveBeenCalledTimes(1);
+
+    finishCreate("new-1");
+    await flushPromises();
+
+    expect(mocks.create).toHaveBeenCalledTimes(1);
+    expect(mocks.push).toHaveBeenCalledWith("/recipe/new-1");
+    // 保存成功后不再是「有未保存改动」，守卫不会拦住去详情页的跳转
+    expect(mocks.leaveGuard?.()).toBe(true);
+  });
+
+  it("保存失败后按钮恢复可点，能重试", async () => {
+    mocks.create.mockRejectedValueOnce(new Error("数据库未打开"));
+    const wrapper = await page();
+    await wrapper.get('[data-test="name"]').setValue("红烧肉");
+    await chooseCategory(wrapper, "家常菜");
+
+    await save(wrapper);
+    expect(wrapper.get('[data-test="save"]').attributes("disabled")).toBeUndefined();
+
+    mocks.create.mockResolvedValueOnce("new-2");
+    await save(wrapper);
+
+    expect(mocks.create).toHaveBeenCalledTimes(2);
+    expect(mocks.push).toHaveBeenCalledWith("/recipe/new-2");
+  });
+
+  it("表单干净时路由守卫放行（硬件返回键直接离页）", async () => {
+    await page();
+
+    expect(mocks.leaveGuard?.()).toBe(true);
+  });
+
+  it("有未保存改动时路由守卫拦下并弹确认框", async () => {
+    const wrapper = await page();
+    await wrapper.get('[data-test="name"]').setValue("红烧肉");
+
+    expect(mocks.leaveGuard?.()).toBe(false);
+    await flushPromises();
+    expect(dialogRoot()).not.toBeNull();
+    expect(mocks.back).not.toHaveBeenCalled();
+  });
+
+  it("守卫拦下后点「放弃」放行一次并返回上页", async () => {
+    const wrapper = await page();
+    await wrapper.get('[data-test="name"]').setValue("红烧肉");
+    await wrapper.get('[data-test="back"]').trigger("click");
+    await flushPromises();
+
+    await dialogButton("放弃").trigger("click");
+    await flushPromises();
+
+    expect(mocks.back).toHaveBeenCalledTimes(1);
+    expect(mocks.leaveGuard?.()).toBe(true);
   });
 });

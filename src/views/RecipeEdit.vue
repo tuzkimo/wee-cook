@@ -5,7 +5,7 @@
 // 页面负责 store 不做的两件事（裁决 R6）：提交前的输入清洗（菜名 trim、空步骤丢弃、
 // 本地 key 剥掉、数量 0/负数报错）与「未保存就退出」的确认。
 import { computed, onMounted, ref, toValue } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { useRoute, useRouter, onBeforeRouteLeave } from "vue-router";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import ImagePicker from "@/components/ImagePicker.vue";
 import IngredientSheet from "@/components/IngredientSheet.vue";
@@ -15,6 +15,7 @@ import { useLabelStore } from "@/stores/label";
 import { useRecipeStore } from "@/stores/recipe";
 import type { RefStore } from "@/stores/refStore";
 import type { RecipeDetail, RecipeInput } from "@/types";
+import { amountText } from "@/utils/amount";
 
 /** 步骤/食材行带一个只用于 v-for 的本地 key，提交前剥掉（删中间一行时 DOM 不串行）。 */
 type StepDraft = RecipeInput["steps"][number] & { key: number };
@@ -59,6 +60,9 @@ const tagRows = computed(() =>
 );
 
 const error = ref("");
+const saving = ref(false);
+// 确认过的一次离页放行标记：守卫据此放行，别让对话框循环弹
+const leaveConfirmed = ref(false);
 const showCategorySheet = ref(false);
 const showTagSheet = ref(false);
 const showIngredientSheet = ref(false);
@@ -215,6 +219,7 @@ function buildInput(): BuildResult {
 }
 
 async function save(): Promise<void> {
+  if (saving.value) return;
   const built = buildInput();
   if ("error" in built) {
     error.value = built.error;
@@ -227,6 +232,7 @@ async function save(): Promise<void> {
   }
   error.value = "";
 
+  saving.value = true;
   let id = recipeId.value;
   try {
     if (id) await recipeStore.update(id, input);
@@ -234,7 +240,12 @@ async function save(): Promise<void> {
   } catch (saveError: unknown) {
     error.value = saveError instanceof Error ? saveError.message : "保存失败";
     return;
+  } finally {
+    // 失败也要放开：用户可能只是想改一下重试
+    saving.value = false;
   }
+  // 已落库，表单不再是「有未保存改动」，否则离页守卫会把保存后的跳转拦下来
+  initial.value = snapshot();
   await router.push(`/recipe/${id}`);
 }
 
@@ -248,8 +259,17 @@ function goBack(): void {
 
 function leave(): void {
   showLeaveConfirm.value = false;
+  // 放行守卫：确认过的一次离页只能放一次
+  leaveConfirmed.value = true;
   void router.back();
 }
+
+// Android 的硬件返回键不经过页内按钮，只有路由守卫能拦住它（规格 §6.2）
+onBeforeRouteLeave(() => {
+  if (!dirty.value || leaveConfirmed.value) return true;
+  showLeaveConfirm.value = true;
+  return false;
+});
 </script>
 
 <template>
@@ -350,7 +370,7 @@ function leave(): void {
               {{ line.ingredient_name }}
             </span>
             <span data-test="ingredient-row-amount" class="shrink-0 text-slate-500 dark:text-slate-400">
-              {{ line.amount === null ? "适量" : line.amount }}{{ line.unit_name ? ` ${line.unit_name}` : "" }}
+              {{ amountText(line) }}
             </span>
             <button
               type="button"
@@ -459,7 +479,7 @@ function leave(): void {
       <button
         type="button"
         data-test="save"
-        :disabled="!form.name.trim()"
+        :disabled="!form.name.trim() || saving"
         class="flex-1 rounded-xl bg-blue-600 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:bg-gray-300 dark:disabled:bg-slate-700"
         @click="save"
       >

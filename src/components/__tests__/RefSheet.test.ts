@@ -380,4 +380,23 @@ describe("RefSheet", () => {
     expect(names()).toEqual(["鸡蛋", "盐"]);
     expect(store.fetchAll).toHaveBeenCalledTimes(2);
   });
+
+  it("关闭再打开时上一次的删除失败提示被清掉", async () => {
+    const store = makeStore([row("i1", "鸡蛋", 5)]);
+    store.remove.mockRejectedValueOnce(new Error("有 1 道菜谱在用「鸡蛋」，不能删除"));
+    const wrapper = openSheet({ store });
+    await flushPromises();
+
+    await el('[data-test="ref-delete"]').trigger("click");
+    await dialogButton("确认删除").trigger("click");
+    await flushPromises();
+    expect(bodyText()).toContain("不能删除");
+
+    await wrapper.setProps({ visible: false });
+    await wrapper.setProps({ visible: true });
+    await flushPromises();
+
+    expect(bodyText()).not.toContain("不能删除");
+    expect(dialogRoot()).toBeNull();
+  });
 });
