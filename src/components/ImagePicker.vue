@@ -58,13 +58,13 @@ function remove(): void {
 
 <template>
   <div>
-    <label class="mb-1 block text-sm font-medium text-slate-900">{{ props.label }}</label>
+    <label class="mb-1 block text-sm font-medium text-text">{{ props.label }}</label>
 
     <button
       v-if="props.modelValue"
       type="button"
       data-test="image-preview"
-      class="h-24 w-24 overflow-hidden rounded-xl bg-gray-100 ring-2 ring-gray-200 transition hover:ring-blue-600"
+      class="h-24 w-24 overflow-hidden rounded-xl bg-gray-100 ring-2 ring-gray-200 transition hover:ring-primary"
       @click="toggleOptions"
     >
       <img
@@ -77,7 +77,7 @@ function remove(): void {
       v-else
       type="button"
       data-test="image-placeholder"
-      class="flex h-24 w-24 flex-col items-center justify-center rounded-xl bg-gray-100 text-xs text-slate-500 ring-2 ring-gray-200 transition hover:ring-blue-600"
+      class="flex h-24 w-24 flex-col items-center justify-center rounded-xl bg-gray-100 text-xs text-text-secondary ring-2 ring-gray-200 transition hover:ring-primary"
       @click="toggleOptions"
     >
       <span class="text-2xl leading-none">+</span>
@@ -88,7 +88,7 @@ function remove(): void {
       <button
         type="button"
         data-test="opt-camera"
-        class="rounded-lg bg-gray-100 px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-gray-200"
+        class="rounded-lg bg-gray-100 px-3 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-gray-200"
         @click="cameraInput?.click()"
       >
         拍照
@@ -96,7 +96,7 @@ function remove(): void {
       <button
         type="button"
         data-test="opt-gallery"
-        class="rounded-lg bg-gray-100 px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-gray-200"
+        class="rounded-lg bg-gray-100 px-3 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-gray-200"
         @click="chooseFromGallery"
       >
         从相册选
@@ -104,7 +104,7 @@ function remove(): void {
       <button
         type="button"
         data-test="opt-remove"
-        class="rounded-lg bg-gray-100 px-3 py-2 text-sm font-medium text-slate-500 transition-colors hover:bg-gray-200"
+        class="rounded-lg bg-gray-100 px-3 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-gray-200"
         @click="remove"
       >
         移除
@@ -121,7 +121,7 @@ function remove(): void {
       @change="onCameraFile"
     />
 
-    <p v-if="error" data-test="image-error" class="mt-2 text-sm text-red-600">{{ error }}</p>
+    <p v-if="error" data-test="image-error" class="mt-2 text-sm text-danger">{{ error }}</p>
   </div>
 </template>
 

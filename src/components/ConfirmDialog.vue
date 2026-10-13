@@ -27,23 +27,23 @@ defineEmits<{
         <Transition name="scale">
           <div
             v-if="visible"
-            class="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl"
+            class="w-full max-w-sm rounded-2xl bg-surface p-6 shadow-xl"
           >
-            <h3 class="text-base font-semibold text-slate-900">{{ title }}</h3>
-            <p v-if="description" class="mt-2 text-sm text-slate-500">
+            <h3 class="text-base font-semibold text-text">{{ title }}</h3>
+            <p v-if="description" class="mt-2 text-sm text-text-secondary">
               {{ description }}
             </p>
             <div class="mt-6 flex gap-3">
               <button
                 v-if="!hideCancel"
-                class="flex-1 rounded-xl bg-gray-100 py-2.5 text-sm font-medium text-slate-500 transition-colors hover:bg-gray-200"
+                class="flex-1 rounded-xl bg-gray-100 py-2.5 text-sm font-medium text-text-secondary transition-colors hover:bg-gray-200"
                 @click="$emit('cancel')"
               >
                 {{ cancelText || "取消" }}
               </button>
               <button
                 class="flex-1 rounded-xl py-2.5 text-sm font-medium text-white transition-colors"
-                :class="danger ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'"
+                :class="danger ? 'bg-danger hover:bg-danger/90' : 'bg-primary hover:bg-primary-dark'"
                 @click="$emit('confirm')"
               >
                 {{ confirmText || "确认" }}

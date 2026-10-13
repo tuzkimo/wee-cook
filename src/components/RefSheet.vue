@@ -140,15 +140,15 @@ async function confirmDelete(): Promise<void> {
     <Transition name="sheet-slide-up">
       <div
         v-if="visible"
-        class="fixed inset-x-0 bottom-0 z-50 flex max-h-[85vh] flex-col rounded-t-2xl bg-white px-4 pt-4 shadow-xl"
+        class="fixed inset-x-0 bottom-0 z-50 flex max-h-[85vh] flex-col rounded-t-2xl bg-surface px-4 pt-4 shadow-xl"
         :style="{ paddingBottom: panelPadBottom }"
       >
         <!-- ========== 列表模式 ========== -->
         <template v-if="!showForm">
           <div class="mb-3 flex items-center justify-between">
-            <h2 class="text-lg font-semibold text-slate-900">{{ title }}</h2>
+            <h2 class="text-lg font-semibold text-text">{{ title }}</h2>
             <button
-              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-slate-500 hover:bg-gray-100"
+              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-text-secondary hover:bg-gray-100"
               aria-label="关闭"
               @click="emit('close')"
             >
@@ -162,11 +162,11 @@ async function confirmDelete(): Promise<void> {
             type="text"
             placeholder="搜索名称"
             aria-label="搜索名称"
-            class="mb-3 w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-blue-600"
+            class="mb-3 w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
           />
 
           <div class="flex-1 overflow-auto">
-            <div v-if="filtered.length === 0" class="py-8 text-center text-sm text-slate-500">
+            <div v-if="filtered.length === 0" class="py-8 text-center text-sm text-text-secondary">
               {{ emptyText }}
             </div>
             <div
@@ -180,25 +180,25 @@ async function confirmDelete(): Promise<void> {
                 class="flex h-5 w-5 shrink-0 items-center justify-center rounded border text-xs"
                 :class="
                   isSelected(item.id)
-                    ? 'border-blue-600 bg-blue-600 text-white'
+                    ? 'border-primary bg-primary text-white'
                     : 'border-gray-300'
                 "
               >
                 <span v-if="isSelected(item.id)" data-test="ref-check">✓</span>
               </span>
-              <span data-test="ref-name" class="min-w-0 flex-1 truncate text-slate-900">
+              <span data-test="ref-name" class="min-w-0 flex-1 truncate text-text">
                 {{ item.name }}
               </span>
               <button
                 data-test="ref-edit"
-                class="shrink-0 rounded px-2 py-1 text-xs text-slate-500 transition-colors hover:bg-gray-200"
+                class="shrink-0 rounded px-2 py-1 text-xs text-text-secondary transition-colors hover:bg-gray-200"
                 @click.stop="openEdit(item)"
               >
                 编辑
               </button>
               <button
                 data-test="ref-delete"
-                class="shrink-0 rounded px-2 py-1 text-xs text-red-600 transition-colors hover:bg-red-50"
+                class="shrink-0 rounded px-2 py-1 text-xs text-danger transition-colors hover:bg-danger/10"
                 @click.stop="deleteTarget = item"
               >
                 删除
@@ -209,7 +209,7 @@ async function confirmDelete(): Promise<void> {
           <div class="mt-4 flex gap-3">
             <button
               data-test="ref-new"
-              class="flex-1 rounded-xl border border-gray-200 py-3 text-sm font-semibold text-slate-700 transition-colors hover:bg-gray-50"
+              class="flex-1 rounded-xl border border-gray-200 py-3 text-sm font-semibold text-text-secondary transition-colors hover:bg-gray-50"
               @click="openNew"
             >
               新建
@@ -217,7 +217,7 @@ async function confirmDelete(): Promise<void> {
             <button
               v-if="mode === 'multiple'"
               data-test="ref-confirm"
-              class="flex-1 rounded-xl bg-blue-600 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
+              class="flex-1 rounded-xl bg-primary py-3 text-sm font-semibold text-white transition-colors hover:bg-primary-dark"
               @click="emit('select', [...selected])"
             >
               确定
@@ -228,11 +228,11 @@ async function confirmDelete(): Promise<void> {
         <!-- ========== 表单模式 ========== -->
         <template v-else>
           <div class="mb-4 flex items-center justify-between">
-            <h2 class="text-lg font-semibold text-slate-900">
+            <h2 class="text-lg font-semibold text-text">
               {{ editingId ? "编辑" : "新建" }}
             </h2>
             <button
-              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-slate-500 hover:bg-gray-100"
+              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-text-secondary hover:bg-gray-100"
               aria-label="返回列表"
               @click="showForm = false"
             >
@@ -241,23 +241,23 @@ async function confirmDelete(): Promise<void> {
           </div>
 
           <div class="flex-1 overflow-auto">
-            <label class="block text-sm font-medium text-slate-700">
+            <label class="block text-sm font-medium text-text-secondary">
               名称
               <input
                 v-model="formName"
                 data-test="ref-form-name"
                 type="text"
-                class="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-blue-600"
+                class="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
               />
             </label>
-            <p v-if="formError" data-test="ref-form-error" class="mt-2 text-sm text-red-600">
+            <p v-if="formError" data-test="ref-form-error" class="mt-2 text-sm text-danger">
               {{ formError }}
             </p>
           </div>
 
           <button
             data-test="ref-form-save"
-            class="mt-4 w-full rounded-xl bg-blue-600 py-3 text-center text-base font-semibold text-white transition-colors hover:bg-blue-700"
+            class="mt-4 w-full rounded-xl bg-primary py-3 text-center text-base font-semibold text-white transition-colors hover:bg-primary-dark"
             @click="handleSubmit"
           >
             {{ editingId ? "保存" : "创建" }}

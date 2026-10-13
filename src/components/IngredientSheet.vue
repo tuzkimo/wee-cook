@@ -111,14 +111,14 @@ function confirm(): void {
     <Transition name="sheet-slide-up">
       <div
         v-if="visible && step === 'amount'"
-        class="fixed inset-x-0 bottom-0 z-30 flex max-h-[85vh] flex-col rounded-t-2xl bg-white px-4 pt-4 shadow-xl"
+        class="fixed inset-x-0 bottom-0 z-30 flex max-h-[85vh] flex-col rounded-t-2xl bg-surface px-4 pt-4 shadow-xl"
         :style="{ paddingBottom: panelPadBottom }"
       >
         <div class="mb-4 flex items-center justify-between">
-          <h2 class="text-lg font-semibold text-slate-900">{{ ingredientName }}</h2>
+          <h2 class="text-lg font-semibold text-text">{{ ingredientName }}</h2>
           <button
             data-test="ingredient-close"
-            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-slate-500 hover:bg-gray-100"
+            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-text-secondary hover:bg-gray-100"
             aria-label="关闭"
             @click="emit('close')"
           >
@@ -126,7 +126,7 @@ function confirm(): void {
           </button>
         </div>
 
-        <label class="block text-sm font-medium text-slate-700">
+        <label class="block text-sm font-medium text-text-secondary">
           数量
           <input
             v-model="amountText"
@@ -134,10 +134,10 @@ function confirm(): void {
             type="number"
             inputmode="decimal"
             placeholder="留空表示适量"
-            class="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-blue-600"
+            class="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
           />
         </label>
-        <p v-if="amountError" data-test="ingredient-amount-error" class="mt-2 text-sm text-red-600">
+        <p v-if="amountError" data-test="ingredient-amount-error" class="mt-2 text-sm text-danger">
           {{ amountError }}
         </p>
 
@@ -146,13 +146,13 @@ function confirm(): void {
           class="mt-4 flex items-center justify-between rounded-xl border border-gray-200 px-3 py-3 text-sm transition-colors hover:bg-gray-50"
           @click="showUnitSheet = true"
         >
-          <span class="text-slate-500">单位</span>
-          <span class="text-slate-900">{{ unitName || "未选" }}</span>
+          <span class="text-text-secondary">单位</span>
+          <span class="text-text">{{ unitName || "未选" }}</span>
         </button>
 
         <button
           data-test="ingredient-confirm"
-          class="mt-4 w-full rounded-xl bg-blue-600 py-3 text-base font-semibold text-white transition-colors hover:bg-blue-700"
+          class="mt-4 w-full rounded-xl bg-primary py-3 text-base font-semibold text-white transition-colors hover:bg-primary-dark"
           @click="confirm"
         >
           确定
