@@ -27,3 +27,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# 头脑风暴演示页面（superpowers brainstorming 的临时产物）
+.superpowers/
