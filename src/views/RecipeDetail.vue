@@ -62,7 +62,7 @@ async function confirmDelete(): Promise<void> {
 <template>
   <div class="flex h-full flex-col">
     <template v-if="detail">
-      <AppHeader class="border-b border-gray-100" show-back @back="router.back()">
+      <AppHeader :title="detail.recipe.name" class="border-b border-gray-100" show-back @back="router.back()">
         <template #title>
           <h1 data-test="detail-name" class="min-w-0 flex-1 truncate text-lg font-semibold text-text">
             {{ detail.recipe.name }}

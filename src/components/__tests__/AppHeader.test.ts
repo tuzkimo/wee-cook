@@ -47,6 +47,6 @@ describe("AppHeader", () => {
       slots: { action: '<button data-test="act">x</button>' },
     });
     wrappers.push(wrapper);
-    expect(wrapper.get('[data-test="act"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="act"]').exists()).toBe(true);
   });
 });

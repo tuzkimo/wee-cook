@@ -45,7 +45,7 @@ describe("App 外壳", () => {
   it("渲染状态栏占位、内容区与三个 tab", () => {
     const wrapper = mountApp();
     expect(wrapper.get('[data-test="statusbar"]').classes()).toContain("bg-surface");
-    expect(wrapper.get('[data-test="page"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="page"]').exists()).toBe(true);
 
     const tabs = wrapper.findAll("nav a");
     expect(tabs.map((t) => t.text())).toEqual(["菜谱", "AI", "我的"]);
