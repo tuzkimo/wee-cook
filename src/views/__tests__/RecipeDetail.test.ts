@@ -1,0 +1,238 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DOMWrapper, flushPromises, mount, type VueWrapper } from "@vue/test-utils";
+import type {
+  Label,
+  LabelKind,
+  RecipeDetail as RecipeDetailData,
+  RecipeIngredientRow,
+  RecipeStep,
+} from "@/types";
+import RecipeDetail from "@/views/RecipeDetail.vue";
+
+const NOW = "2026-10-13T00:00:00.000Z";
+
+// 页面只负责「拿到详情怎么画、点了往哪跳」，取数与排序由 Task 4 的 store 负责（其测试已覆盖）。
+const mocks = vi.hoisted(() => ({
+  push: vi.fn(),
+  back: vi.fn(),
+  routeParams: {} as Record<string, string>,
+  getDetail: vi.fn(),
+  remove: vi.fn(),
+}));
+
+vi.mock("vue-router", () => ({
+  useRouter: () => ({ push: mocks.push, back: mocks.back }),
+  useRoute: () => ({ params: mocks.routeParams }),
+}));
+
+vi.mock("@/stores/recipe", () => ({
+  useRecipeStore: () => ({
+    recipes: [],
+    fetchAll: vi.fn(async () => {}),
+    getDetail: mocks.getDetail,
+    create: vi.fn(async () => ""),
+    update: vi.fn(async () => {}),
+    remove: mocks.remove,
+  }),
+}));
+
+vi.mock("@/services/imageStore", () => ({
+  imageSrc: (name: string) => `asset://localhost/images/${name}`,
+}));
+
+const wrappers: VueWrapper[] = [];
+
+function label(id: string, name: string, kind: LabelKind): Label {
+  return { id, name, kind, created_at: NOW, updated_at: NOW, deleted_at: null };
+}
+
+function step(id: string, sortOrder: number, text: string, image?: string): RecipeStep {
+  return {
+    id,
+    recipe_id: "r1",
+    sort_order: sortOrder,
+    text,
+    image_path: image ?? null,
+    updated_at: NOW,
+    deleted_at: null,
+  };
+}
+
+function line(
+  id: string,
+  ingredientName: string,
+  amount: number | null,
+  unitName: string | null,
+): RecipeIngredientRow {
+  return {
+    id,
+    recipe_id: "r1",
+    ingredient_id: `i-${id}`,
+    amount,
+    unit_id: unitName ? `u-${id}` : null,
+    sort_order: 0,
+    updated_at: NOW,
+    deleted_at: null,
+    ingredient_name: ingredientName,
+    unit_name: unitName,
+  };
+}
+
+function detail(): RecipeDetailData {
+  return {
+    recipe: {
+      id: "r1",
+      name: "红烧肉",
+      cover_path: "c.jpg",
+      category_id: "c1",
+      created_at: NOW,
+      updated_at: NOW,
+      deleted_at: null,
+    },
+    category: label("c1", "荤菜", "category"),
+    tags: [label("t1", "家常", "tag"), label("t2", "下饭", "tag")],
+    steps: [step("s1", 0, "切块"), step("s2", 1, "下锅")],
+    ingredients: [line("ri1", "五花肉", 200, "克")],
+  };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.routeParams = { id: "r1" };
+  mocks.getDetail.mockResolvedValue(detail());
+  mocks.remove.mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  for (const wrapper of wrappers) wrapper.unmount();
+  wrappers.length = 0;
+  vi.restoreAllMocks();
+  document.body.innerHTML = "";
+});
+
+async function page(): Promise<VueWrapper> {
+  const wrapper = mount(RecipeDetail);
+  wrappers.push(wrapper);
+  await flushPromises();
+  return wrapper;
+}
+
+/** ConfirmDialog Teleport 到 body，对话框里的东西一律查 document.body。 */
+function dialogRoot(): HTMLElement | null {
+  return document.body.querySelector<HTMLElement>(".max-w-sm");
+}
+
+function dialogButton(text: string): DOMWrapper<Element> {
+  const buttons = dialogRoot()?.querySelectorAll("button") ?? [];
+  const found = [...buttons].find((button) => button.textContent?.trim() === text);
+  if (!found) throw new Error(`对话框里找不到按钮：${text}`);
+  return new DOMWrapper(found);
+}
+
+function rowTexts(wrapper: VueWrapper): string[] {
+  return wrapper.findAll('[data-test="ingredient-row"]').map((node) => node.text());
+}
+
+describe("RecipeDetail", () => {
+  it("显示菜名、分类、标签", async () => {
+    const wrapper = await page();
+
+    expect(mocks.getDetail).toHaveBeenCalledWith("r1");
+    expect(wrapper.get('[data-test="detail-name"]').text()).toBe("红烧肉");
+    expect(wrapper.get('[data-test="detail-category"]').text()).toBe("荤菜");
+    expect(wrapper.findAll('[data-test="detail-tag"]').map((node) => node.text())).toEqual([
+      "家常",
+      "下饭",
+    ]);
+  });
+
+  it("食材行显示「数量 单位 食材名」三段：2 个 鸡蛋 / 200 克 五花肉 / 适量 盐", async () => {
+    const data = detail();
+    data.ingredients = [
+      line("ri1", "鸡蛋", 2, "个"),
+      line("ri2", "五花肉", 200, "克"),
+      line("ri3", "盐", null, null),
+      // 只有数字没单位：只显示数字
+      line("ri4", "蒜", 3, null),
+    ];
+    mocks.getDetail.mockResolvedValue(data);
+
+    const wrapper = await page();
+
+    expect(rowTexts(wrapper)).toEqual(["2 个 鸡蛋", "200 克 五花肉", "适量 盐", "3 蒜"]);
+  });
+
+  it("步骤按 sort_order 渲染，带序号", async () => {
+    const data = detail();
+    data.steps = [step("s2", 1, "下锅"), step("s1", 0, "切块")];
+    mocks.getDetail.mockResolvedValue(data);
+
+    const wrapper = await page();
+
+    expect(wrapper.findAll('[data-test="step-text"]').map((node) => node.text())).toEqual([
+      "切块",
+      "下锅",
+    ]);
+    expect(wrapper.findAll('[data-test="step-order"]').map((node) => node.text())).toEqual(["1", "2"]);
+  });
+
+  it("步骤有插图时渲染图", async () => {
+    const data = detail();
+    data.steps = [step("s1", 0, "切块", "step-1.jpg")];
+    mocks.getDetail.mockResolvedValue(data);
+
+    const wrapper = await page();
+
+    const image = wrapper.get('[data-test="step-image"]');
+    expect(image.attributes("src")).toBe("asset://localhost/images/step-1.jpg");
+  });
+
+  it("空菜谱（无食材无步骤）不报错，两个区块各显示一句空态文案", async () => {
+    const data = detail();
+    data.ingredients = [];
+    data.steps = [];
+    mocks.getDetail.mockResolvedValue(data);
+
+    const wrapper = await page();
+
+    expect(wrapper.get('[data-test="detail-name"]').text()).toBe("红烧肉");
+    expect(wrapper.text()).toContain("还没有食材");
+    expect(wrapper.text()).toContain("还没有步骤");
+    expect(wrapper.find('[data-test="not-found"]').exists()).toBe(false);
+  });
+
+  it("点「编辑」跳到 /recipe/:id/edit", async () => {
+    const wrapper = await page();
+
+    await wrapper.get('[data-test="edit"]').trigger("click");
+
+    expect(mocks.push).toHaveBeenCalledWith("/recipe/r1/edit");
+  });
+
+  it("点「删除」弹 ConfirmDialog，确认后调 store.remove 并跳回列表", async () => {
+    const wrapper = await page();
+
+    await wrapper.get('[data-test="delete"]').trigger("click");
+
+    expect(dialogRoot()).not.toBeNull();
+    await dialogButton("删除").trigger("click");
+    await flushPromises();
+
+    expect(mocks.remove).toHaveBeenCalledWith("r1");
+    expect(mocks.push).toHaveBeenCalledWith("/");
+  });
+
+  it("id 不存在时显示「菜谱不存在」并能返回列表", async () => {
+    mocks.routeParams = { id: "missing" };
+    mocks.getDetail.mockRejectedValue(new Error("菜谱不存在"));
+
+    const wrapper = await page();
+
+    expect(wrapper.get('[data-test="not-found"]').text()).toContain("菜谱不存在");
+    expect(wrapper.findAll('[data-test="ingredient-row"]')).toHaveLength(0);
+
+    await wrapper.get('[data-test="back-to-list"]').trigger("click");
+
+    expect(mocks.push).toHaveBeenCalledWith("/");
+  });
+});
