@@ -1,0 +1,134 @@
+name: release-android
+
+# 正式版发布通道：推 `v*` tag ⇒ 出 arm64 已签名 release APK 并挂 GitHub Release。
+#
+# 参数取自 wee-fuse / wee-count 那套已验证的组合，本仓的 android 工程与它们同参
+# （AGP 9.3.1 / gradle 9.6.1 / compileSdk·targetSdk 37 / JVM target 1.8）⇒ NDK 用同一个版本 ✓。
+#
+# 首次使用需在仓库 Settings > Secrets and variables > Actions 配 4 个签名 secret：
+#   ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD
+# 缺任何一个都会在第一步响亮失败（不静默出一份没签名的 Release）。
+# base64 生成（PowerShell）：[Convert]::ToBase64String([IO.File]::ReadAllBytes("…\weecook.jks"))
+
+on:
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: release-android
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    env:
+      NDK_VERSION: 30.0.14904198
+    steps:
+      - uses: actions/checkout@v4
+
+      # `if:` 里读不了 secrets，所以用 step 级 env 暴露 + `${!v}` 间接展开遍历，缺谁报谁。
+      - name: 校验签名 Secrets 完整性
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          missing=0
+          for v in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!v}" ]; then
+              echo "::error::缺少 Secret: ${v}，请到仓库 Settings > Secrets and variables > Actions 添加"
+              missing=1
+            fi
+          done
+          exit $missing
+
+      # tag 与包内版本号对不上就等于发了个假的版本号，直接红。
+      - name: 校验 tag 与 tauri.conf.json 版本一致
+        run: |
+          TAURI_VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$TAURI_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} 与 tauri.conf.json 版本 ${TAURI_VERSION} 不一致 ⇒ 先 bump 版本号，或改用正确的 tag"
+            exit 1
+          fi
+          echo "版本一致：${TAURI_VERSION}"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # 只装 NDK：`platforms;android-37` 在官方仓库里不存在（平台标识 ≠ SDK 目录名），
+      # compileSdk 37 的平台交给 AGP 按需自动下载（license 已接受）。
+      - name: 安装 Android NDK
+        run: |
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" --install "ndk;${NDK_VERSION}" > /dev/null
+          if [ ! -d "$SDK/ndk/${NDK_VERSION}" ]; then
+            echo "::error::NDK ${NDK_VERSION} 没装上，$SDK/ndk 下现有："
+            ls -1 "$SDK/ndk" 2>/dev/null || true
+            exit 1
+          fi
+          echo "NDK_HOME=$SDK/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$SDK/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 单元测试
+        run: npm run test
+
+      # build.gradle.kts 的签名块按相对 app 模块目录解析 key.properties 与 storeFile
+      # ⇒ 两个文件都放 src-tauri/gen/android/app/ 下。
+      - name: 还原签名材料
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > src-tauri/gen/android/app/weecook.jks
+          cat > src-tauri/gen/android/app/key.properties <<EOF
+          storeFile=weecook.jks
+          storePassword=${ANDROID_KEYSTORE_PASSWORD}
+          keyAlias=${ANDROID_KEY_ALIAS}
+          keyPassword=${ANDROID_KEY_PASSWORD}
+          EOF
+
+      - name: 构建 arm64 release APK
+        run: npx tauri android build --apk --target aarch64
+
+      - name: 收集产物
+        run: |
+          mkdir -p release-apk
+          APK=$(find src-tauri/gen/android/app/build/outputs/apk -name '*-release*.apk' | head -n 1)
+          if [ -z "$APK" ]; then
+            echo "::error::未找到 release APK 产物"
+            exit 1
+          fi
+          cp "$APK" "release-apk/WeeCook_${GITHUB_REF_NAME}_arm64.apk"
+          ls -l release-apk
+
+      - name: 发布 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-apk/*.apk
+          generate_release_notes: true

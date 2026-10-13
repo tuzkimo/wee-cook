@@ -1,0 +1,67 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 类型检查与构建
+        run: npm run build
+
+      - name: 单元测试
+        run: npm run test
+
+  rust-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # tauri crate 在 Linux 上靠 pkg-config 找 webkit2gtk，缺这些 -sys 包会在 cargo check 阶段就报错。
+      - name: 安装 Tauri 的 Linux 前置库
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装依赖
+        run: npm ci
+
+      # generate_context! 是编译期的，dist/ 不存在直接编译失败。
+      - name: 构建前端
+        run: npm run build
+
+      - name: Rust 类型检查
+        run: cargo check --manifest-path src-tauri/Cargo.toml
+
+      # 桌面 cargo check 看不到 #[cfg(target_os = "android")] 的代码，那部分只在
+      # `tauri android build`（release 工作流里，约 7 分钟后）才现形 ⇒ 前移到每次 CI。
+      - name: 安装 Android target
+        run: rustup target add aarch64-linux-android
+
+      - name: Rust 类型检查（Android target）
+        run: cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-linux-android

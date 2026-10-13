@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# 签名 keystore：本仓提交 src-tauri/gen/android ⇒ 没有这条就会把私钥推上仓
+*.jks
+*.p12
+*.keystore
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
