@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 import { ref, type Ref } from "vue";
 import { getDb } from "@/db";
 import type { LabelKind, LabelWithUsage, WithUsage } from "@/types";
-import type { RefRow, RefStore } from "@/stores/refStore";
+import type { OwnedRefStore, RefRow } from "@/stores/refStore";
 
 export interface LabelStore {
   labels: Ref<LabelWithUsage[]>;
@@ -11,7 +11,7 @@ export interface LabelStore {
   update(id: string, name: string): Promise<void>;
   remove(id: string): Promise<void>;
   /** 给 RefSheet 用：把某一 kind 包成统一形状 */
-  asRefStore(kind: LabelKind): RefStore;
+  asRefStore(kind: LabelKind): OwnedRefStore;
 }
 
 const KIND_LABEL: Record<LabelKind, string> = { category: "分类", tag: "标签" };
@@ -117,7 +117,7 @@ export const useLabelStore = defineStore("label", (): LabelStore => {
     labels.value = labels.value.filter((label) => label.id !== id);
   }
 
-  function asRefStore(kind: LabelKind): RefStore {
+  function asRefStore(kind: LabelKind): OwnedRefStore {
     // 每个实例自己存一份列表：分类 sheet 与标签 sheet 同时打开时互不覆盖。
     const items = ref<WithUsage<RefRow>[]>([]);
     const refresh = async (): Promise<void> => {

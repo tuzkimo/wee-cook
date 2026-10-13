@@ -1,4 +1,4 @@
-import { ref, type Ref } from "vue";
+import { ref, type MaybeRefOrGetter, type Ref } from "vue";
 import { getDb } from "@/db";
 import type { WithUsage } from "@/types";
 
@@ -11,12 +11,16 @@ export interface RefRow {
 }
 
 export interface RefStore {
-  items: Ref<WithUsage<RefRow>[]>;
+  // Pinia setup store 会把 ref 解包成裸数组，所以接受 MaybeRefOrGetter；RefSheet 用 toValue 读（R12）
+  items: MaybeRefOrGetter<WithUsage<RefRow>[]>;
   fetchAll(): Promise<void>;
   add(name: string): Promise<WithUsage<RefRow>>;
   update(id: string, name: string): Promise<void>;
   remove(id: string): Promise<void>;
 }
+
+/** 自持列表的 RefStore：items 是真 Ref，调用方可直接 .value（createRefStore / asRefStore 交出来的形状）。 */
+export type OwnedRefStore = Omit<RefStore, "items"> & { items: Ref<WithUsage<RefRow>[]> };
 
 type RefTable = "ingredients" | "units";
 
@@ -26,7 +30,7 @@ const REF_COLUMN: Record<RefTable, string> = {
   units: "unit_id",
 };
 
-export function createRefStore(opts: { table: RefTable; label: string }): RefStore {
+export function createRefStore(opts: { table: RefTable; label: string }): OwnedRefStore {
   const { table, label } = opts;
   const refColumn = REF_COLUMN[table];
   const items = ref<WithUsage<RefRow>[]>([]);

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref, toValue, watch } from "vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import { useKeyboardInset } from "@/composables/useKeyboardInset";
 import type { RefRow, RefStore } from "@/stores/refStore";
@@ -30,8 +30,10 @@ const keyword = ref("");
 // 只按名称「包含」过滤，不重排：顺序由 store 的 ORDER BY usage_count DESC 决定
 const filtered = computed<Row[]>(() => {
   const kw = keyword.value.trim();
-  if (!kw) return props.store.items.value;
-  return props.store.items.value.filter((item) => item.name.includes(kw));
+  // toValue：items 可能是 Ref、裸数组（Pinia 解包）或 getter
+  const items = toValue(props.store.items);
+  if (!kw) return items;
+  return items.filter((item) => item.name.includes(kw));
 });
 
 const emptyText = computed(() => (keyword.value.trim() ? "没有匹配的条目" : props.emptyHint));

@@ -1,7 +1,9 @@
+import { createPinia, setActivePinia } from "pinia";
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { DOMWrapper, flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { ref } from "vue";
 import RefSheet from "@/components/RefSheet.vue";
+import { useIngredientStore } from "@/stores/ingredient";
 import type { RefRow, RefStore } from "@/stores/refStore";
 import type { WithUsage } from "@/types";
 
@@ -50,10 +52,21 @@ function makeStore(initial: Row[]): FakeStore {
   };
 }
 
+/** Pinia setup store 交出来的形状：ref 被解包成裸数组（R12），组件的 store prop 不该要求真 Ref。 */
+function makeArrayStore(items: RefStore["items"]): RefStore {
+  return {
+    items,
+    fetchAll: async () => {},
+    add: async (name: string) => row("new-1", name, 0),
+    update: async () => {},
+    remove: async () => {},
+  };
+}
+
 const wrappers: VueWrapper[] = [];
 
 function openSheet(options: {
-  store: FakeStore;
+  store: RefStore;
   mode?: "single" | "multiple";
   selectedIds?: string[];
 }): VueWrapper {
@@ -144,6 +157,31 @@ describe("RefSheet", () => {
     await flushPromises();
 
     expect(names()).toEqual(["常用料", "冷门料", "新料"]);
+  });
+
+  it("真 Pinia setup store（items 被解包成裸数组）直接当 store 传就能渲染", async () => {
+    setActivePinia(createPinia());
+    const store = useIngredientStore();
+    vi.spyOn(store, "fetchAll").mockResolvedValue();
+    store.items = [row("i1", "鸡蛋", 5), row("i2", "盐", 0)];
+    // 旧实现读 items.value 就是死在这：Pinia 交出来的是裸数组
+    expect(Array.isArray(store.items)).toBe(true);
+
+    openSheet({ store });
+    await flushPromises();
+
+    expect(names()).toEqual(["鸡蛋", "盐"]);
+
+    await el('[data-test="ref-filter"]').setValue("鸡");
+    expect(names()).toEqual(["鸡蛋"]);
+  });
+
+  it("store.items 是 getter 时也能渲染", async () => {
+    const backing = ref<Row[]>([row("i1", "克", 0)]);
+    openSheet({ store: makeArrayStore(() => backing.value) });
+    await flushPromises();
+
+    expect(names()).toEqual(["克"]);
   });
 
   it("筛选框按名称包含过滤，清空后恢复全部", async () => {
