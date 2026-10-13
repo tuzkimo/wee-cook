@@ -105,10 +105,10 @@ describe("RecipeList", () => {
     expect(cards[1].get('[data-test="recipe-cover-fallback"]').text()).toBe("番");
   });
 
-  it("空列表显示「还没有菜谱，点下面的加号记一道」和加号", () => {
+  it("空列表显示「还没有菜谱，点右上角加号记一道」和加号", () => {
     const wrapper = mountList([]);
 
-    expect(wrapper.text()).toContain("还没有菜谱，点下面的加号记一道");
+    expect(wrapper.text()).toContain("还没有菜谱，点右上角加号记一道");
     expect(wrapper.find('[data-test="recipe-add"]').exists()).toBe(true);
     expect(wrapper.findAll('[data-test="recipe-card"]')).toHaveLength(0);
   });
@@ -143,5 +143,16 @@ describe("RecipeList", () => {
     await flushPromises();
 
     expect(mocks.fetchAll).toHaveBeenCalledTimes(1);
+  });
+
+  it("根元素不再自带状态栏内边距（外壳已经统一留过）", () => {
+    const wrapper = mountList([item("r1", "红烧肉")]);
+    expect(wrapper.html()).not.toContain("safe-area-inset-top");
+  });
+
+  it("空状态说的「右上角」与加号的实际位置一致", () => {
+    const wrapper = mountList([]);
+    const add = wrapper.get('[data-test="recipe-add"]');
+    expect(add.element.closest("header")).not.toBeNull();
   });
 });
