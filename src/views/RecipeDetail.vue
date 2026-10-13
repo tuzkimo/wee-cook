@@ -17,6 +17,7 @@ const recipeId = computed(() => (typeof route.params.id === "string" ? route.par
 const detail = ref<RecipeDetail | null>(null);
 const error = ref("");
 const showDeleteConfirm = ref(false);
+const deleteError = ref("");
 
 // store 已经按 sort_order 查出来，这里再排一次是为了「页面自己保证顺序」这件事可被断言
 const steps = computed(() =>
@@ -48,7 +49,15 @@ function edit(): void {
 
 async function confirmDelete(): Promise<void> {
   showDeleteConfirm.value = false;
-  await store.remove(recipeId.value);
+  deleteError.value = "";
+  try {
+    await store.remove(recipeId.value);
+  } catch (removeError: unknown) {
+    // 删除是唯一会丢数据的操作：失败就留在详情页并说明，别让用户以为删掉了
+    deleteError.value =
+      removeError instanceof Error && removeError.message ? removeError.message : "删除失败，请重试";
+    return;
+  }
   await router.push("/");
 }
 </script>
@@ -89,6 +98,14 @@ async function confirmDelete(): Promise<void> {
           删除
         </button>
       </header>
+
+      <p
+        v-if="deleteError"
+        data-test="delete-error"
+        class="mx-4 mb-2 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-950 dark:text-red-300"
+      >
+        {{ deleteError }}
+      </p>
 
       <div class="px-4">
         <div class="mb-6 flex flex-wrap items-center gap-2">

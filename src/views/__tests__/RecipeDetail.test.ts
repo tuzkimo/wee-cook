@@ -222,6 +222,32 @@ describe("RecipeDetail", () => {
     expect(mocks.push).toHaveBeenCalledWith("/");
   });
 
+  it("删除失败时显示错误提示、不跳转、页面内容还在", async () => {
+    mocks.remove.mockRejectedValue(new Error("数据库忙"));
+
+    const wrapper = await page();
+
+    await wrapper.get('[data-test="delete"]').trigger("click");
+    await dialogButton("删除").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="delete-error"]').text()).toContain("数据库忙");
+    expect(mocks.push).not.toHaveBeenCalled();
+    expect(wrapper.get('[data-test="detail-name"]').text()).toBe("红烧肉");
+  });
+
+  it("删除失败且抛出的不是 Error 时回落到「删除失败，请重试」", async () => {
+    mocks.remove.mockRejectedValue("boom");
+
+    const wrapper = await page();
+
+    await wrapper.get('[data-test="delete"]').trigger("click");
+    await dialogButton("删除").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="delete-error"]').text()).toContain("删除失败，请重试");
+  });
+
   it("id 不存在时显示「菜谱不存在」并能返回列表", async () => {
     mocks.routeParams = { id: "missing" };
     mocks.getDetail.mockRejectedValue(new Error("菜谱不存在"));
