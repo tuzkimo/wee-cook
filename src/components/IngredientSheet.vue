@@ -93,12 +93,14 @@ function confirm(): void {
 </script>
 
 <template>
-  <!-- 第二步的弹层；第一步由 RefSheet 自己弹 -->
+  <!-- 第二步的弹层；第一步由 RefSheet 自己弹。
+       这一层必须永远低于 RefSheet 的遮罩/面板（z-40 / z-50）：单位选择器是在本层之上打开的，
+       z 值相同时本层会盖在单位遮罩之上，露出的 ✕ / 数量 / 确定 就既不变暗也拦不住点击。 -->
   <Teleport to="body">
     <Transition name="sheet-fade">
       <div
         v-if="visible && step === 'amount'"
-        class="fixed inset-0 z-40 bg-black/40"
+        class="fixed inset-0 z-20 bg-black/40"
         @click="emit('close')"
       />
     </Transition>
@@ -106,7 +108,7 @@ function confirm(): void {
     <Transition name="sheet-slide-up">
       <div
         v-if="visible && step === 'amount'"
-        class="fixed inset-x-0 bottom-0 z-50 flex max-h-[85vh] flex-col rounded-t-2xl bg-white px-4 pt-4 shadow-xl"
+        class="fixed inset-x-0 bottom-0 z-30 flex max-h-[85vh] flex-col rounded-t-2xl bg-white px-4 pt-4 shadow-xl"
         :style="{ paddingBottom: panelPadBottom }"
       >
         <div class="mb-4 flex items-center justify-between">
