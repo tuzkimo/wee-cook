@@ -17,7 +17,10 @@ const unitStore = useUnitStore();
 
 // 软键盘高度：与 RefSheet 同一套 insets 处理
 const keyboardInset = useKeyboardInset();
-const panelPadBottom = computed(() => `calc(${keyboardInset.value}px + 2rem)`);
+// 键盘高度 + 常规内边距 + 手势导航条的安全区，底不贴系统栏
+const panelPadBottom = computed(
+  () => `calc(${keyboardInset.value}px + 2rem + env(safe-area-inset-bottom))`,
+);
 
 // 两步一个面板：pick 复用 RefSheet 的列表/筛选/新建，amount 是本组件自己的
 const step = ref<"pick" | "amount">("pick");

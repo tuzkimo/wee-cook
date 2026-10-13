@@ -13,7 +13,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <main class="min-h-screen bg-slate-50 pb-24 dark:bg-slate-900">
+  <main class="min-h-screen bg-slate-50 pt-[env(safe-area-inset-top)] pb-24 dark:bg-slate-900">
     <p
       v-if="store.recipes.length === 0"
       class="px-6 py-24 text-center text-slate-500 dark:text-slate-400"
@@ -72,7 +72,7 @@ onMounted(() => {
       type="button"
       data-test="recipe-add"
       aria-label="新建菜谱"
-      class="fixed bottom-6 right-6 flex h-14 w-14 items-center justify-center rounded-full bg-blue-600 text-3xl leading-none text-white shadow-lg"
+      class="fixed right-6 bottom-[calc(env(safe-area-inset-bottom)+1.5rem)] flex h-14 w-14 items-center justify-center rounded-full bg-blue-600 text-3xl leading-none text-white shadow-lg"
       @click="router.push('/recipe/new')"
     >
       +

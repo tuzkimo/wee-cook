@@ -58,7 +58,7 @@ async function confirmDelete(): Promise<void> {
 </script>
 
 <template>
-  <main class="min-h-screen bg-slate-50 pb-10 dark:bg-slate-900">
+  <main class="min-h-screen bg-slate-50 pt-[env(safe-area-inset-top)] pb-10 dark:bg-slate-900">
     <template v-if="detail">
       <header class="flex items-center gap-2 px-4 py-3">
         <button

@@ -20,7 +20,10 @@ type Row = WithUsage<RefRow>;
 
 // 软键盘高度：键盘弹出时给面板底部留出空间，确定按钮不被遮挡
 const keyboardInset = useKeyboardInset();
-const panelPadBottom = computed(() => `calc(${keyboardInset.value}px + 2rem)`);
+// 键盘高度 + 常规内边距 + 手势导航条的安全区，底不贴系统栏
+const panelPadBottom = computed(
+  () => `calc(${keyboardInset.value}px + 2rem + env(safe-area-inset-bottom))`,
+);
 
 // ---- 列表模式 ----
 // 选中态是本地状态，每次打开从 selectedIds 重新播种；关窗由父组件决定，这里从不自己关

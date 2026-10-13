@@ -273,7 +273,7 @@ onBeforeRouteLeave(() => {
 </script>
 
 <template>
-  <main class="min-h-screen bg-slate-50 pb-28 dark:bg-slate-900">
+  <main class="min-h-screen bg-slate-50 pt-[env(safe-area-inset-top)] pb-28 dark:bg-slate-900">
     <header class="flex items-center gap-2 px-4 py-3">
       <button
         type="button"
@@ -466,7 +466,7 @@ onBeforeRouteLeave(() => {
     </div>
 
     <div
-      class="fixed inset-x-0 bottom-0 flex gap-3 border-t border-gray-200 bg-white px-4 py-3 dark:border-slate-700 dark:bg-slate-900"
+      class="fixed inset-x-0 bottom-0 flex gap-3 border-t border-gray-200 bg-white px-4 pt-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] dark:border-slate-700 dark:bg-slate-900"
     >
       <button
         type="button"
