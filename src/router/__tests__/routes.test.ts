@@ -18,6 +18,7 @@ describe("路由表", () => {
   it("三个 tab 页不隐藏 tab 栏", () => {
     for (const path of ["/", "/ai", "/me"]) {
       const route = router.getRoutes().find((r) => r.path === path);
+      expect(route, path).toBeDefined();
       expect(route?.meta.hideTab, path).toBeUndefined();
     }
   });
