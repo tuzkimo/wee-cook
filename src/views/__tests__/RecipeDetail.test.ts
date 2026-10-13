@@ -271,4 +271,24 @@ describe("RecipeDetail", () => {
 
     expect(mocks.push).toHaveBeenCalledWith("/");
   });
+
+  it("根元素不再自带状态栏内边距（外壳已经统一留过）", async () => {
+    const wrapper = await page();
+    expect(wrapper.html()).not.toContain("safe-area-inset-top");
+  });
+
+  it("超长菜名不会把顶栏图标挤出去", async () => {
+    mocks.getDetail.mockResolvedValue({
+      ...detail(),
+      recipe: { ...detail().recipe, name: "红烧".repeat(40) },
+    });
+    const wrapper = await page();
+
+    const name = wrapper.get('[data-test="detail-name"]');
+    expect(name.classes()).toContain("truncate");
+    expect(name.classes()).toContain("min-w-0");
+    // 菜名必须落在共享顶栏（和编辑/删除图标同一行）——旧页面自绘的 header 没有 min-h-14
+    const header = name.element.closest("header");
+    expect(header?.classList.contains("min-h-14")).toBe(true);
+  });
 });

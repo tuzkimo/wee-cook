@@ -1,9 +1,11 @@
 <script setup lang="ts">
 // 只读详情页（规格 §6.4）：食材清单在前、字号偏大 —— 这是做菜时真正要看的那一段；
-// 步骤在后，带序号与可选插图。「编辑」与「删除」都在右上角。
+// 步骤在后，带序号与可选插图。「编辑」与「删除」都在顶栏右上角。
 // ⚠️ 不做计时器 / 防熄屏 / 逐步高亮，那是下一轮的跟做模式，别在这里加。
 import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import { Pencil, Trash2 } from "lucide-vue-next";
+import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import { imageSrc } from "@/services/imageStore";
 import { useRecipeStore } from "@/stores/recipe";
@@ -58,73 +60,64 @@ async function confirmDelete(): Promise<void> {
 </script>
 
 <template>
-  <main class="min-h-screen bg-slate-50 pt-[env(safe-area-inset-top)] pb-10 dark:bg-slate-900">
+  <div class="flex h-full flex-col">
     <template v-if="detail">
-      <header class="flex items-center gap-2 px-4 py-3">
-        <button
-          type="button"
-          data-test="back"
-          aria-label="返回"
-          class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xl text-slate-600 transition-colors hover:bg-gray-100 dark:text-slate-300"
-          @click="router.back()"
-        >
-          ←
-        </button>
-        <h1
-          data-test="detail-name"
-          class="min-w-0 flex-1 truncate text-xl font-semibold text-slate-900 dark:text-slate-50"
-        >
-          {{ detail.recipe.name }}
-        </h1>
-        <button
-          type="button"
-          data-test="edit"
-          class="shrink-0 rounded-full px-3 py-1.5 text-sm font-medium text-blue-600 transition-colors hover:bg-blue-50 dark:hover:bg-slate-800"
-          @click="edit"
-        >
-          编辑
-        </button>
-        <button
-          type="button"
-          data-test="delete"
-          class="shrink-0 rounded-full px-3 py-1.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 dark:hover:bg-slate-800"
-          @click="showDeleteConfirm = true"
-        >
-          删除
-        </button>
-      </header>
-
-      <p
-        v-if="deleteError"
-        data-test="delete-error"
-        class="mx-4 mb-2 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-950 dark:text-red-300"
-      >
-        {{ deleteError }}
-      </p>
-
-      <div class="px-4">
-        <div class="mb-6 flex flex-wrap items-center gap-2">
-          <span
-            data-test="detail-category"
-            class="rounded-full bg-slate-200 px-3 py-1 text-sm text-slate-700 dark:bg-slate-700 dark:text-slate-200"
+      <AppHeader class="border-b border-gray-100" show-back @back="router.back()">
+        <template #title>
+          <h1 data-test="detail-name" class="min-w-0 flex-1 truncate text-lg font-semibold text-text">
+            {{ detail.recipe.name }}
+          </h1>
+        </template>
+        <template #action>
+          <button
+            type="button"
+            data-test="edit"
+            aria-label="编辑"
+            class="flex h-8 w-8 items-center justify-center rounded-full hover:bg-gray-100"
+            @click="edit"
           >
+            <Pencil :size="18" class="text-text-secondary" />
+          </button>
+          <button
+            type="button"
+            data-test="delete"
+            aria-label="删除"
+            class="flex h-8 w-8 items-center justify-center rounded-full hover:bg-gray-100"
+            @click="showDeleteConfirm = true"
+          >
+            <Trash2 :size="18" class="text-danger" />
+          </button>
+        </template>
+      </AppHeader>
+
+      <div class="flex-1 min-h-0 overflow-auto px-4 py-4">
+        <p
+          v-if="deleteError"
+          data-test="delete-error"
+          class="mb-2 rounded-xl bg-danger/10 px-4 py-3 text-sm text-danger"
+        >
+          {{ deleteError }}
+        </p>
+
+        <div class="mb-6 flex flex-wrap items-center gap-2">
+          <span data-test="detail-category" class="rounded-full bg-primary/10 px-2.5 py-1 text-xs text-primary">
             {{ detail.category.name }}
           </span>
           <span
             v-for="tag in detail.tags"
             :key="tag.id"
             data-test="detail-tag"
-            class="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+            class="rounded-full bg-surface px-2.5 py-1 text-xs text-text-secondary"
           >
             {{ tag.name }}
           </span>
         </div>
 
         <section class="mb-8">
-          <h2 class="mb-2 text-sm font-semibold text-slate-900 dark:text-slate-100">食材</h2>
+          <h2 class="mb-2 text-xs font-medium text-text-secondary">食材</h2>
           <p
             v-if="detail.ingredients.length === 0"
-            class="rounded-xl border border-dashed border-gray-200 py-6 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400"
+            class="rounded-xl border border-dashed border-gray-300 py-6 text-center text-sm text-text-secondary"
           >
             还没有食材
           </p>
@@ -133,7 +126,7 @@ async function confirmDelete(): Promise<void> {
               v-for="line in detail.ingredients"
               :key="line.id"
               data-test="ingredient-row"
-              class="rounded-xl bg-white px-4 py-3 text-lg text-slate-900 shadow-sm dark:bg-slate-800 dark:text-slate-50"
+              class="rounded-xl bg-surface px-3 py-3 text-sm font-medium text-text"
             >
               {{ amountText(line) }} {{ line.ingredient_name }}
             </li>
@@ -141,10 +134,10 @@ async function confirmDelete(): Promise<void> {
         </section>
 
         <section>
-          <h2 class="mb-2 text-sm font-semibold text-slate-900 dark:text-slate-100">步骤</h2>
+          <h2 class="mb-2 text-xs font-medium text-text-secondary">步骤</h2>
           <p
             v-if="steps.length === 0"
-            class="rounded-xl border border-dashed border-gray-200 py-6 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400"
+            class="rounded-xl border border-dashed border-gray-300 py-6 text-center text-sm text-text-secondary"
           >
             还没有步骤
           </p>
@@ -153,16 +146,16 @@ async function confirmDelete(): Promise<void> {
               v-for="(step, index) in steps"
               :key="step.id"
               data-test="step-row"
-              class="flex gap-3 rounded-xl bg-white p-4 shadow-sm dark:bg-slate-800"
+              class="flex gap-3 rounded-xl bg-surface p-3"
             >
               <span
                 data-test="step-order"
-                class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-sm font-semibold text-slate-600 dark:bg-slate-700 dark:text-slate-200"
+                class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gray-100 text-xs font-semibold text-text-secondary"
               >
                 {{ index + 1 }}
               </span>
               <div class="min-w-0 flex-1">
-                <p data-test="step-text" class="text-lg leading-relaxed text-slate-900 dark:text-slate-50">
+                <p data-test="step-text" class="text-sm leading-relaxed text-text">
                   {{ step.text }}
                 </p>
                 <img
@@ -171,7 +164,7 @@ async function confirmDelete(): Promise<void> {
                   :src="imageSrc(step.image_path)"
                   :alt="`步骤 ${index + 1}`"
                   loading="lazy"
-                  class="mt-3 w-full rounded-lg object-cover"
+                  class="mt-2 w-full rounded-lg object-cover"
                 />
               </div>
             </li>
@@ -181,11 +174,11 @@ async function confirmDelete(): Promise<void> {
     </template>
 
     <div v-else-if="error" data-test="not-found" class="px-6 py-24 text-center">
-      <p class="text-slate-500 dark:text-slate-400">{{ error }}</p>
+      <p class="text-text-secondary">{{ error }}</p>
       <button
         type="button"
         data-test="back-to-list"
-        class="mt-6 rounded-xl bg-blue-600 px-6 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+        class="mt-6 rounded-lg bg-primary px-6 py-2.5 text-sm font-medium text-white"
         @click="router.push('/')"
       >
         返回列表
@@ -201,5 +194,5 @@ async function confirmDelete(): Promise<void> {
       @confirm="confirmDelete"
       @cancel="showDeleteConfirm = false"
     />
-  </main>
+  </div>
 </template>
