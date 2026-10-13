@@ -6,6 +6,8 @@
 // 本地 key 剥掉、数量 0/负数报错）与「未保存就退出」的确认。
 import { computed, onMounted, ref, toValue } from "vue";
 import { useRoute, useRouter, onBeforeRouteLeave } from "vue-router";
+import { Check } from "lucide-vue-next";
+import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import ImagePicker from "@/components/ImagePicker.vue";
 import IngredientSheet from "@/components/IngredientSheet.vue";
@@ -273,31 +275,31 @@ onBeforeRouteLeave(() => {
 </script>
 
 <template>
-  <main class="min-h-screen bg-slate-50 pt-[env(safe-area-inset-top)] pb-28 dark:bg-slate-900">
-    <header class="flex items-center gap-2 px-4 py-3">
-      <button
-        type="button"
-        data-test="back"
-        aria-label="返回"
-        class="flex h-9 w-9 items-center justify-center rounded-full text-xl text-slate-600 transition-colors hover:bg-gray-100 dark:text-slate-300"
-        @click="goBack"
-      >
-        ←
-      </button>
-      <h1 class="text-lg font-semibold text-slate-900 dark:text-slate-50">
-        {{ recipeId ? "编辑菜谱" : "新建菜谱" }}
-      </h1>
-    </header>
+  <div class="flex h-full flex-col">
+    <AppHeader :title="recipeId ? '编辑菜谱' : '新建菜谱'" show-back @back="goBack">
+      <template #action>
+        <button
+          type="button"
+          data-test="save"
+          aria-label="保存"
+          :disabled="!form.name.trim() || saving"
+          class="flex h-8 w-8 items-center justify-center rounded-full disabled:opacity-30"
+          @click="save"
+        >
+          <Check :size="20" class="text-primary" />
+        </button>
+      </template>
+    </AppHeader>
 
-    <div class="flex flex-col gap-6 px-4">
+    <div class="flex flex-1 min-h-0 flex-col gap-6 overflow-auto px-4 py-4">
       <label class="block">
-        <span class="mb-1 block text-sm font-medium text-slate-900 dark:text-slate-100">菜名</span>
+        <span class="mb-1 block text-xs text-text-secondary">菜名</span>
         <input
           v-model="form.name"
           data-test="name"
           type="text"
           placeholder="比如：红烧肉"
-          class="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-blue-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-50"
+          class="w-full rounded-lg border border-gray-200 bg-surface px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
         />
       </label>
 
@@ -306,11 +308,11 @@ onBeforeRouteLeave(() => {
       <button
         type="button"
         data-test="category-row"
-        class="flex items-center justify-between rounded-xl border border-gray-200 px-3 py-3 text-sm transition-colors hover:bg-gray-50 dark:border-slate-700 dark:hover:bg-slate-800"
+        class="flex items-center justify-between rounded-xl border border-gray-200 px-3 py-3 text-sm transition-colors hover:bg-gray-50"
         @click="showCategorySheet = true"
       >
-        <span class="text-slate-500 dark:text-slate-400">分类</span>
-        <span data-test="category-name" class="text-slate-900 dark:text-slate-50">
+        <span class="text-text-secondary">分类</span>
+        <span data-test="category-name" class="text-text">
           {{ categoryName || "未选" }}
         </span>
       </button>
@@ -319,11 +321,11 @@ onBeforeRouteLeave(() => {
         <button
           type="button"
           data-test="tag-row"
-          class="flex w-full items-center justify-between rounded-xl border border-gray-200 px-3 py-3 text-sm transition-colors hover:bg-gray-50 dark:border-slate-700 dark:hover:bg-slate-800"
+          class="flex w-full items-center justify-between rounded-xl border border-gray-200 px-3 py-3 text-sm transition-colors hover:bg-gray-50"
           @click="showTagSheet = true"
         >
-          <span class="text-slate-500 dark:text-slate-400">标签</span>
-          <span class="text-slate-900 dark:text-slate-50">
+          <span class="text-text-secondary">标签</span>
+          <span class="text-text">
             {{ form.tag_ids.length > 0 ? `已选 ${form.tag_ids.length} 个` : "未选" }}
           </span>
         </button>
@@ -332,14 +334,14 @@ onBeforeRouteLeave(() => {
             v-for="tag in tagRows"
             :key="tag.id"
             data-test="tag-chip"
-            class="flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-700 dark:bg-slate-700 dark:text-slate-200"
+            class="flex items-center gap-1 rounded-full bg-gray-100 px-3 py-1 text-xs text-text"
           >
             <span data-test="tag-chip-name">{{ tag.name }}</span>
             <button
               type="button"
               data-test="tag-remove"
               :aria-label="`移除${tag.name}`"
-              class="text-slate-500 hover:text-red-600"
+              class="text-text-secondary hover:text-danger"
               @click="removeTag(tag.id)"
             >
               ✕
@@ -349,10 +351,10 @@ onBeforeRouteLeave(() => {
       </section>
 
       <section>
-        <h2 class="mb-2 text-sm font-semibold text-slate-900 dark:text-slate-100">食材</h2>
+        <h2 class="mb-2 text-xs font-medium text-text-secondary">食材</h2>
         <p
           v-if="form.ingredients.length === 0"
-          class="rounded-xl border border-dashed border-gray-200 py-6 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400"
+          class="rounded-lg border border-dashed border-gray-300 py-6 text-center text-sm text-text-secondary"
         >
           还没有食材
         </p>
@@ -361,22 +363,22 @@ onBeforeRouteLeave(() => {
             v-for="(line, index) in form.ingredients"
             :key="line.key"
             data-test="ingredient-row"
-            class="flex items-center gap-3 rounded-xl bg-white px-3 py-2.5 text-sm shadow-sm dark:bg-slate-800"
+            class="flex items-center gap-3 rounded-xl bg-surface px-3 py-2.5 text-sm"
           >
             <span
               data-test="ingredient-row-name"
-              class="min-w-0 flex-1 truncate text-slate-900 dark:text-slate-50"
+              class="min-w-0 flex-1 truncate text-text"
             >
               {{ line.ingredient_name }}
             </span>
-            <span data-test="ingredient-row-amount" class="shrink-0 text-slate-500 dark:text-slate-400">
+            <span data-test="ingredient-row-amount" class="shrink-0 text-text-secondary">
               {{ amountText(line) }}
             </span>
             <button
               type="button"
               data-test="ingredient-row-remove"
               :aria-label="`删除${line.ingredient_name}`"
-              class="shrink-0 text-slate-400 hover:text-red-600"
+              class="shrink-0 text-text-secondary hover:text-danger"
               @click="removeIngredient(index)"
             >
               ✕
@@ -386,7 +388,7 @@ onBeforeRouteLeave(() => {
         <button
           type="button"
           data-test="add-ingredient"
-          class="mt-2 w-full rounded-xl border border-dashed border-gray-300 py-2.5 text-sm font-medium text-blue-600 transition-colors hover:bg-blue-50 dark:border-slate-600 dark:hover:bg-slate-800"
+          class="mt-2 w-full rounded-lg border border-dashed border-gray-300 py-2.5 text-sm font-medium text-primary hover:bg-primary/10"
           @click="showIngredientSheet = true"
         >
           + 添加食材
@@ -394,10 +396,10 @@ onBeforeRouteLeave(() => {
       </section>
 
       <section>
-        <h2 class="mb-2 text-sm font-semibold text-slate-900 dark:text-slate-100">步骤</h2>
+        <h2 class="mb-2 text-xs font-medium text-text-secondary">步骤</h2>
         <p
           v-if="form.steps.length === 0"
-          class="rounded-xl border border-dashed border-gray-200 py-6 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400"
+          class="rounded-lg border border-dashed border-gray-300 py-6 text-center text-sm text-text-secondary"
         >
           还没有步骤
         </p>
@@ -405,12 +407,12 @@ onBeforeRouteLeave(() => {
           v-for="(step, index) in form.steps"
           :key="step.key"
           data-test="step-row"
-          class="mb-3 rounded-xl bg-white p-3 shadow-sm dark:bg-slate-800"
+          class="mb-3 rounded-xl bg-surface p-3"
         >
           <div class="mb-2 flex items-center gap-2">
             <span
               data-test="step-order"
-              class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-600 dark:bg-slate-700 dark:text-slate-200"
+              class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gray-100 text-xs font-semibold text-text-secondary"
             >
               {{ index + 1 }}
             </span>
@@ -419,7 +421,7 @@ onBeforeRouteLeave(() => {
               data-test="step-up"
               :disabled="index === 0"
               aria-label="上移"
-              class="rounded px-2 py-1 text-slate-500 disabled:opacity-30"
+              class="rounded px-2 py-1 text-text-secondary disabled:opacity-30"
               @click="moveStep(index, -1)"
             >
               ↑
@@ -429,7 +431,7 @@ onBeforeRouteLeave(() => {
               data-test="step-down"
               :disabled="index === form.steps.length - 1"
               aria-label="下移"
-              class="rounded px-2 py-1 text-slate-500 disabled:opacity-30"
+              class="rounded px-2 py-1 text-text-secondary disabled:opacity-30"
               @click="moveStep(index, 1)"
             >
               ↓
@@ -437,7 +439,7 @@ onBeforeRouteLeave(() => {
             <button
               type="button"
               data-test="step-remove"
-              class="ml-auto rounded px-2 py-1 text-xs text-red-600 hover:bg-red-50"
+              class="ml-auto rounded px-2 py-1 text-xs text-danger hover:bg-danger/10"
               @click="removeStep(index)"
             >
               删除
@@ -448,43 +450,21 @@ onBeforeRouteLeave(() => {
             data-test="step-text"
             rows="2"
             placeholder="这一步做什么"
-            class="mb-3 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-50"
+            class="mb-3 w-full rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text outline-none focus:border-primary"
           ></textarea>
           <ImagePicker v-model="step.image_path" label="步骤图" />
         </div>
         <button
           type="button"
           data-test="add-step"
-          class="w-full rounded-xl border border-dashed border-gray-300 py-2.5 text-sm font-medium text-blue-600 transition-colors hover:bg-blue-50 dark:border-slate-600 dark:hover:bg-slate-800"
+          class="w-full rounded-lg border border-dashed border-gray-300 py-2.5 text-sm font-medium text-primary hover:bg-primary/10"
           @click="addStep"
         >
           + 添加步骤
         </button>
       </section>
 
-      <p v-if="error" data-test="form-error" class="text-sm text-red-600">{{ error }}</p>
-    </div>
-
-    <div
-      class="fixed inset-x-0 bottom-0 flex gap-3 border-t border-gray-200 bg-white px-4 pt-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] dark:border-slate-700 dark:bg-slate-900"
-    >
-      <button
-        type="button"
-        data-test="cancel"
-        class="flex-1 rounded-xl border border-gray-200 py-3 text-sm font-semibold text-slate-700 transition-colors hover:bg-gray-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
-        @click="goBack"
-      >
-        取消
-      </button>
-      <button
-        type="button"
-        data-test="save"
-        :disabled="!form.name.trim() || saving"
-        class="flex-1 rounded-xl bg-blue-600 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:bg-gray-300 dark:disabled:bg-slate-700"
-        @click="save"
-      >
-        保存
-      </button>
+      <p v-if="error" data-test="form-error" class="text-sm text-danger">{{ error }}</p>
     </div>
 
     <RefSheet
@@ -523,5 +503,5 @@ onBeforeRouteLeave(() => {
       @confirm="leave"
       @cancel="showLeaveConfirm = false"
     />
-  </main>
+  </div>
 </template>

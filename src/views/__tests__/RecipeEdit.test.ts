@@ -550,4 +550,10 @@ describe("RecipeEdit", () => {
     expect(mocks.back).toHaveBeenCalledTimes(1);
     expect(mocks.leaveGuard?.()).toBe(true);
   });
+
+  it("根元素不再自带状态栏内边距，底部也没有 fixed 的按钮条", async () => {
+    const wrapper = await page();
+    expect(wrapper.html()).not.toContain("safe-area-inset-top");
+    expect(wrapper.find('[data-test="cancel"]').exists()).toBe(false);
+  });
 });
