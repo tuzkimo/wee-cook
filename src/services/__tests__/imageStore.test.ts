@@ -124,6 +124,21 @@ describe("pickAndSaveImage", () => {
     expect(await pickAndSaveImage(deps)).toBeNull();
     expect(writes).toHaveLength(0);
   });
+
+  it("pickFromGallery 抛错 → 返回「打不开这张图，换一张试试」且没有写盘", async () => {
+    const { deps, writes } = fakeDeps({
+      pickFromGallery: async () => {
+        throw new Error("content:// read failed");
+      },
+    });
+
+    // 取图阶段失败（open 或 readFile 抛）也不能静默：本模块**不抛**
+    expect(await pickAndSaveImage(deps)).toEqual({
+      ok: false,
+      message: "打不开这张图，换一张试试",
+    });
+    expect(writes).toHaveLength(0);
+  });
 });
 
 describe("imageSrc", () => {

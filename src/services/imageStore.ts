@@ -29,6 +29,8 @@ export const JPEG_QUALITY = 0.72;
 const MSG_DECODE_FAILED = "这张图读不出来，换一张试试";
 /** 写盘失败（磁盘满、目录没权限）—— 与「读不出来」分开，用户能做的是重试而不是换图 */
 const MSG_WRITE_FAILED = "图片保存失败，稍后再试";
+/** 取图阶段失败（选择器打不开、Android 的 content:// 读不到）—— 与「解码失败」区分：图根本还没拿到 */
+const MSG_PICK_FAILED = "打不开这张图，换一张试试";
 
 /** 选择器里列的扩展名：**只是 UX 过滤**，不参与准入判断（准入只看解码器能不能解开） */
 const PICK_EXTENSIONS = ["jpg", "jpeg", "png", "webp", "heic", "heif"];
@@ -201,7 +203,13 @@ export async function saveImageBytes(bytes: Uint8Array, deps: ImageDeps = realDe
 
 /** 相册选一张并落盘。`null` = 用户在选择器里点了取消。 */
 export async function pickAndSaveImage(deps: ImageDeps = realDeps): Promise<SaveImageResult | null> {
-  const bytes = await deps.pickFromGallery();
+  let bytes: Uint8Array | null;
+  try {
+    bytes = await deps.pickFromGallery();
+  } catch {
+    // open 或 readFile 抛错也归可展示的失败：取消是返回 null，不是抛，所以这里不会误吞取消
+    return { ok: false, message: MSG_PICK_FAILED };
+  }
   if (bytes === null) return null;
   return saveImageBytes(bytes, deps);
 }
