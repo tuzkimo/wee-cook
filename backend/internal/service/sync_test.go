@@ -194,41 +194,6 @@ func TestMergeDictLabelKeyIncludesKind(t *testing.T) {
 	}
 }
 
-// mergeByKey 是 Task 5 菜谱合并的公共骨架，三个分支各钉一次（含 FOR UPDATE）。
-func TestMergeByKeyLWW(t *testing.T) {
-	remote := time.Now().UTC()
-	for _, tc := range []struct {
-		name       string
-		row        pgx.Row
-		incoming   time.Time
-		wantInsert bool
-		wantUpdate bool
-	}{
-		{"主键不存在则插入", fakeRow{scanErr: pgx.ErrNoRows}, remote, true, false},
-		{"incoming 更旧则跳过", fakeRow{vals: []any{remote}}, remote.Add(-time.Minute), false, false},
-		{"incoming 相同则跳过", fakeRow{vals: []any{remote}}, remote, false, false},
-		{"incoming 更新则覆盖", fakeRow{vals: []any{remote}}, remote.Add(time.Minute), false, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			q := newSyncQuerier(tc.row)
-			var inserted, updated bool
-			err := mergeByKey(context.Background(), q, tc.incoming,
-				"SELECT updated_at FROM recipes WHERE id = $1", []any{"r-1"},
-				func() error { inserted = true; return nil },
-				func() error { updated = true; return nil })
-			if err != nil {
-				t.Fatalf("mergeByKey: %v", err)
-			}
-			if inserted != tc.wantInsert || updated != tc.wantUpdate {
-				t.Errorf("insert=%v update=%v，want insert=%v update=%v", inserted, updated, tc.wantInsert, tc.wantUpdate)
-			}
-			if !strings.Contains(q.queries[0].sql, "FOR UPDATE") {
-				t.Errorf("按主键查 updated_at 要 FOR UPDATE 锁行，got %s", q.queries[0].sql)
-			}
-		})
-	}
-}
-
 // --- Task 5：菜谱整条合并 + 作者归属校验 ---
 
 // OwnerID 是客户端可伪造的：落库归属一律取当前登录用户（spec §7.1）。

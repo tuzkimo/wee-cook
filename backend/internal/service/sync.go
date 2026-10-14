@@ -18,33 +18,6 @@ import (
 // 使 nextval 的发号顺序 = 提交顺序（spec §7.2）。
 const syncWriteLockID = 897753
 
-// mergeByKey 是各实体 LWW merge 的公共骨架：
-//  1. 按主键查 updated_at
-//  2. 不存在(ErrNoRows) → insert()
-//  3. 真实错误 → 直接透传（不误判为「不存在」）
-//  4. 存在但 incoming 更旧/相同 → 跳过
-//  5. incoming 更新 → update()
-//
-// 并发插入不靠 23505 回退兜底：PostgreSQL 事务内语句报错后即 aborted 态，后续 UPDATE 必 25P02，
-// 回退在真库跑不通。真正的并发防护是 sync 写事务开头的全局 advisory xact lock（串行化写事务）。
-func mergeByKey(ctx context.Context, tx dbQuerier, incoming time.Time,
-	keySQL string, keyArgs []any, insert, update func() error) error {
-	var remote time.Time
-	// FOR UPDATE：锁定已存在行，避免两个事务并发 SELECT 到旧 updated_at 后双双 UPDATE，
-	// 较旧写入覆盖较新写入（破坏 LWW）。仅在同步写事务内使用，不涉及只读事务。
-	err := tx.QueryRow(ctx, keySQL+" FOR UPDATE", keyArgs...).Scan(&remote)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return insert()
-	}
-	if err != nil {
-		return err
-	}
-	if !incoming.After(remote) {
-		return nil
-	}
-	return update()
-}
-
 type SyncService struct {
 	pool *pgxpool.Pool
 }
@@ -173,7 +146,10 @@ func (s *SyncService) mergeDict(ctx context.Context, tx dbQuerier, spec dictSpec
 // team 校验放在任何读写之前：新建与更新两条路径都要过滤外来团队（spec §5 硬规则 1），
 // 若只放在更新路径上，用户能 INSERT 一条指向自己未加入团队的新菜谱、塞进别人团队。
 // remap 是同一批字典合并产出的「旧 id → 有效 id」：必须先重写所有引用再碰库，
-// 否则引用了被合并掉的 id 会撞外键、把整次同步回滚（spec §7.2 第 3 步）。
+// 否则引用会指向服务器上不存在的行（当前 schema 下 category_id / ingredient_id / unit_id 都没建外键，
+// 不会立刻报错，但引用悬空；补上外键后就是 23503，会把整次同步回滚）（spec §7.2 第 3 步）。
+// LWW 骨架不复用通用辅助：父行必须在同一次 FOR UPDATE 里同时拿到 owner_id 与 updated_at，
+// 而通用辅助只扫单值 updated_at。
 // shortcut: 整条替换以「只有作者能改」为前提，将来允许协作编辑同一条菜谱时必须回到行级 LWW（spec §7.3）。
 func (s *SyncService) mergeRecipe(ctx context.Context, tx dbQuerier, userID string, teamSet map[string]bool, remap map[string]string, r model.Recipe) error {
 	remapID := func(id string) string {
