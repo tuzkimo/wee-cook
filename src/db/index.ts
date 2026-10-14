@@ -18,7 +18,7 @@ export function getDb(): Db {
   return db;
 }
 
-// 规格 §4 DDL：七张表 + 七个索引。逐字照抄，不在这里拼字符串。
+// 规格 §4 DDL：七张表 + 七个索引，外加同步用的 uploaded_files。逐字照抄，不在这里拼字符串。
 const DDL = [
   `CREATE TABLE IF NOT EXISTS recipes (
     id           TEXT PRIMARY KEY,
@@ -75,6 +75,10 @@ const DDL = [
     updated_at  TEXT NOT NULL,
     deleted_at  TEXT
   )`,
+  `CREATE TABLE IF NOT EXISTS uploaded_files (
+    name        TEXT PRIMARY KEY,
+    uploaded_at TEXT NOT NULL
+  )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_labels_name_kind  ON labels(name, kind) WHERE deleted_at IS NULL`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_ingredients_name  ON ingredients(name)  WHERE deleted_at IS NULL`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_units_name        ON units(name)        WHERE deleted_at IS NULL`,
@@ -90,9 +94,12 @@ export async function initTables(db: Db): Promise<void> {
   await migrateTables(db);
 }
 
-/** 首次建表，暂无迁移。以后改表结构在这里按版本补 ALTER。 */
-async function migrateTables(_db: Db): Promise<void> {
-  // 暂无迁移
+/** 表结构演进。每步先查 PRAGMA 再 ALTER：ALTER ADD COLUMN 重复执行会报错，不能用异常兜底。 */
+async function migrateTables(db: Db): Promise<void> {
+  const cols = await db.select<{ name: string }[]>("PRAGMA table_info(recipes)");
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("owner_id")) await db.execute("ALTER TABLE recipes ADD COLUMN owner_id TEXT");
+  if (!names.has("team_id")) await db.execute("ALTER TABLE recipes ADD COLUMN team_id TEXT");
 }
 
 export async function initDb(): Promise<void> {

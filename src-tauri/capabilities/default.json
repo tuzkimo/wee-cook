@@ -11,6 +11,7 @@
     "sql:allow-execute",
     "sql:allow-select",
     "dialog:default",
+    "store:default",
     "fs:default",
     { "identifier": "fs:allow-write-file", "allow": [{ "path": "$APPDATA/**" }] },
     { "identifier": "fs:allow-mkdir", "allow": [{ "path": "$APPDATA/**" }] }
