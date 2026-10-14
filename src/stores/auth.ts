@@ -67,8 +67,10 @@ const useAuthStoreBase = defineStore("auth", () => {
   const serverUserId = computed(() => serverUser.value?.id ?? null);
 
   // 会话世代：login / register / logout 每次主动改动会话都 +1。
-  // `api.refreshSession` 成功后**无条件**写回凭据（Task 2 的既定行为），
-  // 恢复会话与用户退登/换号并发时，那次写回属于旧会话 —— 用世代比对把它作废。
+  // api 层公开的 `refreshSession` 现在也做世代校验（见 services/api.ts 的 tokenGeneration），
+  // 所以退登/换号时在途的恢复响应不会被写回 api 内存与磁盘。store 这道的职责是**语义兜底**：
+  // 响应回来时判断这次恢复还算不算当前会话（是否切在线、是否写 settings）；最坏情况下
+  // 新账号需要重新登录一次，但绝不会把旧账号的会话带进新账号。
   let sessionEpoch = 0;
 
   function goGuest(): void {
@@ -167,6 +169,11 @@ const useAuthStoreBase = defineStore("auth", () => {
       goGuest();
       return;
     }
+    // 读设置 / 读 token 期间用户可能已退登或换号：再调 api.refreshSession 的话，
+    // 它内部采样到的世代已是退登之后，会判定「可写回」并把凭据重新写回 api 内存与磁盘，
+    // 而 store 侧因 epoch 变了提前 return —— 结果 store 是 guest、api 却有凭据。
+    // 这里在发请求前补一次检查，直接不发。
+    if (epoch !== sessionEpoch) return;
 
     try {
       const resp = await api.refreshSession(stored);

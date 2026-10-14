@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { setDb, type Db } from "@/db";
 import { freshTestDb } from "@/db/__tests__/sqliteTestDb";
 import * as api from "@/services/api";
+import * as tokenStorage from "@/services/tokenStorage";
 import { writeRefreshToken } from "@/services/tokenStorage";
 import { useAuthStore } from "@/stores/auth";
 
@@ -273,6 +274,40 @@ describe("authStore", () => {
     await pending;
 
     expect(store.mode).toBe("guest");
+    expect(api.authTokenReady.value).toBe(false);
+    await vi.waitFor(() => expect(localStorage.getItem("refresh_token:u1")).toBeNull());
+  });
+
+  it("在读设置/读 token 阶段退登：不再发 refresh，api 也不留凭据", async () => {
+    seedSetting("server_url", "https://srv");
+    seedSetting("server_user_id", "u1");
+    seedSetting("server_nickname", "阿丽");
+    await writeRefreshToken("u1", "refresh-1");
+
+    // 服务端在途答什么都行：这条用例要断言的是「根本没发这次请求」
+    const fetchMock = stubFetch(() =>
+      res(200, authBody(user("u1"), "access-new", "refresh-new")),
+    );
+
+    // 把「读 refresh token」停在一个可控 promise 上，制造出「读设置 / 读 token 阶段」这个窗口
+    let releaseRead!: (value: string | null) => void;
+    const readGate = new Promise<string | null>((resolve) => {
+      releaseRead = resolve;
+    });
+    const readSpy = vi.spyOn(tokenStorage, "readRefreshToken").mockReturnValueOnce(readGate);
+
+    const store = useAuthStore();
+    const pending = store.restoreSession();
+    await vi.waitFor(() => expect(readSpy).toHaveBeenCalledWith("u1"));
+    // 还在读 token 时就退登：这时 api 的世代已经是退登之后的
+    await store.logout();
+    releaseRead("refresh-1");
+    await pending;
+
+    // 否则 refreshSession 会把 u1 的凭据写回 api 内存与磁盘，出现「store 是 guest、api 却有凭据」
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(store.mode).toBe("guest");
+    expect(store.isOnline).toBe(false);
     expect(api.authTokenReady.value).toBe(false);
     await vi.waitFor(() => expect(localStorage.getItem("refresh_token:u1")).toBeNull());
   });
