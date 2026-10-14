@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# 自托管部署的密钥文件（.env.example 照常提交）
+.env
+
 # 签名 keystore：本仓提交 src-tauri/gen/android ⇒ 没有这条就会把私钥推上仓
 *.jks
 *.p12

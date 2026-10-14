@@ -23,6 +23,7 @@ func main() {
 	if err := database.RunMigrations(cfg.DatabaseURL); err != nil {
 		log.Fatalf("database.RunMigrations: %v", err)
 	}
+	log.Printf("migrations applied")
 
 	ctx := context.Background()
 	pool, err := database.NewPool(ctx, cfg.DatabaseURL)
