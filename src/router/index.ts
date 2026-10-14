@@ -5,6 +5,8 @@ import RecipeDetail from "@/views/RecipeDetail.vue";
 import FilterPage from "@/views/FilterPage.vue";
 import AiPage from "@/views/AiPage.vue";
 import MePage from "@/views/MePage.vue";
+import ServerConfig from "@/views/ServerConfig.vue";
+import LoginPage from "@/views/LoginPage.vue";
 
 export default createRouter({
   history: createWebHistory(),
@@ -17,5 +19,7 @@ export default createRouter({
     { path: "/recipe/:id", name: "recipe-detail", component: RecipeDetail, meta: { hideTab: true } },
     { path: "/ai", name: "ai", component: AiPage },
     { path: "/me", name: "me", component: MePage },
+    { path: "/me/server", name: "me-server", component: ServerConfig, meta: { hideTab: true } },
+    { path: "/me/login", name: "me-login", component: LoginPage, meta: { hideTab: true } },
   ],
 });
