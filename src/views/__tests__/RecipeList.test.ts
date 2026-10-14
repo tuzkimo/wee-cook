@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import type { Label, LabelKind, Recipe, RecipeListItem } from "@/types";
 import RecipeList from "@/views/RecipeList.vue";
+import { useRecipeFilterStore } from "@/stores/recipeFilter";
 
 const NOW = "2026-10-13T00:00:00.000Z";
 
@@ -12,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   fetchAll: vi.fn(async () => {}),
   imageSrc: vi.fn((name: string) => `asset://localhost/images/${name}`),
   recipes: [] as RecipeListItem[],
+  apply: vi.fn(),
+  clear: vi.fn(),
 }));
 
 vi.mock("vue-router", () => ({ useRouter: () => ({ push: mocks.push }) }));
@@ -19,6 +22,18 @@ vi.mock("@/stores/recipe", () => ({
   useRecipeStore: () => ({ recipes: mocks.recipes, fetchAll: mocks.fetchAll }),
 }));
 vi.mock("@/services/imageStore", () => ({ imageSrc: mocks.imageSrc }));
+vi.mock("@/stores/recipeFilter", async () => {
+  const { reactive } = await import("vue");
+  const filter = reactive({
+    keyword: "",
+    categoryIds: [] as string[],
+    tagIds: [] as string[],
+    ingredientIds: [] as string[],
+  });
+  return {
+    useRecipeFilterStore: () => ({ filter, apply: mocks.apply, clear: mocks.clear }),
+  };
+});
 
 const wrappers: VueWrapper[] = [];
 
@@ -67,8 +82,18 @@ function names(wrapper: VueWrapper): string[] {
   return wrapper.findAll('[data-test="recipe-name"]').map((node) => node.text());
 }
 
+/** 每个用例从空筛选开始；filter 是 mock 工厂里的单例 reactive 对象，必须手动重置 */
+function resetFilter(): void {
+  const { filter } = useRecipeFilterStore();
+  filter.keyword = "";
+  filter.categoryIds = [];
+  filter.tagIds = [];
+  filter.ingredientIds = [];
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  resetFilter();
 });
 
 afterEach(() => {
@@ -163,5 +188,65 @@ describe("RecipeList", () => {
     const wrapper = mountList([]);
     const add = wrapper.get('[data-test="recipe-add"]');
     expect(add.element.closest("header")).not.toBeNull();
+  });
+
+  it("搜索框按菜名子串过滤，且过滤后不动 store 里的原数组", async () => {
+    const wrapper = mountList([item("r1", "红烧肉"), item("r2", "番茄炒蛋")]);
+
+    await wrapper.get('[data-test="recipe-search"]').setValue("红烧");
+
+    expect(names(wrapper)).toEqual(["红烧肉"]);
+    expect(mocks.recipes.map((i) => i.recipe.name)).toEqual(["红烧肉", "番茄炒蛋"]);
+  });
+
+  it("没有筛选时不渲染信息条", () => {
+    const wrapper = mountList([item("r1", "红烧肉")]);
+    expect(wrapper.find('[data-test="filter-bar"]').exists()).toBe(false);
+  });
+
+  it("筛选活跃时信息条写明筛了什么，点它进筛选页", async () => {
+    const wrapper = mountList([
+      item("r1", "红烧肉", { category: "荤菜", tags: ["家常", "下饭"], ingredients: ["五花肉"] }),
+      item("r2", "炒青菜", { category: "素菜" }),
+    ]);
+    useRecipeFilterStore().filter.categoryIds = ["cat-r1"];
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="filter-summary"]').text()).toBe("📂 荤菜");
+    expect(names(wrapper)).toEqual(["红烧肉"]);
+
+    await wrapper.get('[data-test="filter-bar"]').trigger("click");
+
+    expect(mocks.push).toHaveBeenCalledWith("/recipe/filter");
+  });
+
+  it("点清除只清筛选，不进筛选页", async () => {
+    const wrapper = mountList([item("r1", "红烧肉", { category: "荤菜" })]);
+    useRecipeFilterStore().filter.categoryIds = ["cat-r1"];
+    await flushPromises();
+
+    await wrapper.get('[data-test="filter-clear"]').trigger("click");
+
+    expect(mocks.clear).toHaveBeenCalledTimes(1);
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it("有菜谱但被筛掉时是「没有符合条件的菜谱」，不是「还没有菜谱」", async () => {
+    const wrapper = mountList([item("r1", "红烧肉", { category: "荤菜" })]);
+    useRecipeFilterStore().filter.tagIds = ["tag-不存在"];
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("没有符合条件的菜谱");
+    expect(wrapper.text()).not.toContain("还没有菜谱");
+    // 筛选活跃但一条都没命中时，信息条必须还在，否则用户没有任何取消入口
+    expect(wrapper.find('[data-test="filter-bar"]').exists()).toBe(true);
+  });
+
+  it("点漏斗跳 /recipe/filter", async () => {
+    const wrapper = mountList([item("r1", "红烧肉")]);
+
+    await wrapper.get('[data-test="recipe-filter"]').trigger("click");
+
+    expect(mocks.push).toHaveBeenCalledWith("/recipe/filter");
   });
 });

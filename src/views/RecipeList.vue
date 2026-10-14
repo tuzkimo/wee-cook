@@ -1,13 +1,21 @@
 <script setup lang="ts">
-import { onMounted } from "vue";
+import { computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
-import { Plus } from "lucide-vue-next";
+import { Filter, Plus } from "lucide-vue-next";
 import AppHeader from "@/components/AppHeader.vue";
 import { useRecipeStore } from "@/stores/recipe";
+import { useRecipeFilterStore } from "@/stores/recipeFilter";
 import { imageSrc } from "@/services/imageStore";
+import { filterRecipes, filterSummary, isFilterActive } from "@/utils/recipeFilter";
 
 const router = useRouter();
 const store = useRecipeStore();
+const filterStore = useRecipeFilterStore();
+
+const visible = computed(() => filterRecipes(store.recipes, filterStore.filter));
+const summary = computed(() => filterSummary(filterStore.filter, store.recipes));
+// 按「筛选是否活跃」渲染整条，不按摘要文案：条件指向的菜谱被删光时摘要仍要有东西可点
+const active = computed(() => isFilterActive(filterStore.filter));
 
 onMounted(() => {
   void store.fetchAll();
@@ -20,6 +28,15 @@ onMounted(() => {
       <template #action>
         <button
           type="button"
+          data-test="recipe-filter"
+          aria-label="筛选"
+          class="flex h-8 w-8 items-center justify-center rounded-full hover:bg-gray-100"
+          @click="router.push('/recipe/filter')"
+        >
+          <Filter :size="20" class="text-text" />
+        </button>
+        <button
+          type="button"
           data-test="recipe-add"
           aria-label="新建菜谱"
           class="flex h-8 w-8 items-center justify-center rounded-full hover:bg-gray-100"
@@ -30,12 +47,49 @@ onMounted(() => {
       </template>
     </AppHeader>
 
+    <div class="shrink-0 px-4 pt-3">
+      <input
+        v-model="filterStore.filter.keyword"
+        data-test="recipe-search"
+        type="text"
+        placeholder="搜索菜名"
+        aria-label="搜索菜名"
+        class="w-full rounded-lg border border-gray-200 bg-surface px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
+      />
+    </div>
+
+    <div
+      v-if="active"
+      data-test="filter-bar"
+      class="flex shrink-0 items-center gap-2 overflow-x-auto border-b border-gray-100 bg-surface px-4 py-2"
+      @click="router.push('/recipe/filter')"
+    >
+      <span
+        data-test="filter-summary"
+        class="flex-1 whitespace-nowrap text-xs text-text-secondary"
+      >
+        {{ summary }}
+      </span>
+      <button
+        type="button"
+        data-test="filter-clear"
+        aria-label="清除筛选"
+        class="shrink-0 text-xs text-primary"
+        @click.stop="filterStore.clear()"
+      >
+        清除
+      </button>
+    </div>
+
     <div class="flex-1 min-h-0 overflow-auto px-4 py-3">
       <p v-if="store.recipes.length === 0" class="py-12 text-center text-text-secondary">
         还没有菜谱，点右上角加号记一道
       </p>
+      <p v-else-if="visible.length === 0" class="py-12 text-center text-text-secondary">
+        没有符合条件的菜谱
+      </p>
       <ul v-else class="flex flex-col gap-2.5">
-        <li v-for="item in store.recipes" :key="item.recipe.id">
+        <li v-for="item in visible" :key="item.recipe.id">
           <button
             type="button"
             data-test="recipe-card"
