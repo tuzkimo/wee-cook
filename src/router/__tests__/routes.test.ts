@@ -22,4 +22,12 @@ describe("路由表", () => {
       expect(route?.meta.hideTab, path).toBeUndefined();
     }
   });
+
+  it("有 /recipe/filter，而且不会被 /recipe/:id 抢走", () => {
+    const route = router.getRoutes().find((r) => r.path === "/recipe/filter");
+
+    expect(route).toBeDefined();
+    expect(route?.meta.hideTab).toBe(true);
+    expect(router.resolve("/recipe/filter").name).toBe("recipe-filter");
+  });
 });
