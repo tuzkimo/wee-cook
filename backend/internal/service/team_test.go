@@ -232,7 +232,9 @@ func TestJoinByInviteConsumesCodeOnlyOnSuccess(t *testing.T) {
 func TestListMembersRejectsNonMember(t *testing.T) {
 	fq := &fakeQuerier{rows: []pgx.Row{teamRow{vals: []any{false}}}} // isMember=false
 
-	_, err := (&TeamService{db: fq}).ListMembers(context.Background(), "user-1", "team-1")
+	// 用合法 UUID：非 UUID 会在解析时就被当成「不是成员」（见 TestListMembersRejectsNonUUIDTeamID），
+	// canReadTeam 就永远执行不到，这条越权防护用例会变成恒真的假阳性。
+	_, err := (&TeamService{db: fq}).ListMembers(context.Background(), "user-1", "3f2504e0-4f89-11d3-9a0c-0305e82c3301")
 	if !errors.Is(err, ErrNotTeamMember) {
 		t.Fatalf("非成员应返回 ErrNotTeamMember，got %v", err)
 	}
