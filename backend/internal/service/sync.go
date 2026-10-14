@@ -170,6 +170,8 @@ func (s *SyncService) mergeDict(ctx context.Context, tx dbQuerier, spec dictSpec
 
 // mergeRecipe 整条合并一条菜谱：父行 LWW + 三张子表整组替换（空数组即清空）。
 // 只有作者能改，越权写入静默跳过；LWW 比较取库里的 updated_at，不用服务器 now()。
+// team 校验放在任何读写之前：新建与更新两条路径都要过滤外来团队（spec §5 硬规则 1），
+// 若只放在更新路径上，用户能 INSERT 一条指向自己未加入团队的新菜谱、塞进别人团队。
 // remap 是同一批字典合并产出的「旧 id → 有效 id」：必须先重写所有引用再碰库，
 // 否则引用了被合并掉的 id 会撞外键、把整次同步回滚（spec §7.2 第 3 步）。
 // shortcut: 整条替换以「只有作者能改」为前提，将来允许协作编辑同一条菜谱时必须回到行级 LWW（spec §7.3）。
@@ -190,6 +192,11 @@ func (s *SyncService) mergeRecipe(ctx context.Context, tx dbQuerier, userID stri
 			unitID := remapID(*r.Ingredients[i].UnitID)
 			r.Ingredients[i].UnitID = &unitID
 		}
+	}
+
+	// 团队归属先于一切数据库动作：新建（ErrNoRows 分支）与更新两条路径都靠这条过滤外来 team（spec §5 硬规则 1）。
+	if r.TeamID != nil && !teamSet[*r.TeamID] {
+		return nil
 	}
 
 	var remoteOwner string
@@ -215,9 +222,6 @@ func (s *SyncService) mergeRecipe(ctx context.Context, tx dbQuerier, userID stri
 		return nil
 	}
 	if !r.UpdatedAt.After(remoteUpdatedAt) {
-		return nil
-	}
-	if r.TeamID != nil && !teamSet[*r.TeamID] {
 		return nil
 	}
 	if _, err := tx.Exec(ctx,

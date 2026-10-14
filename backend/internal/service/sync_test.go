@@ -316,6 +316,28 @@ func TestMergeRecipeSkipsForeignTeam(t *testing.T) {
 	}
 }
 
+// 新建菜谱也不能往别人团队里塞：库里没有该 id 且 team_id 不属于当前用户时整条跳过，
+// 父行与三张子行都不许 INSERT，也不报错（spec §5 硬规则 1，校验先于任何写库动作）。
+func TestMergeRecipeSkipsForeignTeamOnInsert(t *testing.T) {
+	now := time.Now().UTC()
+	team := "team-x"
+	q := newSyncQuerier(fakeRow{scanErr: pgx.ErrNoRows})
+
+	err := NewSyncService(nil).mergeRecipe(context.Background(), q, "user-1",
+		map[string]bool{"team-y": true}, nil,
+		model.Recipe{ID: "r-1", Name: "红烧肉", CategoryID: "c-1", TeamID: &team,
+			CreatedAt: now, UpdatedAt: now,
+			Steps:       []model.RecipeStep{{ID: "s-1", SortOrder: 1, Text: "切肉"}},
+			Ingredients: []model.RecipeIngredient{{ID: "ri-1", IngredientID: "i-1", SortOrder: 1}},
+			LabelIDs:    []string{"l-1"}})
+	if err != nil {
+		t.Fatalf("不属于该团队时跳过，不该报错：%v", err)
+	}
+	if len(q.execs) != 0 {
+		t.Fatalf("新建菜谱的 team_id 不在 teamSet 里就不该产生任何写入（父行与子行都不许 INSERT），got %+v", q.execs)
+	}
+}
+
 // 更新命中时三张子表整组替换：UPDATE 父行 → DELETE 全部子行 → 按 incoming 重插。
 func TestMergeRecipeReplacesChildrenWholesale(t *testing.T) {
 	remote := time.Now().UTC()
