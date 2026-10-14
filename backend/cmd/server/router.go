@@ -2,28 +2,34 @@
 package main
 
 import (
+	"net"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/go-chi/httprate"
 
 	"wee-cook/backend/internal/config"
+	"wee-cook/backend/internal/handler"
+	mw "wee-cook/backend/internal/middleware"
 )
 
 // handlers 汇总路由需要的 handler，避免 newRouter 的参数列表过长。
-// 此刻为空，后续任务往里加字段。
-type handlers struct{}
+type handlers struct {
+	auth *handler.AuthHandler
+}
 
 // newRouter 构造完整路由。**从 main 抽出来是为了让测试能直接断言中间件顺序**：
 // 测试若自己重建一个路由，验证的就是测试里的顺序而不是生产的顺序，
 // 那种测试永远是绿的、等于没测。
 func newRouter(cfg *config.Config, h handlers) http.Handler {
-	_ = h // 后续任务的 handler 从这里取；此刻结构体为空
 	r := chi.NewRouter()
 	// 仅在显式声明信任反向代理时启用 RealIP：它会用 X-Forwarded-For / X-Real-IP 改写
 	// r.RemoteAddr。若服务被直接访问（未走 Caddy 等反代），客户端可伪造该 header 让每次
-	// 请求换个 IP，从而绕过后续按 IP 的登录/注册/入组限流。默认不信任，按 socket peer 限流。
+	// 请求换个 IP，从而绕过下面按 IP 的登录/注册限流。默认不信任，按 socket peer 限流；
+	// 处于可信反代之后时设 TRUST_PROXY=true 才恢复按真实客户端 IP 限流。
 	if cfg.TrustProxy {
 		r.Use(middleware.RealIP)
 	}
@@ -44,7 +50,37 @@ func newRouter(cfg *config.Config, h handlers) http.Handler {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
 		})
+
+		// refresh 不限流：客户端静默续期高频，不参与暴力破解面
+		r.Post("/auth/refresh", h.auth.Refresh)
+
+		// 登录/注册按 IP 限流，防暴力破解。
+		// key 取自 r.RemoteAddr：启用 TRUST_PROXY 时由 middleware.RealIP 从 X-Forwarded-For 解析，
+		// 未启用时即 socket peer 地址（客户端无法伪造）。
+		r.Group(func(r chi.Router) {
+			r.Use(httprate.LimitBy(10, time.Minute, clientIPKey))
+			r.Post("/auth/login", h.auth.Login)
+			r.Post("/auth/register", h.auth.Register)
+		})
+
+		// protected
+		r.Group(func(r chi.Router) {
+			r.Use(mw.AuthMiddleware(cfg.JWTSecret))
+			r.Get("/me", h.auth.Me)
+			r.Put("/auth/profile", h.auth.UpdateProfile)
+		})
 	})
 
 	return r
+}
+
+// clientIPKey 从 r.RemoteAddr 提取限流 key。未启用 TRUST_PROXY 时，r.RemoteAddr 是
+// socket peer 地址（不可被客户端伪造），限流可信；启用后由 middleware.RealIP 改写为
+// X-Forwarded-For 解析值，仅应在服务确实位于可信反代之后时开启。
+func clientIPKey(r *http.Request) (string, error) {
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		ip = r.RemoteAddr
+	}
+	return httprate.CanonicalizeIP(ip), nil
 }

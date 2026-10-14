@@ -9,6 +9,8 @@ import (
 
 	"wee-cook/backend/internal/config"
 	"wee-cook/backend/internal/database"
+	"wee-cook/backend/internal/handler"
+	"wee-cook/backend/internal/service"
 )
 
 func main() {
@@ -34,9 +36,11 @@ func main() {
 	}
 	defer redisClient.Close()
 
+	authSvc := service.NewAuthService(pool, cfg.JWTSecret)
+
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
-		Handler:      newRouter(cfg, handlers{}),
+		Handler:      newRouter(cfg, handlers{auth: handler.NewAuthHandler(authSvc)}),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 60 * time.Second, // 图片下载的写超时放宽
 	}
