@@ -148,7 +148,9 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
         table: "ingredients",
         id: item.id,
         updatedAt: toIsoTimestamp(item.updated_at),
-        findDupSql: "SELECT id FROM ingredients WHERE name = ? LIMIT 1",
+        // 优先取活行：(deleted_at IS NULL) DESC 把活行排在前。若先取到软删行，只软删它
+        // 不会释放 name 的局部唯一索引，INSERT 会撞活行 → 同步永远卡死。
+        findDupSql: "SELECT id FROM ingredients WHERE name = ? ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
         findDupParams: [item.name],
         insertSql: "INSERT INTO ingredients (id,name,created_at,updated_at,deleted_at) VALUES (?,?,?,?,?)",
         insertParams: [item.id, item.name, toIsoTimestamp(item.created_at), toIsoTimestamp(item.updated_at), normDeleted(item.deleted_at)],
@@ -176,7 +178,7 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
         table: "units",
         id: item.id,
         updatedAt: toIsoTimestamp(item.updated_at),
-        findDupSql: "SELECT id FROM units WHERE name = ? LIMIT 1",
+        findDupSql: "SELECT id FROM units WHERE name = ? ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
         findDupParams: [item.name],
         insertSql: "INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES (?,?,?,?,?)",
         insertParams: [item.id, item.name, toIsoTimestamp(item.created_at), toIsoTimestamp(item.updated_at), normDeleted(item.deleted_at)],
@@ -205,7 +207,7 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
         id: item.id,
         updatedAt: toIsoTimestamp(item.updated_at),
         // 合并键是 (name, kind)：分类与标签不能并成一行（spec §7.4）。
-        findDupSql: "SELECT id FROM labels WHERE name = ? AND kind = ? LIMIT 1",
+        findDupSql: "SELECT id FROM labels WHERE name = ? AND kind = ? ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
         findDupParams: [item.name, item.kind],
         insertSql: "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES (?,?,?,?,?,?)",
         insertParams: [item.id, item.name, item.kind, toIsoTimestamp(item.created_at), toIsoTimestamp(item.updated_at), normDeleted(item.deleted_at)],

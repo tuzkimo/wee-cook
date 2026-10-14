@@ -277,6 +277,83 @@ describe("applyRemoteChanges", () => {
     expect(await db.select("SELECT name FROM units WHERE id = 'u1'")).toEqual([{ name: "新" }]);
   });
 
+  it("同名合并优先取活行：本地同时有软删同名行与活同名行时不撞唯一索引（回归）", async () => {
+    const { db } = await freshTestDb();
+    // 本地历史：先建了同名行并软删（旧），后来又重建了同名活行（新）。
+    await db.execute(
+      "INSERT INTO ingredients (id,name,created_at,updated_at,deleted_at) VALUES ('ing-gone','盐',?,?,?)",
+      [T0, T0, T0],
+    );
+    await db.execute(
+      "INSERT INTO ingredients (id,name,created_at,updated_at,deleted_at) VALUES ('ing-live','盐',?,?,NULL)",
+      [T0, T0],
+    );
+    await db.execute(
+      "INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES ('unit-gone','克',?,?,?)",
+      [T0, T0, T0],
+    );
+    await db.execute(
+      "INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES ('unit-live','克',?,?,NULL)",
+      [T0, T0],
+    );
+    await db.execute(
+      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('lab-gone','家常','category',?,?,?)",
+      [T0, T0, T0],
+    );
+    await db.execute(
+      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('lab-live','家常','category',?,?,NULL)",
+      [T0, T0],
+    );
+    await db.execute(
+      `INSERT INTO recipes (id,name,cover_path,category_id,created_at,updated_at,deleted_at)
+       VALUES ('r1','红烧肉',NULL,'lab-live',?,?,NULL)`,
+      [T0, T0],
+    );
+    await db.execute(
+      `INSERT INTO recipe_ingredients
+         (id,recipe_id,ingredient_id,amount,unit_id,sort_order,updated_at,deleted_at)
+       VALUES ('ri1','r1','ing-live',1,'unit-live',0,?,NULL)`,
+      [T0],
+    );
+
+    // 服务端按 spec §7.4 归并出第三个 UUID 的同名行下发。
+    await applyRemoteChanges(
+      remote({
+        ingredients: [{ id: "ing-remote", name: "盐", created_at: T0, updated_at: T1, deleted_at: null }],
+        units: [{ id: "unit-remote", name: "克", created_at: T0, updated_at: T1, deleted_at: null }],
+        labels: [
+          { id: "lab-remote", name: "家常", kind: "category", created_at: T0, updated_at: T1, deleted_at: null },
+        ],
+      }),
+      db,
+    );
+
+    // 只剩一条活行，且是服务端那个 id
+    expect(await db.select("SELECT id FROM ingredients WHERE deleted_at IS NULL")).toEqual([
+      { id: "ing-remote" },
+    ]);
+    expect(await db.select("SELECT id FROM units WHERE deleted_at IS NULL")).toEqual([
+      { id: "unit-remote" },
+    ]);
+    expect(await db.select("SELECT id FROM labels WHERE deleted_at IS NULL")).toEqual([
+      { id: "lab-remote" },
+    ]);
+    // 引用改指到新的活行
+    expect(
+      await db.select("SELECT ingredient_id, unit_id FROM recipe_ingredients WHERE id = 'ri1'"),
+    ).toEqual([{ ingredient_id: "ing-remote", unit_id: "unit-remote" }]);
+    expect(await db.select("SELECT category_id FROM recipes WHERE id = 'r1'")).toEqual([
+      { category_id: "lab-remote" },
+    ]);
+    // 本地那条软删的同名旧行仍是软删
+    expect(await db.select("SELECT deleted_at FROM ingredients WHERE id = 'ing-gone'")).toEqual([
+      { deleted_at: T0 },
+    ]);
+    expect(await db.select("SELECT deleted_at FROM labels WHERE id = 'lab-gone'")).toEqual([
+      { deleted_at: T0 },
+    ]);
+  });
+
   it("子行引用的食材/单位 id 在同一批 remote.recipes 里也要 remap", async () => {
     const { db } = await freshTestDb();
     await db.execute(
