@@ -249,4 +249,15 @@ describe("RecipeList", () => {
 
     expect(mocks.push).toHaveBeenCalledWith("/recipe/filter");
   });
+
+  it("搜索框在顶栏里，信息条紧贴顶栏（不在搜索框和列表之间）", async () => {
+    const wrapper = mountList([item("r1", "红烧肉", { category: "荤菜" })]);
+    useRecipeFilterStore().filter.categoryIds = ["cat-r1"];
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="recipe-search"]').element.closest("header")).not.toBeNull();
+    expect(wrapper.get('[data-test="filter-bar"]').element.previousElementSibling?.tagName).toBe(
+      "HEADER",
+    );
+  });
 });

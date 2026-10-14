@@ -25,6 +25,17 @@ onMounted(() => {
 <template>
   <div class="flex h-full flex-col">
     <AppHeader title="菜谱">
+      <!-- 标题槽让给搜索框：整条顶栏就是「搜索框 + 漏斗 + 加号」，不再多占一行 -->
+      <template #title>
+        <input
+          v-model="filterStore.filter.keyword"
+          data-test="recipe-search"
+          type="text"
+          placeholder="搜索菜名"
+          aria-label="搜索菜名"
+          class="mr-2 min-w-0 flex-1 rounded-lg bg-gray-100 px-3 py-2 text-sm text-text outline-none focus:bg-gray-50"
+        />
+      </template>
       <template #action>
         <button
           type="button"
@@ -46,17 +57,6 @@ onMounted(() => {
         </button>
       </template>
     </AppHeader>
-
-    <div class="shrink-0 px-4 pt-3">
-      <input
-        v-model="filterStore.filter.keyword"
-        data-test="recipe-search"
-        type="text"
-        placeholder="搜索菜名"
-        aria-label="搜索菜名"
-        class="w-full rounded-lg border border-gray-200 bg-surface px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
-      />
-    </div>
 
     <div
       v-if="active"
