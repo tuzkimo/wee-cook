@@ -20,6 +20,7 @@ import (
 type handlers struct {
 	auth *handler.AuthHandler
 	team *handler.TeamHandler
+	sync *handler.SyncHandler
 }
 
 // newRouter 构造完整路由。**从 main 抽出来是为了让测试能直接断言中间件顺序**：
@@ -74,6 +75,8 @@ func newRouter(cfg *config.Config, h handlers) http.Handler {
 			r.Post("/teams", h.team.Create)
 			r.Post("/teams/{id}/invite", h.team.Invite)
 			r.Get("/teams/{id}/members", h.team.Members)
+
+			r.Post("/sync", h.sync.Sync)
 
 			// 邀请码 6 位（10^6 空间）可被登录用户离线爆破入组，故 join 也限流。
 			// key 信任模型同上：取自 r.RemoteAddr，按 TRUST_PROXY 决定是否信任 X-Forwarded-For。

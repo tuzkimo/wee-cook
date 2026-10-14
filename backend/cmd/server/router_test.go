@@ -127,6 +127,33 @@ func TestTeamRoutesRequireAuth(t *testing.T) {
 	}
 }
 
+// fakeSyncService 记录调用次数：用来证明未鉴权请求在中间件就被拦下，没漏到 service。
+type fakeSyncService struct{ calls int }
+
+func (f *fakeSyncService) Sync(context.Context, string, model.SyncRequest) (*model.SyncResponse, error) {
+	f.calls++
+	return &model.SyncResponse{}, nil
+}
+
+// /sync 必须在受保护组内：无 token 时 401（404 说明路由没注册），
+// 且请求不能触达 service（鉴权在 handler 之前生效）。
+func TestSyncRequiresAuth(t *testing.T) {
+	svc := &fakeSyncService{}
+	cfg := &config.Config{JWTSecret: testJWTSecret}
+	r := newRouter(cfg, handlers{sync: handler.NewSyncHandler(svc)})
+
+	req := httptest.NewRequest("POST", "/api/v1/sync", bytes.NewBufferString(`{}`))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("无 token 访问 /sync: got %d, want 401", rec.Code)
+	}
+	if svc.calls != 0 {
+		t.Errorf("未通过鉴权的请求不应触达 service；calls=%d", svc.calls)
+	}
+}
+
 // /teams/join 是 6 位邀请码的爆破面：同一 IP 超过 10 次/分钟必须 429。
 func TestJoinRouteIsRateLimitedPerIP(t *testing.T) {
 	r := newTeamRouter()
