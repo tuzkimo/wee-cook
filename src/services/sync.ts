@@ -8,7 +8,7 @@ import { getDb, type Db } from "@/db";
 import { apiFetch, hasBaseUrl } from "./api";
 import { downloadMissingFiles, uploadPendingFiles, type FileRef } from "./syncFiles";
 import { useAuthStore } from "@/stores/auth";
-import type { Ingredient, Label, Unit } from "@/types";
+import type { Ingredient, Label, Recipe, Unit } from "@/types";
 
 /** 菜谱子表在协议里的形状：跟父菜谱整条走，不带各自的 updated_at / deleted_at（spec §7.3）。 */
 export interface RecipeStepPayload {
@@ -27,20 +27,10 @@ export interface RecipeIngredientPayload {
 }
 
 /**
- * 菜谱的完整同步形状。`owner_id` / `team_id` 声明在这里而不是 `src/types`（Task 5 才给 `Recipe`
- * 补这两列）：请求里 `owner_id` 服务端会丢弃并按登录用户赋值，响应里它才有意义；本类型是本任务
- * 与 Task 5/8 的共用契约。`category_id` / `label_ids` / `ingredients[]` 都指向字典 id。
+ * 菜谱的完整同步形状 = `Recipe` + 它的三份子行快照（spec §7.3）。
+ * 父行字段唯一来源是 `src/types` 的 `Recipe`，这里不再平行声明一份（两份字段不一致 = 静默丢字段）。
  */
-export interface RecipePayload {
-  id: string;
-  owner_id: string | null;
-  team_id: string | null;
-  name: string;
-  cover_path: string | null;
-  category_id: string;
-  created_at: string;
-  updated_at: string;
-  deleted_at: string | null;
+export interface RecipePayload extends Recipe {
   steps: RecipeStepPayload[];
   ingredients: RecipeIngredientPayload[];
   label_ids: string[];
@@ -535,19 +525,7 @@ async function doSync(): Promise<boolean> {
   return true;
 }
 
-interface RecipeRow {
-  id: string;
-  name: string;
-  cover_path: string | null;
-  category_id: string;
-  created_at: string;
-  updated_at: string;
-  deleted_at: string | null;
-  owner_id: string | null;
-  team_id: string | null;
-}
-
-async function buildRecipePayload(db: Db, row: RecipeRow): Promise<RecipePayload> {
+async function buildRecipePayload(db: Db, row: Recipe): Promise<RecipePayload> {
   const steps = await db.select<{
     id: string;
     sort_order: number;
@@ -603,7 +581,7 @@ export async function collectPushPayload(): Promise<SyncPayload> {
   const units = await db.select<Unit[]>("SELECT * FROM units");
   const labels = await db.select<Label[]>("SELECT * FROM labels");
   const recipeRows = uid
-    ? await db.select<RecipeRow[]>("SELECT * FROM recipes WHERE owner_id = ?", [uid])
+    ? await db.select<Recipe[]>("SELECT * FROM recipes WHERE owner_id = ?", [uid])
     : [];
 
   return {
@@ -628,4 +606,13 @@ export async function collectPushPayload(): Promise<SyncPayload> {
     recipes: await Promise.all(recipeRows.map((row) => buildRecipePayload(db, row))),
     files: [],
   };
+}
+
+/** 按 id 组装一条菜谱的同步形状（写完立刻入队用）；行不存在返回 null。 */
+export async function recipePayloadFor(
+  id: string,
+  db: Db = getDb(),
+): Promise<RecipePayload | null> {
+  const rows = await db.select<Recipe[]>("SELECT * FROM recipes WHERE id = ?", [id]);
+  return rows.length === 0 ? null : buildRecipePayload(db, rows[0]);
 }

@@ -1,5 +1,6 @@
 import { ref, type MaybeRefOrGetter, type Ref } from "vue";
 import { getDb } from "@/db";
+import { enqueueSync } from "@/services/sync";
 import type { WithUsage } from "@/types";
 
 export interface RefRow {
@@ -75,6 +76,7 @@ export function createRefStore(opts: { table: RefTable; label: string }): OwnedR
     );
     const item: WithUsage<RefRow> = { ...row, usage_count: 0 };
     items.value.push(item);
+    await enqueueRow(row.id);
     return item;
   }
 
@@ -95,6 +97,7 @@ export function createRefStore(opts: { table: RefTable; label: string }): OwnedR
       existing.name = trimmed;
       existing.updated_at = now;
     }
+    await enqueueRow(id);
   }
 
   async function remove(id: string): Promise<void> {
@@ -111,6 +114,19 @@ export function createRefStore(opts: { table: RefTable; label: string }): OwnedR
       id,
     ]);
     items.value = items.value.filter((item) => item.id !== id);
+    // 软删行也要入队（带墓碑），否则服务端永远不知道它被删了
+    await enqueueRow(id);
+  }
+
+  /** 写入后把该行入队（未登录 / 未配地址时 enqueueSync 自己早退）。 */
+  async function enqueueRow(id: string): Promise<void> {
+    const rows = await getDb().select<RefRow[]>(
+      `SELECT id, name, created_at, updated_at, deleted_at FROM ${table} WHERE id = ?`,
+      [id],
+    );
+    if (rows.length === 0) return;
+    if (table === "ingredients") enqueueSync({ ingredients: [rows[0]] });
+    else enqueueSync({ units: [rows[0]] });
   }
 
   async function assertNameFree(name: string, exceptId?: string): Promise<void> {

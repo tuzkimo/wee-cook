@@ -1,7 +1,8 @@
 import { defineStore } from "pinia";
 import { ref, type Ref } from "vue";
 import { getDb } from "@/db";
-import type { LabelKind, LabelWithUsage, WithUsage } from "@/types";
+import { enqueueSync } from "@/services/sync";
+import type { Label, LabelKind, LabelWithUsage, WithUsage } from "@/types";
 import type { OwnedRefStore, RefRow } from "@/stores/refStore";
 
 export interface LabelStore {
@@ -73,6 +74,7 @@ export const useLabelStore = defineStore("label", (): LabelStore => {
     }
     labels.value.push(row);
     sortLabels();
+    await enqueueLabel(row.id);
     return row;
   }
 
@@ -99,6 +101,7 @@ export const useLabelStore = defineStore("label", (): LabelStore => {
       existing.updated_at = now;
       sortLabels();
     }
+    await enqueueLabel(id);
   }
 
   async function remove(id: string): Promise<void> {
@@ -115,6 +118,14 @@ export const useLabelStore = defineStore("label", (): LabelStore => {
       id,
     ]);
     labels.value = labels.value.filter((label) => label.id !== id);
+    // 软删行也要入队（带墓碑），否则服务端永远不知道它被删了
+    await enqueueLabel(id);
+  }
+
+  /** 写入后把该行入队（未登录 / 未配地址时 enqueueSync 自己早退）。 */
+  async function enqueueLabel(id: string): Promise<void> {
+    const rows = await getDb().select<Label[]>("SELECT * FROM labels WHERE id = ?", [id]);
+    if (rows.length > 0) enqueueSync({ labels: [rows[0]] });
   }
 
   function asRefStore(kind: LabelKind): OwnedRefStore {

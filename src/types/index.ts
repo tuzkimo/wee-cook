@@ -8,6 +8,16 @@ export interface Recipe {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  /** 归属账号（服务端 user id）。NULL = 本机自建 / 尚未认领（spec §9.1）。 */
+  owner_id: string | null;
+  /** 归属家庭（team id）。NULL = 私人菜谱。 */
+  team_id: string | null;
+}
+
+/** 菜谱本切换器的一项：`id` 为 NULL 表示「我的菜谱」。 */
+export interface BookRef {
+  id: string | null;
+  name: string;
 }
 
 export interface RecipeStep {

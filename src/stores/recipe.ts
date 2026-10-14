@@ -1,6 +1,10 @@
 import { defineStore } from "pinia";
 import { ref, type Ref } from "vue";
 import { getDb } from "@/db";
+import { enqueueSync, recipePayloadFor } from "@/services/sync";
+import { useAuthStore } from "@/stores/auth";
+import { useBookStore } from "@/stores/book";
+import { useTeamStore } from "@/stores/team";
 import type {
   IngredientRef,
   Label,
@@ -23,14 +27,52 @@ export interface RecipeStore {
 
 type LabelLink = Label & { recipe_id: string };
 
+/**
+ * 当前可见的菜谱范围（spec §9.1）：
+ *   未登录 → 本地全部（不过滤），但可编辑范围另算（见 canEdit）
+ *   已登录 → 我的私人菜谱 ∪ 我所在团队的菜谱
+ * 返回的 sql 是一段可直接接在 WHERE 后面的条件（调方自行拼），params 顺序与其中的 ? 对应。
+ */
+export async function visibleRecipeFilter(): Promise<{ sql: string; params: unknown[] }> {
+  const uid = useAuthStore().serverUserId;
+  // 未登录刻意不过滤：认领后 owner_id 已被填成某个账号，过滤掉会让用户以为数据丢了
+  if (!uid) return { sql: "1=1", params: [] };
+
+  const params: unknown[] = [uid];
+  const ors = ["(owner_id = ? AND team_id IS NULL)"];
+  const teamIds = useTeamStore().teams.map((item) => item.id);
+  if (teamIds.length > 0) {
+    ors.push(`team_id IN (${teamIds.map(() => "?").join(", ")})`);
+    params.push(...teamIds);
+  }
+  return { sql: ors.join(" OR "), params };
+}
+
+/** 能不能改 / 删：未登录只有本机未认领的菜谱，登录后只有自己名下的（spec §9.1）。 */
+export function canEdit(recipe: Recipe): boolean {
+  const uid = useAuthStore().serverUserId;
+  return uid === null ? recipe.owner_id === null : recipe.owner_id === uid;
+}
+
 export const useRecipeStore = defineStore("recipe", (): RecipeStore => {
   const recipes = ref<RecipeListItem[]>([]);
 
   async function fetchAll(): Promise<void> {
     const db = getDb();
+    const visibility = await visibleRecipeFilter();
+    // 选了家庭就再窄一层；切菜谱本只动这里，数据一行不改
+    const book = useBookStore().current;
+    const conditions = ["deleted_at IS NULL", `(${visibility.sql})`];
+    const params = [...visibility.params];
+    if (book !== null) {
+      conditions.push("team_id = ?");
+      params.push(book);
+    }
     // 分类与标签一次查完，列表每行不用再回一次库
     const rows = await db.select<Recipe[]>(
-      "SELECT * FROM recipes WHERE deleted_at IS NULL ORDER BY updated_at DESC, id ASC",
+      `SELECT * FROM recipes WHERE ${conditions.join(" AND ")}
+       ORDER BY updated_at DESC, id ASC`,
+      params,
     );
     const categories = await db.select<Label[]>("SELECT * FROM labels");
     const links = await db.select<LabelLink[]>(
@@ -80,9 +122,11 @@ export const useRecipeStore = defineStore("recipe", (): RecipeStore => {
 
   async function getDetail(id: string): Promise<RecipeDetail> {
     const db = getDb();
+    // 不可见的菜谱按「不存在」处理：详情只能从列表进来，越不到可见范围之外
+    const visibility = await visibleRecipeFilter();
     const rows = await db.select<Recipe[]>(
-      "SELECT * FROM recipes WHERE id = ? AND deleted_at IS NULL",
-      [id],
+      `SELECT * FROM recipes WHERE id = ? AND deleted_at IS NULL AND (${visibility.sql})`,
+      [id, ...visibility.params],
     );
     const recipe = rows[0];
     if (!recipe) throw new Error("菜谱不存在");
@@ -120,16 +164,18 @@ export const useRecipeStore = defineStore("recipe", (): RecipeStore => {
     const name = requireNameAndCategory(input);
     const now = new Date().toISOString();
     const id = crypto.randomUUID();
+    const { owner_id, team_id } = currentOwnership();
 
     await getDb().execute(
-      `INSERT INTO recipes (id, name, cover_path, category_id, created_at, updated_at, deleted_at)
-       VALUES (?, ?, ?, ?, ?, ?, NULL)`,
-      [id, name, input.cover_path, input.category_id, now, now],
+      `INSERT INTO recipes (id, name, cover_path, category_id, created_at, updated_at, deleted_at, owner_id, team_id)
+       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+      [id, name, input.cover_path, input.category_id, now, now, owner_id, team_id],
     );
     await insertSteps(id, input.steps, now);
     await insertIngredients(id, input.ingredients, now);
     await syncLabels(id, input.tag_ids);
     await bumpParent(id, input, name, now);
+    await enqueueRecipe(id);
     return id;
   }
 
@@ -147,6 +193,8 @@ export const useRecipeStore = defineStore("recipe", (): RecipeStore => {
     for (const step of before.steps) await softDelete("recipe_steps", step.id, now);
     for (const line of before.ingredients) await softDelete("recipe_ingredients", line.id, now);
     await bumpParent(id, input, name, now);
+    // 归属列不在这里动：改动不会把菜谱挪到别的菜谱本（spec §9.1）
+    await enqueueRecipe(id);
   }
 
   async function remove(id: string): Promise<void> {
@@ -157,6 +205,21 @@ export const useRecipeStore = defineStore("recipe", (): RecipeStore => {
       id,
     ]);
     recipes.value = recipes.value.filter((item) => item.recipe.id !== id);
+    // 删除是墓碑：入队的是同一份完整形状，只有 deleted_at 非空，服务端才删得掉
+    await enqueueRecipe(id);
+  }
+
+  /** 写入归属：当前登录用户 + 当前菜谱本；未登录两者都是 NULL（spec §9.1）。 */
+  function currentOwnership(): { owner_id: string | null; team_id: string | null } {
+    const uid = useAuthStore().serverUserId;
+    // team_id 只在登录后才认：退登后 book.current 可能还留着上个账号的选择
+    return { owner_id: uid, team_id: uid === null ? null : useBookStore().current };
+  }
+
+  /** 写入后立刻把该条完整形状入队（未登录 / 未配地址时 enqueueSync 自己早退）。 */
+  async function enqueueRecipe(id: string): Promise<void> {
+    const payload = await recipePayloadFor(id);
+    if (payload) enqueueSync({ recipes: [payload] });
   }
 
   /** 只校验菜名与分类（裁决 R6），在任何写入之前。 */

@@ -3,6 +3,8 @@ import { computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { Filter, Plus } from "lucide-vue-next";
 import AppHeader from "@/components/AppHeader.vue";
+import { useAuthStore } from "@/stores/auth";
+import { useBookStore } from "@/stores/book";
 import { useRecipeStore } from "@/stores/recipe";
 import { useRecipeFilterStore } from "@/stores/recipeFilter";
 import { imageSrc } from "@/services/imageStore";
@@ -11,15 +13,24 @@ import { filterRecipes, filterSummary, isFilterActive } from "@/utils/recipeFilt
 const router = useRouter();
 const store = useRecipeStore();
 const filterStore = useRecipeFilterStore();
+const auth = useAuthStore();
+const book = useBookStore();
 
 const visible = computed(() => filterRecipes(store.recipes, filterStore.filter));
 const summary = computed(() => filterSummary(filterStore.filter, store.recipes));
 // 按「筛选是否活跃」渲染整条，不按摘要文案：条件指向的菜谱被删光时摘要仍要有东西可点
 const active = computed(() => isFilterActive(filterStore.filter));
 
-onMounted(() => {
-  void store.fetchAll();
+onMounted(async () => {
+  // 先读回上次选中的菜谱本再取数，否则会先用错误的范围画一次列表
+  await book.restore();
+  await store.fetchAll();
 });
+
+async function pickBook(id: string | null): Promise<void> {
+  await book.setBook(id);
+  await store.fetchAll();
+}
 </script>
 
 <template>
@@ -57,6 +68,29 @@ onMounted(() => {
         </button>
       </template>
     </AppHeader>
+
+    <!-- 菜谱本切换：登录后才有「我的菜谱」以外的本子可切，未登录不显示这一排 -->
+    <div
+      v-if="auth.isOnline"
+      data-test="book-bar"
+      class="flex shrink-0 items-center gap-2 overflow-x-auto border-b border-gray-100 bg-surface px-4 py-2"
+    >
+      <button
+        v-for="option in book.options"
+        :key="option.id ?? 'mine'"
+        type="button"
+        data-test="book-option"
+        class="shrink-0 rounded-full px-3 py-1 text-xs"
+        :class="
+          option.id === book.current
+            ? 'bg-primary text-white'
+            : 'bg-gray-100 text-text-secondary'
+        "
+        @click="pickBook(option.id)"
+      >
+        {{ option.name }}
+      </button>
+    </div>
 
     <div
       v-if="active"

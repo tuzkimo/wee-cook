@@ -8,7 +8,7 @@ import { Pencil, Trash2 } from "lucide-vue-next";
 import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import { imageSrc } from "@/services/imageStore";
-import { useRecipeStore } from "@/stores/recipe";
+import { canEdit, useRecipeStore } from "@/stores/recipe";
 import type { RecipeDetail } from "@/types";
 import { amountText } from "@/utils/amount";
 
@@ -70,6 +70,7 @@ async function confirmDelete(): Promise<void> {
         </template>
         <template #action>
           <button
+            v-if="canEdit(detail.recipe)"
             type="button"
             data-test="edit"
             aria-label="编辑"
@@ -79,6 +80,7 @@ async function confirmDelete(): Promise<void> {
             <Pencil :size="18" class="text-text-secondary" />
           </button>
           <button
+            v-if="canEdit(detail.recipe)"
             type="button"
             data-test="delete"
             aria-label="删除"

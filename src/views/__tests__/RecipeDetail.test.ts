@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createPinia, setActivePinia } from "pinia";
 import { DOMWrapper, flushPromises, mount, type VueWrapper } from "@vue/test-utils";
+import { useAuthStore } from "@/stores/auth";
 import type {
   Label,
   LabelKind,
@@ -25,16 +27,21 @@ vi.mock("vue-router", () => ({
   useRoute: () => ({ params: mocks.routeParams }),
 }));
 
-vi.mock("@/stores/recipe", () => ({
-  useRecipeStore: () => ({
-    recipes: [],
-    fetchAll: vi.fn(async () => {}),
-    getDetail: mocks.getDetail,
-    create: vi.fn(async () => ""),
-    update: vi.fn(async () => {}),
-    remove: mocks.remove,
-  }),
-}));
+vi.mock("@/stores/recipe", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/stores/recipe")>();
+  return {
+    // canEdit 用真身（它读 auth store）：两个权限用例验的是 v-if 接线 + 真判据，不是桩
+    ...actual,
+    useRecipeStore: () => ({
+      recipes: [],
+      fetchAll: vi.fn(async () => {}),
+      getDetail: mocks.getDetail,
+      create: vi.fn(async () => ""),
+      update: vi.fn(async () => {}),
+      remove: mocks.remove,
+    }),
+  };
+});
 
 vi.mock("@/services/imageStore", () => ({
   imageSrc: (name: string) => `asset://localhost/images/${name}`,
@@ -88,6 +95,8 @@ function detail(): RecipeDetailData {
       created_at: NOW,
       updated_at: NOW,
       deleted_at: null,
+      owner_id: null,
+      team_id: null,
     },
     category: label("c1", "荤菜", "category"),
     tags: [label("t1", "家常", "tag"), label("t2", "下饭", "tag")],
@@ -290,5 +299,40 @@ describe("RecipeDetail", () => {
     // 菜名必须落在共享顶栏（和编辑/删除图标同一行）——旧页面自绘的 header 没有 min-h-14
     const header = name.element.closest("header");
     expect(header?.classList.contains("min-h-14")).toBe(true);
+  });
+
+  it("别人的菜谱不渲染编辑与删除按钮", async () => {
+    mocks.getDetail.mockResolvedValue({
+      ...detail(),
+      recipe: { ...detail().recipe, owner_id: "other" },
+    });
+
+    const wrapper = await page();
+
+    // 页面照常显示内容，只是没有可点的按钮（不是灰按钮）
+    expect(wrapper.get('[data-test="detail-name"]').text()).toBe("红烧肉");
+    expect(wrapper.find('[data-test="edit"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="delete"]').exists()).toBe(false);
+  });
+
+  it("自己的菜谱渲染编辑与删除按钮", async () => {
+    setActivePinia(createPinia());
+    useAuthStore().serverUser = {
+      id: "me",
+      username: "me",
+      nickname: "我",
+      avatar_url: null,
+      created_at: NOW,
+      updated_at: NOW,
+    };
+    mocks.getDetail.mockResolvedValue({
+      ...detail(),
+      recipe: { ...detail().recipe, owner_id: "me" },
+    });
+
+    const wrapper = await page();
+
+    expect(wrapper.find('[data-test="edit"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="delete"]').exists()).toBe(true);
   });
 });
