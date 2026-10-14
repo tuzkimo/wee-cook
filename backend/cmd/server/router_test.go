@@ -137,6 +137,9 @@ func (f *fakeSyncService) Sync(context.Context, string, model.SyncRequest) (*mod
 
 // /sync 必须在受保护组内：无 token 时 401（404 说明路由没注册），
 // 且请求不能触达 service（鉴权在 handler 之前生效）。
+//
+// 只断状态码不够：SyncHandler 自己也会在 userID 为空时返回同形状的 401，
+// 所以路由挪出受保护组后该用例依然全绿。必须断响应体来自 AuthMiddleware。
 func TestSyncRequiresAuth(t *testing.T) {
 	svc := &fakeSyncService{}
 	cfg := &config.Config{JWTSecret: testJWTSecret}
@@ -148,6 +151,9 @@ func TestSyncRequiresAuth(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("无 token 访问 /sync: got %d, want 401", rec.Code)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("missing or invalid Authorization header")) {
+		t.Errorf("401 应来自 AuthMiddleware（证明 /sync 在受保护组内）；实际: %s", rec.Body.String())
 	}
 	if svc.calls != 0 {
 		t.Errorf("未通过鉴权的请求不应触达 service；calls=%d", svc.calls)
