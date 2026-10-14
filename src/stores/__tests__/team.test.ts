@@ -101,6 +101,19 @@ describe("teamStore", () => {
     expect(store.isMemberOf("t9").value).toBe(true);
   });
 
+  it("新建团队后同样清空同步游标（spec §9.4）", async () => {
+    loginAs("u1");
+    setLastSyncedAtFor("u1", "128");
+    stubFetch(() => res(201, { team: team({ id: "t9", name: "亲家", created_by: "u1" }) }));
+    const store = useTeamStore();
+
+    await store.create("亲家");
+
+    expect(getLastSyncedAtFor("u1")).toBeNull();
+    // create 不触发全量重拉（与 join 的差别）：游标清了，下次同步自然全量
+    expect(performSync).not.toHaveBeenCalled();
+  });
+
   it("加入成功后清空同步游标（否则拉不到加入前的存量菜谱）", async () => {
     loginAs("u1");
     setLastSyncedAtFor("u1", "128");

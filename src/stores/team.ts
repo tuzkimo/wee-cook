@@ -7,6 +7,8 @@
 //   - `POST /api/v1/teams/{id}/invite`  → `{"invite_code":"...","expires_in":86400}`
 //   - `POST /api/v1/teams/join`         body `{"invite_code":"..."}` → `{"team":{...}}`
 //   - `GET  /api/v1/teams/{id}/members` → **裸数组** `[{user_id,username,nickname,avatar_url,role}]`
+// 另：spec §9.4 —— **create 与 join 成功后都要清当前 uid 的同步游标**（少清一个就拉不到
+// 该团队里 sync_seq 早于本地游标的存量菜谱）；两者都清，只有 join 额外触发一次全量重拉。
 import { computed, ref, type ComputedRef } from "vue";
 import { defineStore } from "pinia";
 import { apiFetch } from "@/services/api";
@@ -71,6 +73,8 @@ export const useTeamStore = defineStore("team", () => {
     }
     if (!res.ok) throw new Error(res.error);
     adopt(res.data.team);
+    // spec §9.4：新团队里已有的菜谱不在本地游标之后，清游标下次同步才全量拉得到。
+    clearCursor(auth.serverUserId);
     return res.data.team;
   }
 
