@@ -1,6 +1,7 @@
 # backend/Dockerfile
 FROM golang:1.25-alpine AS builder
-ENV GOPROXY=https://goproxy.cn,direct
+ARG GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY=${GOPROXY}
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download

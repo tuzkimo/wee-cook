@@ -105,14 +105,14 @@ docker compose up -d --build
 | `POSTGRES_DB` | 否 | `wee-cook` | 数据库名 |
 | `CORS_ALLOWED_ORIGINS` | 否 | `http://tauri.localhost` | 允许的来源，逗号分隔，需含 scheme |
 | `TRUST_PROXY` | 否 | `false` | 是否信任反代转发的 `X-Forwarded-For` |
-| `PORT` | 否 | `8080` | API 监听端口（一般不动） |
-| `MAX_FILE_BYTES` | 否 | `5242880` | 单张图片大小上限（5MB） |
+
+> 监听端口固定 `8080`（compose 端口映射写死）；单张图片上限固定 5MB。本表只列 compose 真正会透传给容器的变量。
 
 > **限流信任模型**：登录/注册按 IP 限流 10 次/分钟。`TRUST_PROXY=false`（默认）时取 socket peer 地址，客户端无法伪造；仅当 API 位于可信反向代理之后时设 `true`，否则攻击者可伪造 `X-Forwarded-For` 绕过限流。
 
 ## App 对接
 
-App「我的」页 → 在线同步 → 填入 API 地址：
+客户端同步功能就绪后，在 App「我的」页 → 在线同步里填入 API 地址（该入口当前尚未实现）：
 
 ```
 http://<服务器IP>:8080/api/v1
@@ -162,6 +162,14 @@ docker run --rm -v wee-cook_files:/data -v "$PWD":/backup alpine tar czf /backup
 ```
 
 以上命令假设 `.env` 使用默认的 `POSTGRES_USER=wee`、`POSTGRES_DB=wee-cook`；若你改过这两个值，请对应替换命令中的 `-U wee` 与库名。
+
+图片卷名是 **`<compose 项目名>_files`**，项目名默认取自 `compose.yml` 所在目录名（目录叫 `recipes` 时卷名就是 `recipes_files`）。写错卷名不会报错——`docker run -v` 会**新建一个空卷**并成功打包出空归档。执行前先确认真实卷名：
+
+```bash
+docker volume ls | grep files
+```
+
+确认后把上面命令里的卷名换成它（例如 `-v recipes_files:/data`）。
 
 ## 数据与隐私
 
