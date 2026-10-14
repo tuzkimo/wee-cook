@@ -4,6 +4,7 @@ import {
   authTokenReady,
   baseUrlReady,
   clearTokens,
+  fetchWithAuth,
   getBaseUrl,
   hasBaseUrl,
   refreshSession,
@@ -87,6 +88,29 @@ describe("apiFetch", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe("http://x:8080/api/v1/me");
+    expect(headerOf(init, "Authorization")).toBe("Bearer access-1");
+  });
+
+  it("fetchWithAuth 返回原始响应：带 Authorization 且不解析 body（二进制通道用）", async () => {
+    setBaseUrl("http://x:8080");
+    setTokens("u1", "access-1", "refresh-1");
+    const bytes = new Uint8Array([1, 2, 3]);
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({
+      ok: true,
+      status: 200,
+      arrayBuffer: async () => bytes.buffer,
+      json: async () => {
+        throw new Error("二进制响应不该被 JSON 解析");
+      },
+    }) as unknown as Response);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await fetchWithAuth("/api/v1/files/x.jpg");
+
+    expect(result.status).toBe(200);
+    expect(new Uint8Array(await result.arrayBuffer())).toEqual(bytes);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("http://x:8080/api/v1/files/x.jpg");
     expect(headerOf(init, "Authorization")).toBe("Bearer access-1");
   });
 

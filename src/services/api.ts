@@ -165,13 +165,13 @@ export type ApiResult<T> =
   | { ok: false; status: number; error: string }
 
 /**
- * 带凭据请求。**未配置地址时抛错**（不发请求）；**拿不到 HTTP 响应**（超时 / 断网）同样抛错。
- * 服务端答了话就一定返回 `ApiResult`，500 也不抛。
+ * 带凭据请求的**原始响应**：默认头 + Authorization + 401 单飞刷新重试一次，**不解析 body**。
  *
- * 401 时（且手上有 refresh token）先单飞刷新一次再重试**一次**；重试用的是 `fetchWithTimeout`
- * 而不是递归调 `apiFetch`，否则 401 会无限套娃。
+ * 图片通道（spec §8）走裸二进制，需要它：`GET /api/v1/files/{name}` 的响应体就是 JPEG 字节，
+ * 而 `apiFetch` 末尾的 `res.json()` 会把 body 读空，二进制就拿不回来了。这两个端点同样是受保护的
+ * （spec §10.2），不带头会 401 —— 所以不能退回裸 `fetchWithTimeout`。
  */
-export async function apiFetch<T = unknown>(path: string, init: RequestInit = {}): Promise<ApiResult<T>> {
+export async function fetchWithAuth(path: string, init: RequestInit = {}): Promise<Response> {
   const url = `${getBaseUrl()}${path}`
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -185,6 +185,20 @@ export async function apiFetch<T = unknown>(path: string, init: RequestInit = {}
     headers["Authorization"] = `Bearer ${accessToken}`
     res = await fetchWithTimeout(url, { ...init, headers })
   }
+
+  return res
+}
+
+/**
+ * 带凭据请求。**未配置地址时抛错**（不发请求）；**拿不到 HTTP 响应**（超时 / 断网）同样抛错。
+ * 服务端答了话就一定返回 `ApiResult`，500 也不抛。
+ *
+ * 401 时（且手上有 refresh token）先单飞刷新一次再重试**一次**；重试用的是 `fetchWithTimeout`
+ * 而不是递归调 `apiFetch`，否则 401 会无限套娃。
+ */
+export async function apiFetch<T = unknown>(path: string, init: RequestInit = {}): Promise<ApiResult<T>> {
+  // 带凭据与 401 刷新走 fetchWithAuth；差别只在下面多一步解析 JSON
+  const res = await fetchWithAuth(path, init)
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
