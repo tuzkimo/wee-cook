@@ -102,16 +102,27 @@ type MeResponse struct {
 	User model.User `json:"user"`
 }
 
-func (s *AuthService) GetMe(ctx context.Context, userID string) (*MeResponse, error) {
+// getUserByID 是 GetMe / Refresh / UpdateProfile 共用的用户查询。
+// 找不到时原样返回 pgx.ErrNoRows（包一层 %w 后 errors.Is 仍可判断），
+// 由调用方决定如何映射（如 Refresh 映射为 ErrUserNotFound）。
+func getUserByID(ctx context.Context, q dbQuerier, userID string) (*model.User, error) {
 	var user model.User
-	err := s.db.QueryRow(ctx,
+	err := q.QueryRow(ctx,
 		`SELECT id, username, nickname, avatar_url, created_at, updated_at FROM users WHERE id = $1`,
 		userID,
 	).Scan(&user.ID, &user.Username, &user.Nickname, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("query user: %w", err)
 	}
-	return &MeResponse{User: user}, nil
+	return &user, nil
+}
+
+func (s *AuthService) GetMe(ctx context.Context, userID string) (*MeResponse, error) {
+	user, err := getUserByID(ctx, s.db, userID)
+	if err != nil {
+		return nil, err
+	}
+	return &MeResponse{User: *user}, nil
 }
 
 func (s *AuthService) Login(ctx context.Context, req model.LoginRequest) (*model.AuthResponse, error) {
@@ -170,16 +181,12 @@ func (s *AuthService) Refresh(ctx context.Context, req model.RefreshRequest) (*m
 		return nil, ErrInvalidToken
 	}
 
-	var user model.User
-	err = s.db.QueryRow(ctx,
-		`SELECT id, username, nickname, avatar_url, created_at, updated_at
-		 FROM users WHERE id = $1`, userID,
-	).Scan(&user.ID, &user.Username, &user.Nickname, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
+	user, err := getUserByID(ctx, s.db, userID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrUserNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("query user: %w", err)
+		return nil, err
 	}
 
 	accessToken, refreshToken, err := s.generateTokens(userID)
@@ -188,7 +195,7 @@ func (s *AuthService) Refresh(ctx context.Context, req model.RefreshRequest) (*m
 	}
 
 	return &model.AuthResponse{
-		User:         user,
+		User:         *user,
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 	}, nil
@@ -210,15 +217,7 @@ func (s *AuthService) UpdateProfile(ctx context.Context, userID string, req mode
 		}
 	}
 
-	var user model.User
-	err := s.db.QueryRow(ctx,
-		`SELECT id, username, nickname, avatar_url, created_at, updated_at FROM users WHERE id = $1`,
-		userID,
-	).Scan(&user.ID, &user.Username, &user.Nickname, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
-	if err != nil {
-		return nil, fmt.Errorf("query user: %w", err)
-	}
-	return &user, nil
+	return getUserByID(ctx, s.db, userID)
 }
 
 func (s *AuthService) generateTokens(userID string) (string, string, error) {

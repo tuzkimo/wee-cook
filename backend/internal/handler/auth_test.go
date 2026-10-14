@@ -129,8 +129,10 @@ func TestRegisterHandler_UsernameTooLong(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /auth/register", h.Register)
 
+	// 51 字符 = users 表 VARCHAR(50) 上限 + 1，必须在进入 INSERT 前拦成 400，
+	// 而不是撞 SQLSTATE 22001 变成 500。
 	body, _ := json.Marshal(map[string]string{
-		"username": strings.Repeat("a", 101),
+		"username": strings.Repeat("a", 51),
 		"password": "secret",
 	})
 	req := httptest.NewRequest("POST", "/auth/register", bytes.NewBuffer(body))
@@ -151,9 +153,47 @@ func TestRegisterHandler_NicknameTooLong(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{
 		"username": "ok",
 		"password": "secret",
-		"nickname": strings.Repeat("n", 101),
+		"nickname": strings.Repeat("n", 51),
 	})
 	req := httptest.NewRequest("POST", "/auth/register", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", rec.Code)
+	}
+}
+
+// 边界按 rune 计：50 字符放行；26 个汉字（78 字节）也必须放行，
+// len() 数字节会把后者误判超长。
+func TestRegisterHandler_NameAtRuneLimitAccepted(t *testing.T) {
+	h := &AuthHandler{svc: fakeAuthService{}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /auth/register", h.Register)
+
+	body, _ := json.Marshal(map[string]string{
+		"username": strings.Repeat("a", 50),
+		"password": "secret",
+		"nickname": strings.Repeat("汉", 26),
+	})
+	req := httptest.NewRequest("POST", "/auth/register", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Errorf("expected 201, got %d", rec.Code)
+	}
+}
+
+func TestUpdateProfileHandler_NicknameTooLong(t *testing.T) {
+	h := &AuthHandler{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /auth/profile", h.UpdateProfile)
+
+	body, _ := json.Marshal(map[string]string{"nickname": strings.Repeat("n", 51)})
+	req := httptest.NewRequest("PUT", "/auth/profile", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)

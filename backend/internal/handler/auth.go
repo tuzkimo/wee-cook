@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"unicode/utf8"
 
 	"wee-cook/backend/internal/middleware"
 	"wee-cook/backend/internal/model"
@@ -20,6 +21,12 @@ type authService interface {
 	GetMe(ctx context.Context, userID string) (*service.MeResponse, error)
 	UpdateProfile(ctx context.Context, userID string, req model.UpdateProfileRequest) (*model.User, error)
 }
+
+// users.username / users.nickname 是 VARCHAR(50)，Postgres 按字符（码点）计长。
+// 用 utf8.RuneCountInString 而不是 len：len 数字节，26 个汉字会被误判为超长。
+const maxNameRunes = 50
+
+func nameTooLong(s string) bool { return utf8.RuneCountInString(s) > maxNameRunes }
 
 type AuthHandler struct {
 	svc authService
@@ -40,7 +47,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "username and password are required")
 		return
 	}
-	if len(req.Username) > 100 || len(req.Nickname) > 100 {
+	if nameTooLong(req.Username) || nameTooLong(req.Nickname) {
 		writeError(w, http.StatusBadRequest, "username or nickname too long")
 		return
 	}
@@ -130,6 +137,10 @@ func (h *AuthHandler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	var req model.UpdateProfileRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Nickname != nil && nameTooLong(*req.Nickname) {
+		writeError(w, http.StatusBadRequest, "nickname too long")
 		return
 	}
 	user, err := h.svc.UpdateProfile(r.Context(), userID, req)

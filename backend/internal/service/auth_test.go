@@ -226,6 +226,40 @@ func TestRefreshRejectsAccessToken(t *testing.T) {
 	}
 }
 
+// getUserByID 是 GetMe / Refresh / UpdateProfile 共用的查询，用 GetMe 覆盖其扫描路径。
+func TestGetMeReturnsUser(t *testing.T) {
+	now := time.Now().UTC()
+	fq := &fakeQuerier{rows: []pgx.Row{fakeRow{vals: []any{"u1", "alice", "Alice", nil, now, now}}}}
+
+	resp, err := newTestAuthService(fq).GetMe(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("GetMe: %v", err)
+	}
+	if resp.User.ID != "u1" || resp.User.Username != "alice" || resp.User.Nickname != "Alice" {
+		t.Fatalf("用户字段不符，got %+v", resp.User)
+	}
+}
+
+// 共用查询后 Refresh 仍须把「用户不存在」映射为 ErrUserNotFound（而非 500）。
+func TestRefreshUserNotFound(t *testing.T) {
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": "ghost",
+		"typ": "refresh",
+		"iat": time.Now().Unix(),
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	signed, err := tok.SignedString([]byte("test-secret"))
+	if err != nil {
+		t.Fatalf("SignedString: %v", err)
+	}
+
+	fq := &fakeQuerier{rows: []pgx.Row{fakeRow{scanErr: pgx.ErrNoRows}}}
+	_, err = newTestAuthService(fq).Refresh(context.Background(), model.RefreshRequest{RefreshToken: signed})
+	if !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("用户不存在应返回 ErrUserNotFound，got %v", err)
+	}
+}
+
 // 并发同名注册撞 users_username_unique（23505）时，insertUser 应映射为
 // ErrUsernameTaken（409），而非把唯一冲突当作 500 返回。
 func TestInsertUserUniqueViolationReturnsErrUsernameTaken(t *testing.T) {
