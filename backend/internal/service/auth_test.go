@@ -240,6 +240,17 @@ func TestGetMeReturnsUser(t *testing.T) {
 	}
 }
 
+// token 有效但用户行不存在（服务器库被重建）时，GetMe 必须映射为 ErrUserNotFound，
+// 让 handler 回 401 而非 500——这是客户端「401 → refresh → 401 → 登出重注册」自愈链的入口。
+func TestGetMeUserNotFound(t *testing.T) {
+	fq := &fakeQuerier{rows: []pgx.Row{fakeRow{scanErr: pgx.ErrNoRows}}}
+
+	_, err := newTestAuthService(fq).GetMe(context.Background(), "ghost")
+	if !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("用户不存在应返回 ErrUserNotFound，got %v", err)
+	}
+}
+
 // 共用查询后 Refresh 仍须把「用户不存在」映射为 ErrUserNotFound（而非 500）。
 func TestRefreshUserNotFound(t *testing.T) {
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"wee-cook/backend/internal/middleware"
 	"wee-cook/backend/internal/model"
 	"wee-cook/backend/internal/service"
 )
@@ -17,6 +18,7 @@ import (
 // that need to exercise the service-error mapping paths (e.g. enumeration).
 type fakeAuthService struct {
 	registerErr error
+	getMeErr    error
 }
 
 func (f fakeAuthService) Register(_ context.Context, _ model.RegisterRequest) (*model.AuthResponse, error) {
@@ -32,7 +34,7 @@ func (f fakeAuthService) Refresh(_ context.Context, _ model.RefreshRequest) (*mo
 }
 
 func (f fakeAuthService) GetMe(_ context.Context, _ string) (*service.MeResponse, error) {
-	return nil, nil
+	return nil, f.getMeErr
 }
 
 func (f fakeAuthService) UpdateProfile(_ context.Context, _ string, _ model.UpdateProfileRequest) (*model.User, error) {
@@ -184,6 +186,44 @@ func TestRegisterHandler_NameAtRuneLimitAccepted(t *testing.T) {
 
 	if rec.Code != http.StatusCreated {
 		t.Errorf("expected 201, got %d", rec.Code)
+	}
+}
+
+// 服务器库被重建后，token 仍有效但用户行已不在：/me 必须回 401（不是 500），
+// 客户端据此走「401 → refresh → 401 → 登出重新注册」的自愈链。
+func TestMeHandler_UserNotFoundReturns401(t *testing.T) {
+	h := &AuthHandler{svc: fakeAuthService{getMeErr: service.ErrUserNotFound}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /me", h.Me)
+
+	req := httptest.NewRequest("GET", "/me", nil)
+	req = req.WithContext(context.WithValue(req.Context(), middleware.UserIDKey, "ghost"))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", rec.Code)
+	}
+}
+
+// bcrypt 对 >72 字节口令返回 ErrPasswordTooLong，必须在进 service 前拦成 400，
+// 否则会被包成 500（客户端以为是服务器故障而不是「密码太长」）。
+func TestRegisterHandler_PasswordTooLong(t *testing.T) {
+	h := &AuthHandler{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /auth/register", h.Register)
+
+	body, _ := json.Marshal(map[string]string{
+		"username": "ok",
+		"password": strings.Repeat("a", 73),
+	})
+	req := httptest.NewRequest("POST", "/auth/register", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", rec.Code)
 	}
 }
 

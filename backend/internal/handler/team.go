@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
@@ -48,7 +49,7 @@ func (h *TeamHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Name == "" {
+	if strings.TrimSpace(req.Name) == "" {
 		writeError(w, http.StatusBadRequest, "team name is required")
 		return
 	}

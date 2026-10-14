@@ -119,6 +119,10 @@ func getUserByID(ctx context.Context, q dbQuerier, userID string) (*model.User, 
 
 func (s *AuthService) GetMe(ctx context.Context, userID string) (*MeResponse, error) {
 	user, err := getUserByID(ctx, s.db, userID)
+	// token 有效但用户行已不在（服务器库被重建）：映射为 401，让客户端走重新登录的自愈链。
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrUserNotFound
+	}
 	if err != nil {
 		return nil, err
 	}

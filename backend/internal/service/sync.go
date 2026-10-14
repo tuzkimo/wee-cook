@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"maps"
 	"slices"
 	"strings"
@@ -295,6 +296,11 @@ const maxServerSeqSQL = `SELECT COALESCE(MAX(s), 0) FROM (
 
 // pull 在同一个只读事务里读完增量再取游标：游标取全库的 MAX(server_seq)，
 // 而不是任何一条记录的 seq；反过来（先取游标再读增量）会把两次读之间提交的行永久跳过。
+//
+// 护栏：服务器库被重建或恢复旧备份后，MAX(server_seq) 会低于客户端游标，此时只按
+// `server_seq > sinceSeq` 增量读会永远返回 0 条（两端各看各的且不报错）。所以拿同一快照的 MAX
+// 与客户端游标比，检测到世代回退就按 sinceSeq=0 重读一次全量（LWW 幂等，重复应用无副作用），
+// 并让返回的游标退回当前世代的最大值。不引入第二套游标。
 func (s *SyncService) pull(ctx context.Context, q dbQuerier, userID string, sinceSeq int64) (*model.SyncResponse, error) {
 	remote, err := s.getRemoteChanges(ctx, q, userID, sinceSeq)
 	if err != nil {
@@ -303,6 +309,12 @@ func (s *SyncService) pull(ctx context.Context, q dbQuerier, userID string, sinc
 	cursor, err := maxServerSeq(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("read cursor: %w", err)
+	}
+	if sinceSeq > cursor {
+		log.Printf("同步：检测到服务器世代回退（客户端游标 %d > 快照 MAX(server_seq) %d），按 sinceSeq=0 重读全量", sinceSeq, cursor)
+		if remote, err = s.getRemoteChanges(ctx, q, userID, 0); err != nil {
+			return nil, fmt.Errorf("getRemoteChanges (generation rollback): %w", err)
+		}
 	}
 	return &model.SyncResponse{ServerSeq: cursor, RemoteChanges: remote}, nil
 }

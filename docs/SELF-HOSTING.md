@@ -10,9 +10,11 @@ WeeCook 后端是**可选**组件：不部署时 App 完全本地运行；部署
 - 已安装 Docker + Docker Compose（或 Podman）
 - 开放入站端口 `8080`（API）。PostgreSQL/Redis 仅容器内通信并绑定 `127.0.0.1`，**不要**对公网开放
 
-## 方式一：免克隆最小部署（推荐）
+## 方式一：免克隆最小部署（镜像尚未发布，暂不可用）
 
-无需克隆源码，直接使用公开镜像 `ghcr.io/tuzkimo/wee-cook-api:latest`。
+> ⚠️ 预构建镜像 `ghcr.io/tuzkimo/wee-cook-api:latest` **尚未发布**（等仓库 CI 接上自动构建），
+> 现在直接 `docker compose up -d` 会在拉镜像那一步失败。**当前请用「方式二：源码构建」**
+> （`git clone` + `docker compose up -d --build`）。镜像发布后此节即可照用。
 
 1. 在服务器上建一个目录（如 `wee-cook`），保存以下内容为 `compose.yml`：
 
@@ -108,7 +110,7 @@ docker compose up -d --build
 
 > 监听端口固定 `8080`（compose 端口映射写死）；单张图片上限固定 5MB。本表只列 compose 真正会透传给容器的变量。
 
-> **限流信任模型**：登录/注册按 IP 限流 10 次/分钟。`TRUST_PROXY=false`（默认）时取 socket peer 地址，客户端无法伪造；仅当 API 位于可信反向代理之后时设 `true`，否则攻击者可伪造 `X-Forwarded-For` 绕过限流。
+> **限流信任模型**：登录/注册、以及邀请码加入团队（`/teams/join`）均按 IP 限流 10 次/分钟。`TRUST_PROXY=false`（默认）时取 socket peer 地址，客户端无法伪造；仅当 API 位于可信反向代理之后时设 `true`，否则攻击者可伪造 `X-Forwarded-For` 绕过限流。
 
 ## App 对接
 
@@ -151,8 +153,8 @@ docker compose up -d --build
 菜谱与图片存在数据卷里，建议定期备份。
 
 ```bash
-# 数据库（cron 建议）
-docker compose exec postgres pg_dump -U wee wee-cook > wee-cook-$(date +%F).sql
+# 数据库（cron 建议；cron 无 TTY，必须加 -T，否则 `docker compose exec` 会报 TTY 错误）
+docker compose exec -T postgres pg_dump -U wee wee-cook > wee-cook-$(date +%F).sql
 
 # 恢复
 cat wee-cook-2026-10-14.sql | docker compose exec -T postgres psql -U wee wee-cook
@@ -160,6 +162,10 @@ cat wee-cook-2026-10-14.sql | docker compose exec -T postgres psql -U wee wee-co
 # 图片：备份 files 卷
 docker run --rm -v wee-cook_files:/data -v "$PWD":/backup alpine tar czf /backup/wee-cook-files-$(date +%F).tar.gz -C /data .
 ```
+
+> 若服务器数据库被重建（`docker compose down -v`）或恢复了一份较旧的备份：服务端已加世代护栏，
+> 客户端首次同步会自动全量重拉；但账号行若不在新库里，客户端需要**重新登录**（`/me` 返回 401
+> → 刷新令牌也失败 → 登出重新注册，新账号从零开始同步）才能恢复。
 
 以上命令假设 `.env` 使用默认的 `POSTGRES_USER=wee`、`POSTGRES_DB=wee-cook`；若你改过这两个值，请对应替换命令中的 `-U wee` 与库名。
 

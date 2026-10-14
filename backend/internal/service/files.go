@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -86,7 +87,9 @@ func (s *FileService) Save(ctx context.Context, userID, name string, r io.Reader
 	}
 
 	// 先写 .part 再 rename：任何失败路径下，半截文件都不会以正式名出现。
-	partPath := s.path(name) + ".part"
+	// 临时名带随机后缀：并发同名首传各写各的临时文件，os.Rename 仍是唯一的原子发布点，
+	// 不会互相截断，也不会把对方未写完的文件发布成正式名。
+	partPath := s.path(name) + "." + uuid.NewString() + ".part"
 	f, err := os.Create(partPath)
 	if err != nil {
 		return 0, fmt.Errorf("create temp file: %w", err)

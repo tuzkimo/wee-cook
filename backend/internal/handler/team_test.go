@@ -67,6 +67,23 @@ func TestCreateTeamHandler_MissingName(t *testing.T) {
 	}
 }
 
+// 只判空不 trim 会把 "   " 建成空白名团队：trim 后为空必须 400。
+func TestCreateTeamHandler_WhitespaceName(t *testing.T) {
+	h := &TeamHandler{svc: fakeTeamService{}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /teams", h.Create)
+
+	body, _ := json.Marshal(map[string]string{"name": "   "})
+	req := httptest.NewRequest("POST", "/teams", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", rec.Code)
+	}
+}
+
 func TestCreateTeamHandler_NameTooLong(t *testing.T) {
 	h := &TeamHandler{svc: fakeTeamService{}}
 	mux := http.NewServeMux()

@@ -657,3 +657,36 @@ func TestSyncWritePhaseSerializesOnAdvisoryLock(t *testing.T) {
 		t.Errorf("解锁后菜谱应已落库")
 	}
 }
+
+// I2：协议里没有「服务器世代」。服务器库被重建 / 回滚成旧备份后，MAX(server_seq) 会低于
+// 客户端已存的游标；只做 server_seq > 游标的增量查询会永远返回 0 条，两端各看各的且不报错。
+// 护栏必须比「客户端游标 vs 同一快照的 MAX(server_seq)」，检测到世代回退就按 sinceSeq=0
+// 重读全量（LWW 幂等，重复应用无副作用），并把游标退回当前世代的最大值。
+func TestPullRecoversFromServerGenerationRollback(t *testing.T) {
+	pool := filesTestDB(t)
+	svc := NewSyncService(pool)
+	ctx := context.Background()
+	a := seedUser(t, pool)
+	team := seedTeam(t, pool, a)
+	joinTeam(t, pool, team, a)
+
+	recipeID := "r-" + uuid.NewString()
+	mustPush(t, svc, a, model.SyncPayload{
+		Recipes: []model.Recipe{syncRecipe(recipeID, "世代回退后的菜谱", time.Now().UTC(), &team)},
+	})
+
+	maxSeq, err := maxServerSeq(ctx, pool)
+	if err != nil {
+		t.Fatalf("读 MAX(server_seq) 失败: %v", err)
+	}
+
+	// 客户端游标大于库里 MAX(server_seq)：服务器换了世代（空库重建 / 恢复旧 dump）
+	resp := mustPull(t, svc, a, maxSeq+1000)
+
+	if findRecipe(resp.RemoteChanges.Recipes, recipeID) == nil {
+		t.Errorf("世代回退后必须以 sinceSeq=0 重读全量，实际一条可见菜谱都没拉到：%+v", resp.RemoteChanges.Recipes)
+	}
+	if resp.ServerSeq != maxSeq {
+		t.Errorf("游标应退回当前世代的 MAX(server_seq) %d，got %d", maxSeq, resp.ServerSeq)
+	}
+}

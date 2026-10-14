@@ -26,6 +26,10 @@ type authService interface {
 // 用 utf8.RuneCountInString 而不是 len：len 数字节，26 个汉字会被误判为超长。
 const maxNameRunes = 50
 
+// bcrypt 的口令上限是 72 字节（GenerateFromPassword 超过即返 ErrPasswordTooLong），
+// 提前拦成 400，否则会被包成 500，让客户端误以为是服务器故障。
+const maxPasswordBytes = 72
+
 func nameTooLong(s string) bool { return utf8.RuneCountInString(s) > maxNameRunes }
 
 type AuthHandler struct {
@@ -49,6 +53,10 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 	if nameTooLong(req.Username) || nameTooLong(req.Nickname) {
 		writeError(w, http.StatusBadRequest, "username or nickname too long")
+		return
+	}
+	if len(req.Password) > maxPasswordBytes {
+		writeError(w, http.StatusBadRequest, "password too long")
 		return
 	}
 
@@ -123,6 +131,10 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp, err := h.svc.GetMe(r.Context(), userID)
+	if errors.Is(err, service.ErrUserNotFound) {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
