@@ -84,6 +84,75 @@ func TestUploadRejectsTraversalName(t *testing.T) {
 	}
 }
 
+// countingBody 记录被读走的字节数与是否读到 EOF，用来断言 handler 读完了请求体。
+type countingBody struct {
+	r    io.Reader
+	read int64
+	eof  bool
+}
+
+func (c *countingBody) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.read += int64(n)
+	if err == io.EOF {
+		c.eof = true
+	}
+	return n, err
+}
+
+func (c *countingBody) Close() error { return nil }
+
+// 幂等命中（同名已存在）与非法名两条路径上 service 一行 body 都不读。不 drain 的话，net/http
+// 在剩余 body >256KB（maxPostHandlerReadBytes）时会直接放弃读取并关连接，客户端还在写体、
+// 可能丢掉已经写出的响应，这张图所在的整批菜谱就推不上去。
+// 单测里不复现真实断连（时序不稳），断言的是 handler 读到了 EOF 且字节数完整：这是同一个
+// 判据——body 被读空后 net/http 走 sawEOF 分支，不会再 doEarlyClose。
+func TestUploadDrainsBodyOnEarlyReturn(t *testing.T) {
+	payload := bytes.Repeat([]byte{0xFF, 0xD8, 0xFF}, 100_000) // 300KB
+
+	tests := []struct {
+		name     string
+		target   string
+		svc      fileService
+		wantCode int
+	}{
+		{
+			// fake 的 Save 不碰 reader：与真 service 命中幂等（同名已登记）时同形
+			name:     "幂等命中回 200",
+			target:   "/api/v1/files?name=" + url.QueryEscape("3f2a1c48-0000-4000-8000-000000000001.jpg"),
+			svc:      &fakeFileService{maxBytes: 1 << 20, saveSize: int64(len(payload))},
+			wantCode: http.StatusOK,
+		},
+		{
+			// 真 FileService，pool 传 nil：名称校验早于任何 DB 访问，非法名同样不读 body
+			name:     "非法文件名回 400",
+			target:   "/api/v1/files?name=" + url.QueryEscape("../../etc/passwd"),
+			svc:      service.NewFileService(nil, t.TempDir(), 1<<20),
+			wantCode: http.StatusBadRequest,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := &countingBody{r: bytes.NewReader(payload)}
+			req := fileRequest("POST", tc.target, "", nil)
+			req.Body = body
+			req.ContentLength = int64(len(payload))
+
+			rec := httptest.NewRecorder()
+			NewFileHandler(tc.svc).Upload(rec, req)
+
+			if rec.Code != tc.wantCode {
+				t.Fatalf("状态码 = %d, want %d", rec.Code, tc.wantCode)
+			}
+			if !body.eof || body.read != int64(len(payload)) {
+				t.Errorf("提前返回后必须把 body 读干净，实际读 %d 字节、eof=%v，want %d、true",
+					body.read, body.eof, len(payload))
+			}
+		})
+	}
+}
+
 func TestUploadSuccess(t *testing.T) {
 	svc := &fakeFileService{maxBytes: 1 << 20, saveSize: 1234}
 	h := NewFileHandler(svc)

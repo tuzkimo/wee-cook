@@ -45,6 +45,11 @@ func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	// 读取前就设上限：service 自己也有计数上限，这里挡的是「超大 body 被读进来」本身
 	r.Body = http.MaxBytesReader(w, r.Body, h.svc.MaxBytes())
 
+	// 幂等命中（同名已存在）等提前返回时一行都不读 body；若不 drain，net/http 在
+	// 剩余 body >256KB 时会直接放弃读取并关连接，客户端还在写体、收不到这个响应，
+	// 重传就永远卡在这张图。r.Body 已被 MaxBytesReader 限住，drain 不会无界读。
+	defer func() { _, _ = io.Copy(io.Discard, r.Body) }()
+
 	size, err := h.svc.Save(r.Context(), userID, name, r.Body)
 	switch {
 	case errors.Is(err, service.ErrInvalidFileName):
