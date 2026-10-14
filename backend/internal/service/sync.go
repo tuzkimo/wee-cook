@@ -43,29 +43,6 @@ func mergeByKey(ctx context.Context, tx dbQuerier, incoming time.Time,
 	return update()
 }
 
-// mergeByKeyScoped 是带作用域的 LWW merge 骨架：按主键读出作用域 id 与 updated_at，
-// 行存在于调用者不可访问的作用域时跳过（对象级越权防护），其余行为与 mergeByKey 一致。
-// wee-cook 目前没有调用方：菜谱按 owner 鉴权（Task 5 自行校验），没有账本式作用域。
-func mergeByKeyScoped(ctx context.Context, tx dbQuerier, incoming time.Time,
-	scopeSet map[string]bool, keySQL string, keyArgs []any, insert, update func() error) error {
-	var rowScope string
-	var remote time.Time
-	err := tx.QueryRow(ctx, keySQL+" FOR UPDATE", keyArgs...).Scan(&rowScope, &remote)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return insert()
-	}
-	if err != nil {
-		return err
-	}
-	if !scopeSet[rowScope] {
-		return nil // 行在不可访问的作用域 → 跳过，既不覆盖也不插入
-	}
-	if !incoming.After(remote) {
-		return nil
-	}
-	return update()
-}
-
 type SyncService struct {
 	pool *pgxpool.Pool
 }
