@@ -35,6 +35,15 @@ function headerOf(init: RequestInit | undefined, name: string): string | undefin
   return (init?.headers as Record<string, string> | undefined)?.[name];
 }
 
+/** 手动控制何时 resolve：用来制造「refresh 请求在飞」的窗口。 */
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
 describe("apiFetch", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -144,6 +153,95 @@ describe("apiFetch", () => {
     expect(authTokenReady.value).toBe(false);
     // 落盘的凭据也要清掉，否则下次冷启动会拿一个已被服务端拒绝的 refresh token 再去换
     await vi.waitFor(() => expect(localStorage.getItem("refresh_token:u1")).toBeNull());
+  });
+
+  it("refresh 拿不到响应（超时 / 断网）时保留凭据，不清空", async () => {
+    setBaseUrl("http://x:8080");
+    setTokens("u1", "access-old", "refresh-1");
+    await writeRefreshToken("u1", "refresh-1");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        // 本文件约定：拿不到 HTTP 响应（超时 / 断网）就抛。这**不等于** refresh token 失效。
+        if (url.endsWith("/api/v1/auth/refresh")) throw new Error("请求超时");
+        return res(401, { error: "unauthorized" });
+      }),
+    );
+
+    await expect(apiFetch("/api/v1/me")).resolves.toEqual({
+      ok: false,
+      status: 401,
+      error: "unauthorized",
+    });
+
+    // 移动端网络抖动是常态：留着 refresh token，下次冷启动才能自动恢复会话
+    expect(authTokenReady.value).toBe(true);
+    expect(localStorage.getItem("refresh_token:u1")).toBe("refresh-1");
+  });
+
+  it("refresh 在途时退登，返回后不得写回凭据", async () => {
+    setBaseUrl("http://x:8080");
+    setTokens("u1", "access-old", "refresh-1");
+    await writeRefreshToken("u1", "refresh-1");
+
+    const gate = deferred<Response>();
+    let refreshStarted = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.endsWith("/api/v1/auth/refresh")) {
+          refreshStarted = true;
+          return gate.promise;
+        }
+        return Promise.resolve(res(401, { error: "unauthorized" }));
+      }),
+    );
+
+    const pending = apiFetch("/api/v1/me");
+    await vi.waitFor(() => expect(refreshStarted).toBe(true));
+
+    // 用户在 refresh 在途时点了退登
+    clearTokens();
+    gate.resolve(res(200, { user: { id: "u1" }, access_token: "access-new", refresh_token: "refresh-2" }));
+    await pending;
+
+    // 否则磁盘上凭据还在，用户以为已退出，下次冷启动又自动登回去
+    expect(authTokenReady.value).toBe(false);
+    await vi.waitFor(() => expect(localStorage.getItem("refresh_token:u1")).toBeNull());
+  });
+
+  it("refresh 在途时换号登录，返回后不得把 A 的凭据写成 B 的", async () => {
+    setBaseUrl("http://x:8080");
+    setTokens("u1", "access-old", "refresh-1");
+    await writeRefreshToken("u1", "refresh-1");
+
+    const gate = deferred<Response>();
+    let refreshStarted = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.endsWith("/api/v1/auth/refresh")) {
+          refreshStarted = true;
+          return gate.promise;
+        }
+        return Promise.resolve(res(401, { error: "unauthorized" }));
+      }),
+    );
+
+    const pending = apiFetch("/api/v1/me");
+    await vi.waitFor(() => expect(refreshStarted).toBe(true));
+
+    // A 的 401 触发 refresh 期间，用户退登并以 B 身份登录
+    clearTokens();
+    setTokens("u2", "access-b", "refresh-b");
+    gate.resolve(res(200, { user: { id: "u1" }, access_token: "access-a2", refresh_token: "refresh-a2" }));
+    await pending;
+
+    // A 的 refresh 响应不得覆盖成 A 的凭据（串号）
+    expect(authTokenReady.value).toBe(true);
+    await vi.waitFor(() => expect(localStorage.getItem("refresh_token:u2")).toBe("refresh-b"));
+    expect(localStorage.getItem("refresh_token:u1")).toBeNull();
   });
 
   it("超时 15 秒后 abort 并抛出", async () => {

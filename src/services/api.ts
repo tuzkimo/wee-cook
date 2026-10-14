@@ -48,6 +48,11 @@ export const authTokenReady = computed(() => authTokenSet.value)
 // 当前会话归属的服务端用户 id：refresh_token 按它独立存取，避免同设备多账号串号。
 let currentUserId: string | null = null
 
+// 凭据世代：任何显式写/清凭据（setTokens / clearTokens）都递增。
+// refresh 在发起前记下当时的世代，返回后世代已变就丢弃结果 —— 否则退登或换号后，
+// 在途的那次 refresh 会把旧会话凭据写回来（复活已退出的会话 / 把 A 的凭据串成 B 的）。
+let tokenGeneration = 0
+
 // refresh 单飞：并发 401 时共享同一个 refresh promise，避免各自触发 refresh 导致竞态
 // （多个 refresh 并发换新，后到的用过期 refresh token 把先到的结果覆盖掉）。
 let refreshInFlight: Promise<boolean> | null = null
@@ -107,6 +112,7 @@ export async function fetchWithTimeout(
 }
 
 export function setTokens(userId: string, access: string, refresh: string): void {
+  tokenGeneration++
   currentUserId = userId
   accessToken = access
   refreshToken = refresh
@@ -115,6 +121,7 @@ export function setTokens(userId: string, access: string, refresh: string): void
 }
 
 export function clearTokens(): void {
+  tokenGeneration++
   if (currentUserId) void deleteRefreshToken(currentUserId)
   currentUserId = null
   accessToken = null
@@ -124,16 +131,25 @@ export function clearTokens(): void {
 
 async function refreshAccessToken(): Promise<boolean> {
   if (refreshInFlight) return refreshInFlight
+  const generation = tokenGeneration
   refreshInFlight = (async () => {
     const stored = currentUserId ? await readRefreshToken(currentUserId) : null
     if (!stored || !hasBaseUrl()) return false
 
     try {
-      await refreshSession(stored)
+      const data = await postAuthRaw(
+        "/api/v1/auth/refresh",
+        { refresh_token: stored },
+        "会话已过期，请重新登录",
+      )
+      // 在途期间退登或换号 ⇒ 这次刷新属于旧会话，写回只会复活/串号
+      if (generation !== tokenGeneration) return false
+      setTokens(data.user.id, data.access_token, data.refresh_token)
       return true
-    } catch {
-      // refresh token 也过期了：留着它只会让每个请求都白跑一次 401 往返
-      clearTokens()
+    } catch (err) {
+      // 只有服务端明确答了 401/403 才算凭据失效；超时/断网拿不到响应时保留 refresh token，
+      // 否则移动端网络一抖，用户下次冷启动就不会自动恢复会话了。
+      if (err instanceof AuthError && (err.status === 401 || err.status === 403)) clearTokens()
       return false
     }
   })()
@@ -196,12 +212,24 @@ export interface AuthResponse {
   refresh_token: string
 }
 
+/** auth 端点失败时带上状态码：调用方据此区分「服务端拒绝凭据」与「拿不到响应」。 */
+class AuthError extends Error {
+  readonly status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.status = status
+  }
+}
+
 /**
- * 三个 auth 端点的公共形状：POST 一个 JSON body、成功即写凭据。
- * 走 `fetchWithTimeout` 而不是 `apiFetch`：这两个端点不需要 Authorization，且 refresh 若再走
- * 401 分支就会递归。
+ * 三个 auth 端点的公共形状：POST 一个 JSON body。跑 `fetchWithTimeout` 而不是 `apiFetch`：
+ * 这些端点不需要 Authorization，且 refresh 若再走 401 分支就会递归。
+ *
+ * 只负责取回响应体，**不写凭据** —— 是否提交由调用方决定，refresh 才能在响应在途、
+ * 凭据已被改动时丢弃结果（见 `refreshAccessToken`）。
  */
-async function postAuth(path: string, body: unknown, fallback: string): Promise<AuthResponse> {
+async function postAuthRaw(path: string, body: unknown, fallback: string): Promise<AuthResponse> {
   const res = await fetchWithTimeout(`${getBaseUrl()}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -209,9 +237,14 @@ async function postAuth(path: string, body: unknown, fallback: string): Promise<
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.error || fallback)
+    throw new AuthError(res.status, err.error || fallback)
   }
-  const data: AuthResponse = await res.json()
+  return await res.json()
+}
+
+/** postAuthRaw + 成功即写凭据（login / register / 公开的 refreshSession 用）。 */
+async function postAuth(path: string, body: unknown, fallback: string): Promise<AuthResponse> {
+  const data = await postAuthRaw(path, body, fallback)
   setTokens(data.user.id, data.access_token, data.refresh_token)
   return data
 }
