@@ -95,6 +95,12 @@ func insertTeam(ctx context.Context, q dbQuerier, userID, name string) (*model.T
 }
 
 func (s *TeamService) CreateInvite(ctx context.Context, userID, teamID string) (string, error) {
+	// teams.id 是 UUID 列：非 UUID 原样进 SQL 会撞 SQLSTATE 22P02 变成 500，
+	// 这里提前当「团队不存在」处理，与真正的 404 走同一条映射。
+	if _, err := uuid.Parse(teamID); err != nil {
+		return "", ErrTeamNotFound
+	}
+
 	// 只有 owner 能发邀请码：团队管理（改名/解散/移人）不在本轮，owner 是唯一的管理者
 	var createdBy string
 	err := s.db.QueryRow(ctx, "SELECT created_by FROM teams WHERE id = $1", teamID).Scan(&createdBy)
@@ -221,6 +227,12 @@ func (s *TeamService) ListMyTeams(ctx context.Context, userID string) ([]model.T
 }
 
 func (s *TeamService) ListMembers(ctx context.Context, userID, teamID string) ([]model.TeamMember, error) {
+	// team_members.team_id 是 UUID 列：非 UUID 直接当「不是成员」（403），
+	// 否则会撞 SQLSTATE 22P02 变成 500。
+	if _, err := uuid.Parse(teamID); err != nil {
+		return nil, ErrNotTeamMember
+	}
+
 	// 越权防护：仅团队成员可查看成员列表
 	if err := canReadTeam(ctx, s.db, userID, teamID); err != nil {
 		return nil, err

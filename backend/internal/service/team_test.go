@@ -119,7 +119,8 @@ func TestCreateTeamMakesCreatorOwner(t *testing.T) {
 func TestCreateInviteRejectsNonOwner(t *testing.T) {
 	fq := &fakeQuerier{rows: []pgx.Row{teamRow{vals: []any{"owner-1"}}}}
 
-	_, err := (&TeamService{db: fq}).CreateInvite(context.Background(), "user-2", "team-1")
+	// 用合法 UUID：非 UUID 会在解析时就被当成「团队不存在」（见 TestCreateInviteRejectsNonUUIDTeamID）。
+	_, err := (&TeamService{db: fq}).CreateInvite(context.Background(), "user-2", "3f2504e0-4f89-11d3-9a0c-0305e82c3301")
 	if !errors.Is(err, ErrNotTeamOwner) {
 		t.Fatalf("非 owner 建邀请码应返回 ErrNotTeamOwner，got %v", err)
 	}
@@ -128,9 +129,32 @@ func TestCreateInviteRejectsNonOwner(t *testing.T) {
 func TestCreateInviteTeamNotFound(t *testing.T) {
 	fq := &fakeQuerier{rows: []pgx.Row{teamRow{scanErr: pgx.ErrNoRows}}}
 
-	_, err := (&TeamService{db: fq}).CreateInvite(context.Background(), "user-1", "ghost-team")
+	_, err := (&TeamService{db: fq}).CreateInvite(context.Background(), "user-1", "3f2504e0-4f89-11d3-9a0c-0305e82c3301")
 	if !errors.Is(err, ErrTeamNotFound) {
 		t.Fatalf("团队不存在应返回 ErrTeamNotFound，got %v", err)
+	}
+}
+
+// 非 UUID 的 {id} 不能落进 SQL（Postgres 回 SQLSTATE 22P02 → 500），要当「团队不存在」映射成 404。
+// 假的 QueryRow 预置了别人当 owner 的行：若少了这道校验，会先撞出 ErrNotTeamOwner 而不是 ErrTeamNotFound。
+func TestCreateInviteRejectsNonUUIDTeamID(t *testing.T) {
+	fq := &fakeQuerier{rows: []pgx.Row{teamRow{vals: []any{"owner-1"}}}}
+
+	_, err := (&TeamService{db: fq}).CreateInvite(context.Background(), "user-1", "not-a-uuid")
+	if !errors.Is(err, ErrTeamNotFound) {
+		t.Fatalf("非 UUID 团队 id 应返回 ErrTeamNotFound（404），got %v", err)
+	}
+	if len(fq.execs) != 0 {
+		t.Fatalf("非 UUID 团队 id 不应写库，got %+v", fq.execs)
+	}
+}
+
+// 同理：非 UUID 的 {id} 看成员列表要 403（不是成员），而不是 500。
+// 空队列的假 QueryRow 会回 pgx.ErrNoRows：若少了这道校验，会包成 ErrNoRows 而不是 ErrNotTeamMember。
+func TestListMembersRejectsNonUUIDTeamID(t *testing.T) {
+	_, err := (&TeamService{db: &fakeQuerier{}}).ListMembers(context.Background(), "user-1", "not-a-uuid")
+	if !errors.Is(err, ErrNotTeamMember) {
+		t.Fatalf("非 UUID 团队 id 应返回 ErrNotTeamMember（403），got %v", err)
 	}
 }
 

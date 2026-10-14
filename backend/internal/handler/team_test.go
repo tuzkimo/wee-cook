@@ -178,3 +178,30 @@ func TestListTeamsHandler_EmptyArray(t *testing.T) {
 		t.Errorf("expected [], got %s", rec.Body.String())
 	}
 }
+
+// 非 UUID 的 {id} 打真实 handler+service 链路：必须映射成 404/403，而不是 Postgres
+// SQLSTATE 22P02 漏出来的 500。service 在解析 id 时便短路返回，所以这里的 nil 依赖
+// （pool/redis 不参与这条路径）是安全的；若校验被删，nil db 会直接 panic 把测试打红。
+func TestTeamRoutes_NonUUIDTeamID(t *testing.T) {
+	h := NewTeamHandler(service.NewTeamService(nil, nil))
+	r := chi.NewRouter()
+	r.Post("/teams/{id}/invite", h.Invite)
+	r.Get("/teams/{id}/members", h.Members)
+
+	cases := []struct {
+		name, method, path string
+		want               int
+	}{
+		{"invite", http.MethodPost, "/teams/not-a-uuid/invite", http.StatusNotFound},
+		{"members", http.MethodGet, "/teams/not-a-uuid/members", http.StatusForbidden},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+			if rec.Code != tc.want {
+				t.Errorf("非 UUID 的团队 id 应返回 %d，got %d（body %s）", tc.want, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
