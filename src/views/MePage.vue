@@ -2,6 +2,7 @@
 import { computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import AppHeader from "@/components/AppHeader.vue";
+import { triggerFullPushAndSync } from "@/services/migration";
 import { useAuthStore } from "@/stores/auth";
 
 const router = useRouter();
@@ -19,10 +20,8 @@ const lastSyncText = computed(() =>
 );
 
 function retry(): void {
-  // 动态 import：断开 auth ↔ migration ↔ team/sync 的静态模块环（详见 stores/auth.ts 的 triggerPostSessionSync）
-  void import("@/services/migration")
-    .then((m) => m.triggerFullPushAndSync())
-    .catch((e: unknown) => console.warn("[me] 同步模块加载失败:", e));
+  // 手动重试一次全扫同步；函数内部全捕获，不会 reject
+  void triggerFullPushAndSync();
 }
 
 async function logout(): Promise<void> {

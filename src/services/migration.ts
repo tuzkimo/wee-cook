@@ -14,7 +14,9 @@ import { useTeamStore } from "@/stores/team";
  */
 export async function claimOrphanRecipes(serverUserId: string, db: Db = getDb()): Promise<number> {
   // 不用 execute 的返回值拿行数：plugin-sql 返回 `rowsAffected`，测试注入的 node:sqlite 返回
-  // `changes`，两种形状不同；先数一次最省事，也没有并发写者会插进来。
+  // `changes`，两种形状不同；先数一次最省事。
+  // shortcut: COUNT 与 UPDATE 两步非原子，返回值只用于日志；归属由 `WHERE owner_id IS NULL` 保证。
+  // 升级时机：需要拿返回行数做业务判断时，改用 execute 的 rowsAffected。
   const rows = await db.select<{ n: number }[]>(
     "SELECT COUNT(*) AS n FROM recipes WHERE owner_id IS NULL",
   );

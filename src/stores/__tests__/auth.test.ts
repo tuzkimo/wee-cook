@@ -5,7 +5,15 @@ import { freshTestDb } from "@/db/__tests__/sqliteTestDb";
 import * as api from "@/services/api";
 import * as tokenStorage from "@/services/tokenStorage";
 import { writeRefreshToken } from "@/services/tokenStorage";
+import { triggerFullPushAndSync } from "@/services/migration";
 import { useAuthStore } from "@/stores/auth";
+
+// spec §9.5：会话从不在线变在线（登录/注册/恢复成功）要触发一次全扫推送。
+// 这里把整块同步替换成 spy，否则在途同步请求会在 teardown 留下 AbortError 噪音，
+// 且「有没有接线」这件事在测试里根本不可断言。
+vi.mock("@/services/migration", () => ({ triggerFullPushAndSync: vi.fn() }));
+
+const syncMock = vi.mocked(triggerFullPushAndSync);
 
 const NOW = "2026-10-14T10:00:00.000Z";
 
@@ -62,6 +70,7 @@ beforeEach(async () => {
   localStorage.clear();
   ({ db } = await freshTestDb());
   setDb(db);
+  syncMock.mockClear();
 });
 
 afterEach(() => {
@@ -81,6 +90,8 @@ describe("authStore", () => {
     expect(store.isOnline).toBe(false);
     expect(store.mode).toBe("guest");
     expect(fetchMock).not.toHaveBeenCalled();
+    // 没登录就不该做全扫推送
+    expect(syncMock).not.toHaveBeenCalled();
   });
 
   it("登录成功后写入凭据与服务器地址", async () => {
@@ -106,6 +117,8 @@ describe("authStore", () => {
     expect(storedSetting("server_nickname")).toBe("阿丽");
     // refresh token 由 api 层按 user id 落 tokens.json（setTokens 是 fire-and-forget，等它落地）
     await vi.waitFor(() => expect(localStorage.getItem("refresh_token:u1")).toBe("refresh-1"));
+    // 会话刚变在线：认领存量 + 全扫推送，恰好一次（waitFor 吃下动态 import 那一拍）
+    await vi.waitFor(() => expect(syncMock).toHaveBeenCalledTimes(1));
   });
 
   it("登录失败不改动已有凭据", async () => {
@@ -113,11 +126,15 @@ describe("authStore", () => {
     const store = useAuthStore();
     await store.login("https://srv", "alice", "pw");
     await vi.waitFor(() => expect(localStorage.getItem("refresh_token:u1")).toBe("refresh-1"));
+    // 只看「这次失败的登录有没有触发同步」，抹掉前面那次成功登录的记录
+    await vi.waitFor(() => expect(syncMock).toHaveBeenCalledTimes(1));
+    syncMock.mockClear();
 
     // 换成 401（密码错）：账号或密码要报中文，且既有会话原封不动
     stubFetch(() => res(401, { error: "invalid username or password" }));
 
     await expect(store.login("https://other", "alice", "wrong")).rejects.toThrow("账号或密码不对");
+    expect(syncMock).not.toHaveBeenCalled();
 
     expect(api.authTokenReady.value).toBe(true);
     expect(localStorage.getItem("refresh_token:u1")).toBe("refresh-1");
@@ -137,6 +154,24 @@ describe("authStore", () => {
     );
     expect(api.authTokenReady.value).toBe(false);
     expect(storedSetting("server_url")).toBeUndefined();
+    expect(syncMock).not.toHaveBeenCalled();
+  });
+
+  it("注册成功与登录成功一样触发一次全扫同步", async () => {
+    const fetchMock = stubFetch((url) => {
+      expect(url).toBe("https://srv/api/v1/auth/register");
+      return res(
+        200,
+        authBody(user("u2", { username: "bob", nickname: "小波" }), "access-2", "refresh-2"),
+      );
+    });
+    const store = useAuthStore();
+
+    await store.register("https://srv", "bob", "pw", "小波");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(store.isOnline).toBe(true);
+    await vi.waitFor(() => expect(syncMock).toHaveBeenCalledTimes(1));
   });
 
   it("连不上服务器时提示网络问题，而不是报账号密码错", async () => {
@@ -175,6 +210,8 @@ describe("authStore", () => {
     expect(store.nickname).toBe("新昵称");
     expect(api.authTokenReady.value).toBe(true);
     await vi.waitFor(() => expect(localStorage.getItem("refresh_token:u1")).toBe("refresh-new"));
+    // spec §9.5：冷启动恢复会话成功同样算「会话变在线」
+    await vi.waitFor(() => expect(syncMock).toHaveBeenCalledTimes(1));
   });
 
   it("restoreSession 遇到服务不可达时进入 guest 态但不清本地数据与设置", async () => {
@@ -213,6 +250,8 @@ describe("authStore", () => {
     // 本地菜谱一条不少
     const recipes = await db.select<{ id: string }[]>("SELECT id FROM recipes");
     expect(recipes.map((row) => row.id)).toEqual(["r1"]);
+    // 恢复失败不算「变在线」，不得触发同步
+    expect(syncMock).not.toHaveBeenCalled();
   });
 
   it("restoreSession 服务端答 401 时清掉失效的 refresh token", async () => {
@@ -228,6 +267,7 @@ describe("authStore", () => {
     await vi.waitFor(() => expect(localStorage.getItem("refresh_token:u1")).toBeNull());
     // 地址留着，下次登录不用重填
     expect(storedSetting("server_url")).toBe("https://srv");
+    expect(syncMock).not.toHaveBeenCalled();
   });
 
   it("logout 清掉凭据但保留 server_url（下次登录不用重填）", async () => {

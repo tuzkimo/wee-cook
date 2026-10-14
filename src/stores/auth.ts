@@ -25,8 +25,11 @@ const NETWORK_MESSAGE = "连不上服务器，检查地址和网络";
 /**
  * 会话刚变在线：认领存量 + 一次全扫推送（spec §9.3）。fire-and-forget，不阻塞登录返回。
  *
- * 刻意用动态 import 而不是顶部静态 import：`auth → migration → team/sync` 的静态环会让
- * vitest 的 `vi.mock("@/services/sync")` 失效（team.test 会拿到真 `performSync` 去查未初始化的库）。
+ * 这里刻意用动态 import：`auth → migration → sync/team → auth` 已是一个静态环，若改成顶部静态 import，
+ * `team.test.ts` 的 `vi.mock("@/services/sync")`（用 importOriginal 加载原模块）会失效 ——
+ * 环内 `team.ts` 绑到未 mock 的 `performSync`。实测后果（静态版本）：team.test 的
+ * 「加入成功后清空同步游标」红（`expected "vi.fn()" to be called at least once`），
+ * 并伴随未捕获的 `Error: 数据库未打开`。改回静态 import 前先跑一遍 `team.test.ts`。
  */
 function triggerPostSessionSync(): void {
   void import("@/services/migration")
@@ -132,7 +135,7 @@ const useAuthStoreBase = defineStore("auth", () => {
     sessionEpoch++;
     adoptSession(resp.user, normalized);
     await persistSession(resp.user, normalized);
-    // 会话刚变在线：认领存量 + 一次全扫推送（失败不抛出，只置 lastSyncFailed）
+    // 会话刚变在线：认领存量 + 一次全扫推送（spec §9.3）
     triggerPostSessionSync();
   }
 
