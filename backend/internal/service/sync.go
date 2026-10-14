@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -17,6 +18,9 @@ import (
 // syncWriteLockID 是同步写事务的全局 advisory lock 编号：一次只允许一个同步写事务在途，
 // 使 nextval 的发号顺序 = 提交顺序（spec §7.2）。
 const syncWriteLockID = 897753
+
+// advisoryLockSQL 由 syncWriteLockID 生成，免得锁编号在代码里出现两份。
+var advisoryLockSQL = fmt.Sprintf("SELECT pg_advisory_xact_lock(%d)", syncWriteLockID)
 
 type SyncService struct {
 	pool *pgxpool.Pool
@@ -254,4 +258,437 @@ func insertRecipeChildren(ctx context.Context, tx dbQuerier, r model.Recipe) err
 		}
 	}
 	return nil
+}
+
+// --- 同步主流程（Task 6）：推送与拉取 ---
+
+// Sync 一次完整同步：先把客户端推来的改动合进库（写事务），再在同一个只读快照里读增量与推进游标。
+func (s *SyncService) Sync(ctx context.Context, userID string, req model.SyncRequest) (*model.SyncResponse, error) {
+	if err := s.applyLocalChanges(ctx, userID, req.LocalChanges); err != nil {
+		return nil, fmt.Errorf("applyLocalChanges: %w", err)
+	}
+
+	// 读增量与取游标必须在同一个 REPEATABLE READ 快照里，且先读后推进（spec §7.5）。
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, fmt.Errorf("begin read tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	resp, err := s.pull(ctx, tx, userID, req.LastServerSeq)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit read tx: %w", err)
+	}
+	return resp, nil
+}
+
+// maxServerSeqSQL 覆盖全部四条增量通道：游标是它们的最大 server_seq，空库上取 0（而不是 NULL）。
+const maxServerSeqSQL = `SELECT COALESCE(MAX(s), 0) FROM (
+	SELECT MAX(server_seq) AS s FROM ingredients
+	UNION ALL SELECT MAX(server_seq) FROM units
+	UNION ALL SELECT MAX(server_seq) FROM labels
+	UNION ALL SELECT MAX(server_seq) FROM recipes
+) m`
+
+// pull 在同一个只读事务里读完增量再取游标：游标取全库的 MAX(server_seq)，
+// 而不是任何一条记录的 seq；反过来（先取游标再读增量）会把两次读之间提交的行永久跳过。
+func (s *SyncService) pull(ctx context.Context, q dbQuerier, userID string, sinceSeq int64) (*model.SyncResponse, error) {
+	remote, err := s.getRemoteChanges(ctx, q, userID, sinceSeq)
+	if err != nil {
+		return nil, fmt.Errorf("getRemoteChanges: %w", err)
+	}
+	cursor, err := maxServerSeq(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("read cursor: %w", err)
+	}
+	return &model.SyncResponse{ServerSeq: cursor, RemoteChanges: remote}, nil
+}
+
+func maxServerSeq(ctx context.Context, q dbQuerier) (int64, error) {
+	var cursor int64
+	if err := q.QueryRow(ctx, maxServerSeqSQL).Scan(&cursor); err != nil {
+		return 0, err
+	}
+	return cursor, nil
+}
+
+// applyLocalChanges 在一个写事务里落地客户端改动（spec §7.2）。
+func (s *SyncService) applyLocalChanges(ctx context.Context, userID string, req model.SyncPayload) error {
+	// 团队集合在写事务之外读：写事务的第一条语句必须是 advisory lock。
+	teamSet, err := myTeamIDs(ctx, s.pool, userID)
+	if err != nil {
+		return err
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin write tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if err := s.mergeLocalChanges(ctx, tx, userID, teamSet, req); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// mergeLocalChanges 是写事务体（抽出来以便注入 fake 断言语句顺序）：
+// ① advisory lock → ② 合并字典并收集 remap → ③ 合并菜谱（mergeRecipe 内部先按 remap 重写引用）。
+// 顺序不能换：同批菜谱可能引用被合并掉的字典 id，先合并菜谱就会写出悬空引用。
+func (s *SyncService) mergeLocalChanges(ctx context.Context, tx dbQuerier, userID string, teamSet map[string]bool, req model.SyncPayload) error {
+	// 全局串行化所有同步写事务：nextval 按调用序发号，并发交错提交会出现「低 seq 晚提交」被已推进的游标跳过。
+	if _, err := tx.Exec(ctx, advisoryLockSQL); err != nil {
+		return err
+	}
+
+	remap := make(map[string]string)
+	for _, it := range req.Ingredients {
+		ent := dictEntity{ID: it.ID, Name: it.Name, CreatedAt: it.CreatedAt, UpdatedAt: it.UpdatedAt, DeletedAt: it.DeletedAt}
+		if err := s.mergeOneDict(ctx, tx, ingredientSpec, ent, remap); err != nil {
+			return err
+		}
+	}
+	for _, it := range req.Units {
+		ent := dictEntity{ID: it.ID, Name: it.Name, CreatedAt: it.CreatedAt, UpdatedAt: it.UpdatedAt, DeletedAt: it.DeletedAt}
+		if err := s.mergeOneDict(ctx, tx, unitSpec, ent, remap); err != nil {
+			return err
+		}
+	}
+	for _, it := range req.Labels {
+		ent := dictEntity{ID: it.ID, Name: it.Name, Kind: it.Kind, CreatedAt: it.CreatedAt, UpdatedAt: it.UpdatedAt, DeletedAt: it.DeletedAt}
+		if err := s.mergeOneDict(ctx, tx, labelSpec, ent, remap); err != nil {
+			return err
+		}
+	}
+
+	// 菜谱引用的 team 必须在 teamSet 里，否则整条跳过（mergeRecipe 内部判定）。
+	for _, r := range req.Recipes {
+		if err := s.mergeRecipe(ctx, tx, userID, teamSet, remap, r); err != nil {
+			return fmt.Errorf("merge recipe %s: %w", r.ID, err)
+		}
+	}
+	return nil
+}
+
+// mergeOneDict 合并一条字典记录，并把「旧 id → 有效 id」记进 remap 供菜谱重写引用。
+func (s *SyncService) mergeOneDict(ctx context.Context, tx dbQuerier, spec dictSpec, ent dictEntity, remap map[string]string) error {
+	effectiveID, err := s.mergeDict(ctx, tx, spec, ent)
+	if err != nil {
+		return fmt.Errorf("merge %s %s: %w", spec.table, ent.ID, err)
+	}
+	if effectiveID != ent.ID {
+		remap[ent.ID] = effectiveID
+	}
+	return nil
+}
+
+// getRemoteChanges 读本次增量：字典全局共享、无过滤；菜谱按可见范围过滤；再补齐引用、列图片清单。
+func (s *SyncService) getRemoteChanges(ctx context.Context, q dbQuerier, userID string, sinceSeq int64) (model.SyncPayload, error) {
+	// 团队集合在同一个快照里现算：菜谱的过滤条件要用到「我加入的团队」。
+	teamSet, err := myTeamIDs(ctx, q, userID)
+	if err != nil {
+		return model.SyncPayload{}, err
+	}
+
+	// 五个集合一律给空切片而不是 nil：客户端拿到响应直接遍历，首轮同步（服务端还没数据）的 null 会炸。
+	payload := model.SyncPayload{
+		Ingredients: []model.Ingredient{},
+		Units:       []model.Unit{},
+		Labels:      []model.Label{},
+		Recipes:     []model.Recipe{},
+		Files:       []model.FileRef{},
+	}
+
+	if payload.Ingredients, err = queryIngredients(ctx, q, sinceSeq); err != nil {
+		return payload, fmt.Errorf("query ingredients: %w", err)
+	}
+	if payload.Units, err = queryUnits(ctx, q, sinceSeq); err != nil {
+		return payload, fmt.Errorf("query units: %w", err)
+	}
+	if payload.Labels, err = queryLabels(ctx, q, sinceSeq); err != nil {
+		return payload, fmt.Errorf("query labels: %w", err)
+	}
+	if payload.Recipes, err = queryRecipes(ctx, q, userID, teamSet, sinceSeq); err != nil {
+		return payload, fmt.Errorf("query recipes: %w", err)
+	}
+
+	// 增量菜谱引用的字典行可能 server_seq 早于游标、本次没下发 → 按 id 反查补齐（spec §7.5）。
+	if err := backfillReferenced(ctx, q, &payload); err != nil {
+		return payload, fmt.Errorf("backfill referenced: %w", err)
+	}
+
+	// 图片清单只列本次菜谱引用到的、files 表里确实存在的文件名，客户端对本地没有的逐个下载。
+	if payload.Files, err = queryFiles(ctx, q, payload.Recipes); err != nil {
+		return payload, fmt.Errorf("query files: %w", err)
+	}
+	return payload, nil
+}
+
+// recipesVisibleScope 是菜谱增量的可见范围，写进 SQL 而不是发完再筛：
+// 私人菜谱（team_id IS NULL）只有作者本人看得到，团队菜谱只有成员看得到。$2 = 我，$3 = 我的团队 id。
+const recipesVisibleScope = `(owner_id = $2 AND team_id IS NULL) OR team_id = ANY($3)`
+
+func queryRecipes(ctx context.Context, q dbQuerier, userID string, teamSet map[string]bool, sinceSeq int64) ([]model.Recipe, error) {
+	// 菜谱行必须先读完并关掉再查子表：读阶段整个跑在同一个只读事务里，共享一条连接。
+	recipes, err := queryList(ctx, q,
+		`SELECT id, owner_id, team_id, name, cover_path, category_id, created_at, updated_at, deleted_at
+		 FROM recipes WHERE server_seq > $1 AND (`+recipesVisibleScope+`)`,
+		[]any{sinceSeq, userID, slices.Sorted(maps.Keys(teamSet))},
+		func(rows pgx.Rows) (model.Recipe, error) {
+			var r model.Recipe
+			err := rows.Scan(&r.ID, &r.OwnerID, &r.TeamID, &r.Name, &r.CoverPath, &r.CategoryID,
+				&r.CreatedAt, &r.UpdatedAt, &r.DeletedAt)
+			// 子集合给空切片：JSON 里的空数组才表达得出「清空」（model.Recipe 的契约）。
+			r.Steps, r.Ingredients, r.LabelIDs = []model.RecipeStep{}, []model.RecipeIngredient{}, []string{}
+			return r, err
+		})
+	if err != nil {
+		return nil, err
+	}
+	if len(recipes) == 0 {
+		return recipes, nil
+	}
+	return attachRecipeChildren(ctx, q, recipes)
+}
+
+// recipeStepRow 等三个中间类型把子行与它的父菜谱 id 凑在一起，便于按父 id 分组。
+type recipeStepRow struct {
+	recipeID string
+	step     model.RecipeStep
+}
+
+type recipeIngredientRow struct {
+	recipeID   string
+	ingredient model.RecipeIngredient
+}
+
+type recipeLabelRow struct {
+	recipeID string
+	labelID  string
+}
+
+// attachRecipeChildren 三张子表各一条查询按 recipe_id 取回，在 Go 里组装进父菜谱。
+// 不用 wee-count 那种 array_agg：这里列多，读回来分组比在 SQL 里拼数组直白。
+func attachRecipeChildren(ctx context.Context, q dbQuerier, recipes []model.Recipe) ([]model.Recipe, error) {
+	byID := make(map[string]*model.Recipe, len(recipes))
+	ids := make([]string, 0, len(recipes))
+	for i := range recipes {
+		byID[recipes[i].ID] = &recipes[i]
+		ids = append(ids, recipes[i].ID)
+	}
+
+	steps, err := queryList(ctx, q,
+		`SELECT recipe_id, id, sort_order, text, image_path FROM recipe_steps
+		 WHERE recipe_id = ANY($1) ORDER BY recipe_id, sort_order`,
+		[]any{ids}, func(rows pgx.Rows) (recipeStepRow, error) {
+			var it recipeStepRow
+			err := rows.Scan(&it.recipeID, &it.step.ID, &it.step.SortOrder, &it.step.Text, &it.step.ImagePath)
+			return it, err
+		})
+	if err != nil {
+		return nil, err
+	}
+	for _, it := range steps {
+		if r := byID[it.recipeID]; r != nil {
+			r.Steps = append(r.Steps, it.step)
+		}
+	}
+
+	ings, err := queryList(ctx, q,
+		`SELECT recipe_id, id, ingredient_id, amount, unit_id, sort_order FROM recipe_ingredients
+		 WHERE recipe_id = ANY($1) ORDER BY recipe_id, sort_order`,
+		[]any{ids}, func(rows pgx.Rows) (recipeIngredientRow, error) {
+			var it recipeIngredientRow
+			err := rows.Scan(&it.recipeID, &it.ingredient.ID, &it.ingredient.IngredientID,
+				&it.ingredient.Amount, &it.ingredient.UnitID, &it.ingredient.SortOrder)
+			return it, err
+		})
+	if err != nil {
+		return nil, err
+	}
+	for _, it := range ings {
+		if r := byID[it.recipeID]; r != nil {
+			r.Ingredients = append(r.Ingredients, it.ingredient)
+		}
+	}
+
+	labels, err := queryList(ctx, q,
+		`SELECT recipe_id, label_id FROM recipe_labels WHERE recipe_id = ANY($1) ORDER BY recipe_id, label_id`,
+		[]any{ids}, func(rows pgx.Rows) (recipeLabelRow, error) {
+			var it recipeLabelRow
+			err := rows.Scan(&it.recipeID, &it.labelID)
+			return it, err
+		})
+	if err != nil {
+		return nil, err
+	}
+	for _, it := range labels {
+		if r := byID[it.recipeID]; r != nil {
+			r.LabelIDs = append(r.LabelIDs, it.labelID)
+		}
+	}
+
+	return recipes, nil
+}
+
+// backfillReferenced 补齐「增量菜谱引用到、但本次没下发的字典行」：字典行的 server_seq 可能早于
+// 游标（食材是三天前建的、菜谱是今天改的），不补客户端就缺外键行。菜谱子行随父菜谱整条走，不用补。
+// category_id 与 label_ids 都指向 labels（spec §7.4）。
+func backfillReferenced(ctx context.Context, q dbQuerier, payload *model.SyncPayload) error {
+	refIngredients, refUnits, refLabels := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for _, r := range payload.Recipes {
+		refLabels[r.CategoryID] = true
+		for _, labelID := range r.LabelIDs {
+			refLabels[labelID] = true
+		}
+		for _, ing := range r.Ingredients {
+			refIngredients[ing.IngredientID] = true
+			if ing.UnitID != nil {
+				refUnits[*ing.UnitID] = true
+			}
+		}
+	}
+
+	if ids := pendingIDs(refIngredients, payload.Ingredients, func(it model.Ingredient) string { return it.ID }); len(ids) > 0 {
+		extra, err := queryIngredientsByIDs(ctx, q, ids)
+		if err != nil {
+			return err
+		}
+		payload.Ingredients = append(payload.Ingredients, extra...)
+	}
+	if ids := pendingIDs(refUnits, payload.Units, func(it model.Unit) string { return it.ID }); len(ids) > 0 {
+		extra, err := queryUnitsByIDs(ctx, q, ids)
+		if err != nil {
+			return err
+		}
+		payload.Units = append(payload.Units, extra...)
+	}
+	if ids := pendingIDs(refLabels, payload.Labels, func(it model.Label) string { return it.ID }); len(ids) > 0 {
+		extra, err := queryLabelsByIDs(ctx, q, ids)
+		if err != nil {
+			return err
+		}
+		payload.Labels = append(payload.Labels, extra...)
+	}
+	return nil
+}
+
+// pendingIDs 返回 refs 里「还没随增量下发过」的 id（下发过的不重复补拉），排序后返回。
+// 空 id 直接丢掉：菜谱里悬空的引用没必要拿去查库。
+func pendingIDs[T any](refs map[string]bool, items []T, id func(T) string) []string {
+	seen := make(map[string]bool, len(items))
+	for _, it := range items {
+		seen[id(it)] = true
+	}
+	pending := []string{}
+	for k := range refs {
+		if k != "" && !seen[k] {
+			pending = append(pending, k)
+		}
+	}
+	slices.Sort(pending)
+	return pending
+}
+
+// queryList 是「一条 SELECT 扫成切片」的公共骨架：四张简单表（三字典 + files）与菜谱三张子表共用。
+func queryList[T any](ctx context.Context, q dbQuerier, sql string, args []any, scan func(pgx.Rows) (T, error)) ([]T, error) {
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []T{}
+	for rows.Next() {
+		item, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+const dictColumns = `id, name, created_at, updated_at, deleted_at`
+const labelColumns = `id, name, kind, created_at, updated_at, deleted_at`
+
+func queryIngredients(ctx context.Context, q dbQuerier, sinceSeq int64) ([]model.Ingredient, error) {
+	return queryList(ctx, q, "SELECT "+dictColumns+" FROM ingredients WHERE server_seq > $1",
+		[]any{sinceSeq}, scanIngredient)
+}
+
+func queryIngredientsByIDs(ctx context.Context, q dbQuerier, ids []string) ([]model.Ingredient, error) {
+	return queryList(ctx, q, "SELECT "+dictColumns+" FROM ingredients WHERE id = ANY($1)",
+		[]any{ids}, scanIngredient)
+}
+
+func queryUnits(ctx context.Context, q dbQuerier, sinceSeq int64) ([]model.Unit, error) {
+	return queryList(ctx, q, "SELECT "+dictColumns+" FROM units WHERE server_seq > $1",
+		[]any{sinceSeq}, scanUnit)
+}
+
+func queryUnitsByIDs(ctx context.Context, q dbQuerier, ids []string) ([]model.Unit, error) {
+	return queryList(ctx, q, "SELECT "+dictColumns+" FROM units WHERE id = ANY($1)",
+		[]any{ids}, scanUnit)
+}
+
+func queryLabels(ctx context.Context, q dbQuerier, sinceSeq int64) ([]model.Label, error) {
+	return queryList(ctx, q, "SELECT "+labelColumns+" FROM labels WHERE server_seq > $1",
+		[]any{sinceSeq}, scanLabel)
+}
+
+func queryLabelsByIDs(ctx context.Context, q dbQuerier, ids []string) ([]model.Label, error) {
+	return queryList(ctx, q, "SELECT "+labelColumns+" FROM labels WHERE id = ANY($1)",
+		[]any{ids}, scanLabel)
+}
+
+func scanIngredient(rows pgx.Rows) (model.Ingredient, error) {
+	var it model.Ingredient
+	err := rows.Scan(&it.ID, &it.Name, &it.CreatedAt, &it.UpdatedAt, &it.DeletedAt)
+	return it, err
+}
+
+func scanUnit(rows pgx.Rows) (model.Unit, error) {
+	var it model.Unit
+	err := rows.Scan(&it.ID, &it.Name, &it.CreatedAt, &it.UpdatedAt, &it.DeletedAt)
+	return it, err
+}
+
+func scanLabel(rows pgx.Rows) (model.Label, error) {
+	var it model.Label
+	err := rows.Scan(&it.ID, &it.Name, &it.Kind, &it.CreatedAt, &it.UpdatedAt, &it.DeletedAt)
+	return it, err
+}
+
+// queryFiles 只按本次返回的菜谱引用到的图片名去查：files 没有归属列，谁引用了它谁才读得到（spec §8.1）。
+func queryFiles(ctx context.Context, q dbQuerier, recipes []model.Recipe) ([]model.FileRef, error) {
+	names := referencedFileNames(recipes)
+	if len(names) == 0 {
+		return []model.FileRef{}, nil
+	}
+	return queryList(ctx, q, "SELECT name, size FROM files WHERE name = ANY($1)",
+		[]any{names}, func(rows pgx.Rows) (model.FileRef, error) {
+			var f model.FileRef
+			err := rows.Scan(&f.Name, &f.Size)
+			return f, err
+		})
+}
+
+// referencedFileNames 收齐菜谱里的图片名（封面 + 步骤图），去重并排序（参数顺序稳定）。
+func referencedFileNames(recipes []model.Recipe) []string {
+	names := make(map[string]bool)
+	for _, r := range recipes {
+		if r.CoverPath != nil {
+			names[*r.CoverPath] = true
+		}
+		for _, st := range r.Steps {
+			if st.ImagePath != nil {
+				names[*st.ImagePath] = true
+			}
+		}
+	}
+	return slices.Sorted(maps.Keys(names))
 }

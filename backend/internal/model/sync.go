@@ -15,6 +15,12 @@ type SyncPayload struct {
 	Files       []FileRef    `json:"files"`
 }
 
+// SyncResponse 是一次同步的响应：新游标（客户端下次带回）与本次增量。
+type SyncResponse struct {
+	ServerSeq     int64       `json:"server_seq"`
+	RemoteChanges SyncPayload `json:"remote_changes"`
+}
+
 // FileRef 是图片引用：字节走 /files 独立通道，同步体里只带文件名与大小。
 type FileRef struct {
 	Name string `json:"name"`
