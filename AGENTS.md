@@ -36,4 +36,5 @@ cargo clippy             # Rust lint
 - TypeScript 严格模式，禁止 `any`。
 - **食材必须引用结构化数据**：菜谱只存 `ingredient_id` + 用量 + `unit_id`，禁止在菜谱表里存食材纯文本；别名（"五花肉"/"三层肉"）由食材表归一。
 - **每张业务表带 `id`、`updated_at`、`deleted_at`**，为后期的 LWW 增量同步与软删除留位。
+  - 例外（2026-10-14 确认）：**服务端的三张子表 `recipe_steps` / `recipe_ingredients` / `recipe_labels` 不带 `deleted_at`**。它们不是独立业务实体，而是随父菜谱整条替换的快照（服务端只存当前有效的子行，软删子行不下发），加一个永远为 NULL 的列没有意义。本地 SQLite 侧这三张表照旧保留 `deleted_at`。见 `docs/superpowers/specs/2026-10-14-sync-team-design.md` §7.3 / §11.13。
 - **README.md 只写普通用户要看的内容**（做什么、怎么装、怎么用）；开发者文档另起文件放 `docs/`（架构、数据模型、构建发布），不往 README 里塞。
