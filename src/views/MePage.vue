@@ -19,8 +19,10 @@ const lastSyncText = computed(() =>
 );
 
 function retry(): void {
-  // shortcut: 真正触发一次同步要走 Task 8 的 triggerFullPushAndSync，本任务按裁定 R2 不接线
-  void auth.restoreSession();
+  // 动态 import：断开 auth ↔ migration ↔ team/sync 的静态模块环（详见 stores/auth.ts 的 triggerPostSessionSync）
+  void import("@/services/migration")
+    .then((m) => m.triggerFullPushAndSync())
+    .catch((e: unknown) => console.warn("[me] 同步模块加载失败:", e));
 }
 
 async function logout(): Promise<void> {

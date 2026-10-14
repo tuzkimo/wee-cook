@@ -4,8 +4,7 @@
 // 持久化分工（规格 §7.2）：
 //   - 地址与账号信息 → settings.json（server_url / server_user_id / server_username / server_nickname）
 //   - refresh token   → tokens.json，由 api 层按服务端 user id 隔离存储
-// 「登录/恢复会话成功即做一次全扫同步」的接线由 Task 8 的 Step 5 负责；
-// 本任务按裁定 R2 不引入同步模块（那个模块到 Task 8 才存在，现在调用会编译不过）。
+// 「登录/恢复会话成功即做一次全扫同步」接在三个会话入口的成功路径上（spec §9.5 / §9.3）。
 import { createPinia, defineStore, getActivePinia } from "pinia";
 import { computed, ref } from "vue";
 import * as api from "@/services/api";
@@ -22,6 +21,18 @@ const KEY_NICKNAME = "server_nickname";
 const LOG_SAVE: SettingLogContext = { tag: "auth", label: "同步设置", action: "保存" };
 
 const NETWORK_MESSAGE = "连不上服务器，检查地址和网络";
+
+/**
+ * 会话刚变在线：认领存量 + 一次全扫推送（spec §9.3）。fire-and-forget，不阻塞登录返回。
+ *
+ * 刻意用动态 import 而不是顶部静态 import：`auth → migration → team/sync` 的静态环会让
+ * vitest 的 `vi.mock("@/services/sync")` 失效（team.test 会拿到真 `performSync` 去查未初始化的库）。
+ */
+function triggerPostSessionSync(): void {
+  void import("@/services/migration")
+    .then((m) => m.triggerFullPushAndSync())
+    .catch((e: unknown) => console.warn("[auth] 同步模块加载失败:", e));
+}
 
 /** 读字符串型设置：空串按未设置处理（地址与账号都不该是空串）。 */
 function parseString(raw: unknown): string | null {
@@ -121,6 +132,8 @@ const useAuthStoreBase = defineStore("auth", () => {
     sessionEpoch++;
     adoptSession(resp.user, normalized);
     await persistSession(resp.user, normalized);
+    // 会话刚变在线：认领存量 + 一次全扫推送（失败不抛出，只置 lastSyncFailed）
+    triggerPostSessionSync();
   }
 
   async function login(url: string, username: string, password: string): Promise<void> {
@@ -195,6 +208,8 @@ const useAuthStoreBase = defineStore("auth", () => {
       nickname.value = resp.user.nickname;
       mode.value = "online";
       await persistSession(resp.user, url);
+      // 冷启动恢复会话成功同样算「会话变在线」（spec §9.5）
+      triggerPostSessionSync();
     } catch (err) {
       // 服务端明确说 refresh token 失效才清；超时 / 断网保留凭据与设置。
       // 无论哪种都保持 guest，绝不阻塞或清空本地菜谱。
