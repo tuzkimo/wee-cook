@@ -118,6 +118,10 @@ export async function downloadMissingFiles(
   refs: FileRef[],
   deps: FileSyncDeps = realDeps,
 ): Promise<{ downloaded: number; failed: number }> {
+  // 地址没配就是「没开始」，不是「每张都失败」：报 N 个失败等于把缺配置伪装成 N 张坏图，
+  // 且会白做 N 次 exists。不发任何请求（api 层约定），也不记失败
+  if (!hasBaseUrl()) return { downloaded: 0, failed: 0 };
+
   let downloaded = 0;
   let failed = 0;
 
@@ -130,6 +134,9 @@ export async function downloadMissingFiles(
       const res = await fetchWithAuth(`/api/v1/files/${encodeURIComponent(ref.name)}`);
       if (!res.ok) throw new Error(`下载失败：HTTP ${res.status}`);
       const bytes = new Uint8Array(await res.arrayBuffer());
+      // 200 也可能是空 body（服务端契约之外的故障）。空文件一旦 rename 成正式名，
+      // 下次 exists 就为真、永不重下 ⇒ 当失败处理。在写盘前拦下，连 .tmp 都不会产生
+      if (bytes.length === 0) throw new Error("下载内容为空");
 
       // 临时名再改名：断网/杀进程留下的是 .tmp，正式名要么不存在、要么就是完整文件
       const tmp = `${path}.tmp`;

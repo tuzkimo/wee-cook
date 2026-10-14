@@ -219,4 +219,32 @@ describe("downloadMissingFiles", () => {
     expect(io.renames).toEqual([{ from: "images/x.jpg.tmp", to: "images/x.jpg" }]);
     expect(io.store.has("images/x.jpg.tmp")).toBe(false);
   });
+
+  it("没有配置服务器地址时不发请求，也不逐张报失败", async () => {
+    hasBaseUrlMock.mockReturnValue(false);
+    const io = fakeIo();
+    const refs: FileRef[] = [
+      { name: "a.jpg", size: 1 },
+      { name: "b.jpg", size: 1 },
+    ];
+
+    const result = await downloadMissingFiles(refs, io.deps);
+
+    // 没开始 ≠ 每张都失败；把缺配置报成 N 张坏图会误导调用方
+    expect(result).toEqual({ downloaded: 0, failed: 0 });
+    expect(fetchWithAuthMock).not.toHaveBeenCalled();
+  });
+
+  it("200 但 body 为空 → 记为失败，正式名不存在（坏文件不驻留）", async () => {
+    const io = fakeIo();
+    fetchWithAuthMock.mockResolvedValue(fileRes(200, new Uint8Array()));
+
+    const result = await downloadMissingFiles([{ name: "empty.jpg", size: 0 }], io.deps);
+
+    expect(result).toEqual({ downloaded: 0, failed: 1 });
+    // 一个字节都不写：空文件一旦挂上正式名，exists 就永真、再也不会重下
+    expect(io.writePaths).toEqual([]);
+    expect(io.renames).toEqual([]);
+    expect(io.store.has("images/empty.jpg")).toBe(false);
+  });
 });
