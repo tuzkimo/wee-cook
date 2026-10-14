@@ -10,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"wee-cook/backend/internal/model"
 )
 
 // syncWriteLockID 是同步写事务的全局 advisory lock 编号：一次只允许一个同步写事务在途，
@@ -164,4 +166,112 @@ func (s *SyncService) mergeDict(ctx context.Context, tx dbQuerier, spec dictSpec
 		return "", err
 	}
 	return ent.ID, nil
+}
+
+// mergeRecipe 整条合并一条菜谱：父行 LWW + 三张子表整组替换（空数组即清空）。
+// 只有作者能改，越权写入静默跳过；LWW 比较取库里的 updated_at，不用服务器 now()。
+// remap 是同一批字典合并产出的「旧 id → 有效 id」：必须先重写所有引用再碰库，
+// 否则引用了被合并掉的 id 会撞外键、把整次同步回滚（spec §7.2 第 3 步）。
+// shortcut: 整条替换以「只有作者能改」为前提，将来允许协作编辑同一条菜谱时必须回到行级 LWW（spec §7.3）。
+func (s *SyncService) mergeRecipe(ctx context.Context, tx dbQuerier, userID string, teamSet map[string]bool, remap map[string]string, r model.Recipe) error {
+	remapID := func(id string) string {
+		if to, ok := remap[id]; ok {
+			return to
+		}
+		return id
+	}
+	r.CategoryID = remapID(r.CategoryID)
+	for i := range r.LabelIDs {
+		r.LabelIDs[i] = remapID(r.LabelIDs[i])
+	}
+	for i := range r.Ingredients {
+		r.Ingredients[i].IngredientID = remapID(r.Ingredients[i].IngredientID)
+		if r.Ingredients[i].UnitID != nil {
+			unitID := remapID(*r.Ingredients[i].UnitID)
+			r.Ingredients[i].UnitID = &unitID
+		}
+	}
+
+	var remoteOwner string
+	var remoteUpdatedAt time.Time
+	err := tx.QueryRow(ctx,
+		"SELECT owner_id, updated_at FROM recipes WHERE id = $1 FOR UPDATE", r.ID).
+		Scan(&remoteOwner, &remoteUpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO recipes (id, owner_id, team_id, name, cover_path, category_id, created_at, updated_at, deleted_at)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+			// owner_id 取当前用户：请求里带的 OwnerID 是客户端可伪造的，一律丢弃（spec §7.1）
+			r.ID, userID, r.TeamID, r.Name, r.CoverPath, r.CategoryID, r.CreatedAt, r.UpdatedAt, r.DeletedAt,
+		); err != nil {
+			return err
+		}
+		return insertRecipeChildren(ctx, tx, r)
+	}
+	if err != nil {
+		return err
+	}
+	if remoteOwner != userID {
+		return nil
+	}
+	if !r.UpdatedAt.After(remoteUpdatedAt) {
+		return nil
+	}
+	if r.TeamID != nil && !teamSet[*r.TeamID] {
+		return nil
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE recipes SET team_id=$1, name=$2, cover_path=$3, category_id=$4, updated_at=$5, deleted_at=$6,
+		        server_seq = nextval('global_server_seq') WHERE id=$7`,
+		r.TeamID, r.Name, r.CoverPath, r.CategoryID, r.UpdatedAt, r.DeletedAt, r.ID,
+	); err != nil {
+		return err
+	}
+	if err := deleteRecipeChildren(ctx, tx, r.ID); err != nil {
+		return err
+	}
+	return insertRecipeChildren(ctx, tx, r)
+}
+
+// 三张子表没有 server_seq、也没有 deleted_at：服务端只保存「当前有效的子行快照」，
+// 所以更新时整组删掉再按 incoming 插（不删则旧子行会被回传「复活」，空子集也无法表达清空）。
+func deleteRecipeChildren(ctx context.Context, tx dbQuerier, recipeID string) error {
+	for _, table := range []string{"recipe_steps", "recipe_ingredients", "recipe_labels"} {
+		if _, err := tx.Exec(ctx, "DELETE FROM "+table+" WHERE recipe_id = $1", recipeID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func insertRecipeChildren(ctx context.Context, tx dbQuerier, r model.Recipe) error {
+	for _, st := range r.Steps {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO recipe_steps (id, recipe_id, sort_order, text, image_path) VALUES ($1,$2,$3,$4,$5)`,
+			st.ID, r.ID, st.SortOrder, st.Text, st.ImagePath); err != nil {
+			return err
+		}
+	}
+	for _, ing := range r.Ingredients {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO recipe_ingredients (id, recipe_id, ingredient_id, amount, unit_id, sort_order) VALUES ($1,$2,$3,$4,$5,$6)`,
+			ing.ID, r.ID, ing.IngredientID, ing.Amount, ing.UnitID, ing.SortOrder); err != nil {
+			return err
+		}
+	}
+	// 同一批里可能有重复 label_id（两台设备各建过同名标签、remap 到同一个 id）：
+	// 主键 (recipe_id, label_id) 冲突会让整批同步回滚，先去重再插。
+	seen := make(map[string]bool, len(r.LabelIDs))
+	for _, labelID := range r.LabelIDs {
+		if seen[labelID] {
+			continue
+		}
+		seen[labelID] = true
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO recipe_labels (recipe_id, label_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+			r.ID, labelID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
