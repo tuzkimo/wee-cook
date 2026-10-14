@@ -94,6 +94,14 @@ async function ownershipOf(id: string): Promise<{ owner_id: string | null; team_
   return rows[0];
 }
 
+async function updatedAtOf(id: string): Promise<string> {
+  const rows = await db.select<{ updated_at: string }[]>(
+    "SELECT updated_at FROM recipes WHERE id = ?",
+    [id],
+  );
+  return rows[0].updated_at;
+}
+
 describe("菜谱可见范围与归属", () => {
   it("未登录时列表不过滤，但别人的菜谱不可编辑", async () => {
     const mine = await insertRecipe({ name: "本机菜", owner_id: null, team_id: null });
@@ -161,6 +169,49 @@ describe("菜谱可见范围与归属", () => {
     const id = await store.create(input("本机菜", { category_id: await categoryId() }));
 
     expect(await ownershipOf(id)).toEqual({ owner_id: null, team_id: null });
+  });
+
+  it("登录后改不动别人的菜谱：update / remove 被拒，本地 updated_at 不被推新", async () => {
+    loginAs("me");
+    useTeamStore().teams = [team("t1")];
+    const otherId = await insertRecipe({ name: "别人的团队菜", owner_id: "other", team_id: "t1" });
+    const before = await updatedAtOf(otherId);
+    const store = useRecipeStore();
+
+    await expect(
+      store.update(otherId, input("改名", { category_id: await categoryId() })),
+    ).rejects.toThrow("没有修改权限");
+    await expect(store.remove(otherId)).rejects.toThrow("没有修改权限");
+
+    expect(await updatedAtOf(otherId)).toBe(before);
+    expect(await listNames()).toEqual(["别人的团队菜"]);
+  });
+
+  it("断网冷启动：有 uid 的团队缓存时，家人菜谱仍在可见范围里", async () => {
+    localStorage.setItem("team_cache:me", JSON.stringify([team("t1")]));
+    loginAs("me");
+    await insertRecipe({ name: "家人菜", owner_id: "other", team_id: "t1" });
+    await insertRecipe({ name: "私人菜", owner_id: "me", team_id: null });
+
+    // book.restore() 内部会 team.load()：没配地址 → 请求失败，只能回落到缓存
+    await useBookStore().restore();
+
+    expect(await listNames()).toEqual(["家人菜", "私人菜"]);
+  });
+
+  it("换号后不会用上一个账号的团队缓存算可见范围", async () => {
+    localStorage.setItem("team_cache:u1", JSON.stringify([team("t1")]));
+    const teamStore = useTeamStore();
+    loginAs("u1");
+    await teamStore.load();
+    expect(teamStore.teams.map((item) => item.id)).toEqual(["t1"]);
+
+    loginAs("u2");
+    await teamStore.load();
+    expect(teamStore.teams).toEqual([]);
+
+    await insertRecipe({ name: "u1 的团队菜", owner_id: "u1", team_id: "t1" });
+    expect(await listNames()).toEqual([]);
   });
 
   it("新增、修改、删除后都把该条完整形状入同步队列，删除带墓碑", async () => {

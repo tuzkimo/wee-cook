@@ -14,7 +14,7 @@ import IngredientSheet from "@/components/IngredientSheet.vue";
 import RefSheet from "@/components/RefSheet.vue";
 import { useIngredientStore, useUnitStore } from "@/stores/ingredient";
 import { useLabelStore } from "@/stores/label";
-import { useRecipeStore } from "@/stores/recipe";
+import { canEdit, useRecipeStore } from "@/stores/recipe";
 import type { RefStore } from "@/stores/refStore";
 import type { RecipeDetail, RecipeInput } from "@/types";
 import { amountText } from "@/utils/amount";
@@ -116,7 +116,14 @@ onMounted(async () => {
   const id = recipeId.value;
   if (id) {
     try {
-      fill(await recipeStore.getDetail(id));
+      const loaded = await recipeStore.getDetail(id);
+      // 没有修改权限（别人的团队菜谱）：退回详情页，别让用户白编一通
+      if (!canEdit(loaded.recipe)) {
+        initial.value = snapshot(); // 先定格基线，否则离页守卫会拦住这次 replace
+        await router.replace(`/recipe/${id}`);
+        return;
+      }
+      fill(loaded);
     } catch (loadError: unknown) {
       error.value = loadError instanceof Error ? loadError.message : "菜谱加载失败";
     }

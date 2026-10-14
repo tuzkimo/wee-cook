@@ -20,6 +20,7 @@ type LabelStoreLike = { asRefStore(kind: LabelKind): RefStore };
 // 这里只测「拿到数据怎么画、点了往哪跳、提交前清洗成什么形状」。
 const mocks = vi.hoisted(() => ({
   push: vi.fn(),
+  replace: vi.fn(),
   back: vi.fn(),
   routeParams: {} as Record<string, string>,
   leaveGuard: undefined as undefined | (() => boolean),
@@ -32,23 +33,28 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("vue-router", () => ({
-  useRouter: () => ({ push: mocks.push, back: mocks.back }),
+  useRouter: () => ({ push: mocks.push, replace: mocks.replace, back: mocks.back }),
   useRoute: () => ({ params: mocks.routeParams }),
   onBeforeRouteLeave: (callback: () => boolean) => {
     mocks.leaveGuard = callback;
   },
 }));
 
-vi.mock("@/stores/recipe", () => ({
-  useRecipeStore: () => ({
-    recipes: [],
-    fetchAll: vi.fn(async () => {}),
-    getDetail: mocks.getDetail,
-    create: mocks.create,
-    update: mocks.update,
-    remove: vi.fn(async () => {}),
-  }),
-}));
+vi.mock("@/stores/recipe", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/stores/recipe")>();
+  return {
+    // canEdit 用真身（它读 auth store）：权限用例验的是「页面接线 + 真判据」
+    ...actual,
+    useRecipeStore: () => ({
+      recipes: [],
+      fetchAll: vi.fn(async () => {}),
+      getDetail: mocks.getDetail,
+      create: mocks.create,
+      update: mocks.update,
+      remove: vi.fn(async () => {}),
+    }),
+  };
+});
 
 vi.mock("@/stores/label", () => ({ useLabelStore: () => mocks.labelStore }));
 
@@ -403,6 +409,21 @@ describe("RecipeEdit", () => {
     expect(wrapper.get('[data-test="form-error"]').text()).toContain("数量要大于 0");
     expect(mocks.create).not.toHaveBeenCalled();
     expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it("没有修改权限的菜谱：onMounted 退回详情页，不填表单", async () => {
+    mocks.routeParams = { id: "r1" };
+    mocks.getDetail.mockResolvedValue({
+      ...detail(),
+      recipe: { ...detail().recipe, owner_id: "other" },
+    });
+
+    const wrapper = await page();
+
+    expect(mocks.replace).toHaveBeenCalledWith("/recipe/r1");
+    expect(inputValue(wrapper, '[data-test="name"]')).toBe("");
+    // 离页守卫不能拦住这次退回
+    expect(mocks.leaveGuard?.()).toBe(true);
   });
 
   it("编辑模式：onMounted 拉详情，各字段被填上", async () => {

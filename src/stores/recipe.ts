@@ -185,6 +185,8 @@ export const useRecipeStore = defineStore("recipe", (): RecipeStore => {
     const name = requireNameAndCategory(input);
     // 旧行 id 只有更新前能取到：新行插进去后，光看 sort_order 分不出谁是谁
     const before = await getDetail(id);
+    // 根因守卫：界面藏了编辑入口，但直接进 /recipe/:id/edit 不能真改别人的菜谱
+    if (!canEdit(before.recipe)) throw new Error("没有修改权限");
     const now = new Date().toISOString();
 
     await insertSteps(id, input.steps, now);
@@ -198,6 +200,13 @@ export const useRecipeStore = defineStore("recipe", (): RecipeStore => {
   }
 
   async function remove(id: string): Promise<void> {
+    const rows = await getDb().select<Recipe[]>(
+      "SELECT * FROM recipes WHERE id = ? AND deleted_at IS NULL",
+      [id],
+    );
+    const target = rows[0];
+    if (!target) throw new Error("菜谱不存在");
+    if (!canEdit(target)) throw new Error("没有修改权限");
     const now = new Date().toISOString();
     await getDb().execute("UPDATE recipes SET deleted_at = ?, updated_at = ? WHERE id = ?", [
       now,
