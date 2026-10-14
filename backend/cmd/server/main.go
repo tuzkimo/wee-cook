@@ -37,10 +37,14 @@ func main() {
 	defer redisClient.Close()
 
 	authSvc := service.NewAuthService(pool, cfg.JWTSecret)
+	teamSvc := service.NewTeamService(pool, redisClient)
 
 	srv := &http.Server{
-		Addr:         ":" + cfg.Port,
-		Handler:      newRouter(cfg, handlers{auth: handler.NewAuthHandler(authSvc)}),
+		Addr: ":" + cfg.Port,
+		Handler: newRouter(cfg, handlers{
+			auth: handler.NewAuthHandler(authSvc),
+			team: handler.NewTeamHandler(teamSvc),
+		}),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 60 * time.Second, // 图片下载的写超时放宽
 	}

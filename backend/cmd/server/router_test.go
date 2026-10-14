@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,6 +12,8 @@ import (
 
 	"wee-cook/backend/internal/config"
 	"wee-cook/backend/internal/handler"
+	"wee-cook/backend/internal/model"
+	"wee-cook/backend/internal/service"
 )
 
 const testJWTSecret = "test-secret"
@@ -63,5 +66,85 @@ func TestLoginPathExistsWithoutToken(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("空 body 的 /auth/login: got %d, want 400", rec.Code)
+	}
+}
+
+// fakeTeamService 只实现 handler.teamService 需要的方法（结构化满足未导出接口），
+// 让路由测试不碰数据库也能走到 handler。
+type fakeTeamService struct{}
+
+func (fakeTeamService) CreateTeam(context.Context, string, string) (*service.CreateTeamResponse, error) {
+	return &service.CreateTeamResponse{}, nil
+}
+
+func (fakeTeamService) ListMyTeams(context.Context, string) ([]model.Team, error) {
+	return []model.Team{}, nil
+}
+
+func (fakeTeamService) CreateInvite(context.Context, string, string) (string, error) {
+	return "123456", nil
+}
+
+func (fakeTeamService) JoinByInvite(context.Context, string, string) (*service.CreateTeamResponse, error) {
+	return &service.CreateTeamResponse{}, nil
+}
+
+func (fakeTeamService) ListMembers(context.Context, string, string) ([]model.TeamMember, error) {
+	return []model.TeamMember{}, nil
+}
+
+func newTeamRouter() http.Handler {
+	cfg := &config.Config{JWTSecret: testJWTSecret}
+	return newRouter(cfg, handlers{
+		auth: handler.NewAuthHandler(nil),
+		team: handler.NewTeamHandler(fakeTeamService{}),
+	})
+}
+
+// 所有 /teams 路由都必须在受保护组内：无 token 时 401（404 说明路由没注册，
+// 401 才证明它挂在 AuthMiddleware 后面）。
+func TestTeamRoutesRequireAuth(t *testing.T) {
+	routes := []struct{ method, path string }{
+		{"GET", "/api/v1/teams"},
+		{"POST", "/api/v1/teams"},
+		{"POST", "/api/v1/teams/team-1/invite"},
+		{"GET", "/api/v1/teams/team-1/members"},
+		{"POST", "/api/v1/teams/join"},
+	}
+
+	for _, rt := range routes {
+		req := httptest.NewRequest(rt.method, rt.path, nil)
+		rec := httptest.NewRecorder()
+		newTeamRouter().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s: got %d, want 401", rt.method, rt.path, rec.Code)
+			continue
+		}
+		if !bytes.Contains(rec.Body.Bytes(), []byte("missing or invalid Authorization header")) {
+			t.Errorf("%s %s: 401 应来自 AuthMiddleware；实际: %s", rt.method, rt.path, rec.Body.String())
+		}
+	}
+}
+
+// /teams/join 是 6 位邀请码的爆破面：同一 IP 超过 10 次/分钟必须 429。
+func TestJoinRouteIsRateLimitedPerIP(t *testing.T) {
+	r := newTeamRouter()
+	token := mintTestToken(t, "access")
+
+	for i := 1; i <= 11; i++ {
+		req := httptest.NewRequest("POST", "/api/v1/teams/join", bytes.NewBufferString(`{"invite_code":"123456"}`))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		want := http.StatusOK
+		if i == 11 {
+			want = http.StatusTooManyRequests
+		}
+		if rec.Code != want {
+			t.Errorf("第 %d 次 join: got %d, want %d", i, rec.Code, want)
+		}
 	}
 }
