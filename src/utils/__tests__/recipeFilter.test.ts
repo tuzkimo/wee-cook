@@ -154,6 +154,20 @@ describe("filterRecipes", () => {
     expect(names).toEqual(["土豆炖肉"]);
   });
 
+  it("关键词与多选叠加生效：两条线索同时收敛", () => {
+    const items = [
+      row("土豆炖肉", { category: "荤菜", ingredients: ["五花肉", "土豆"] }),
+      row("炒土豆丝", { category: "素菜", ingredients: ["土豆"] }),
+    ];
+
+    const names = filterRecipes(
+      items,
+      filter({ keyword: "土豆", ingredientIds: ["ing-五花肉"] }),
+    ).map((i) => i.recipe.name);
+
+    expect(names).toEqual(["土豆炖肉"]);
+  });
+
   it("选中的条件在数据里根本不存在时结果是空", () => {
     expect(filterRecipes([row("红烧肉")], filter({ tagIds: ["tag-已删除"] }))).toEqual([]);
   });

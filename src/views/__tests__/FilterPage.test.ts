@@ -145,10 +145,14 @@ describe("FilterPage", () => {
     const wrapper = mountPage([item("r1", { category: "荤菜" })]);
 
     await wrapper.get('[data-test="filter-category-chip"]').trigger("click");
+    // 草稿要是穿透到 store，这里的勾选会直接改到已生效的筛选
+    expect(useRecipeFilterStore().filter.categoryIds).toEqual([]);
+
     await wrapper.get('[data-test="back"]').trigger("click");
 
     expect(mocks.apply).not.toHaveBeenCalled();
     expect(mocks.back).toHaveBeenCalledTimes(1);
+    expect(useRecipeFilterStore().filter.categoryIds).toEqual([]);
   });
 
   it("重置清空本页勾选，但不写回、不跳页", async () => {
