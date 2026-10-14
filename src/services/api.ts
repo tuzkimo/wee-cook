@@ -257,8 +257,17 @@ export function register(username: string, password: string, nickname?: string):
   return postAuth("/api/v1/auth/register", { username, password, nickname }, "注册失败")
 }
 
-export function refreshSession(refreshTokenValue: string): Promise<AuthResponse> {
-  return postAuth("/api/v1/auth/refresh", { refresh_token: refreshTokenValue }, "会话已过期，请重新登录")
+export async function refreshSession(refreshTokenValue: string): Promise<AuthResponse> {
+  // 与 refreshAccessToken 同一条世代守卫：在途期间退登或换号时不写回，
+  // 否则旧会话的凭据会复活已退出的会话 / 覆盖新账号的凭据。
+  const generation = tokenGeneration;
+  const data = await postAuthRaw(
+    "/api/v1/auth/refresh",
+    { refresh_token: refreshTokenValue },
+    "会话已过期，请重新登录",
+  );
+  if (generation === tokenGeneration) setTokens(data.user.id, data.access_token, data.refresh_token);
+  return data;
 }
 
 export async function getMe(): Promise<User> {

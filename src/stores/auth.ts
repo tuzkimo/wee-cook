@@ -6,7 +6,7 @@
 //   - refresh token   → tokens.json，由 api 层按服务端 user id 隔离存储
 // 「登录/恢复会话成功即做一次全扫同步」的接线由 Task 8 的 Step 5 负责；
 // 本任务按裁定 R2 不引入同步模块（那个模块到 Task 8 才存在，现在调用会编译不过）。
-import { createPinia, defineStore, getActivePinia, setActivePinia } from "pinia";
+import { createPinia, defineStore, getActivePinia } from "pinia";
 import { computed, ref } from "vue";
 import * as api from "@/services/api";
 import { deleteRefreshToken, readRefreshToken } from "@/services/tokenStorage";
@@ -134,22 +134,31 @@ const useAuthStoreBase = defineStore("auth", () => {
     await authenticate(url, () => api.register(username, password, nick), registerErrorMessage);
   }
 
-  async function restoreSession(): Promise<void> {
-    if (mode.value === "online") return;
+  async function restoreSessionOnce(): Promise<void> {
+    // 世代采样必须早于本函数里所有 await：否则恢复过程中的退登/换号要等到几个设置读
+    // 之后才被看见，中间这段窗口里旧会话会被当成当前会话写回。
+    const epoch = sessionEpoch;
 
     const [url, userId, savedNickname] = await Promise.all([
       readStringSetting(KEY_URL),
       readStringSetting(KEY_USER_ID),
       readStringSetting(KEY_NICKNAME),
     ]);
-    // 没配地址（或没登录过）→ 一次网络都不发，保持 guest（App 行为与没开同步时完全一致）
-    if (!url || !userId) {
+    // 没配地址 → 一次网络都不发，保持 guest（App 行为与没开同步时完全一致）
+    if (!url) {
       goGuest();
       return;
     }
 
+    // 地址只要配了就算就绪（MePage 据此从「未开启」切到「未登录」并给出登录入口），
+    // setBaseUrl 只是记地址，不发请求。
     api.setBaseUrl(url);
     baseUrl.value = url;
+    if (!userId) {
+      goGuest();
+      return;
+    }
+
     // 恢复失败时 MePage 仍能显示上次的昵称
     if (savedNickname) nickname.value = savedNickname;
 
@@ -159,13 +168,13 @@ const useAuthStoreBase = defineStore("auth", () => {
       return;
     }
 
-    const epoch = sessionEpoch;
     try {
       const resp = await api.refreshSession(stored);
       if (epoch !== sessionEpoch) {
-        // 换新期间用户退登或换了账号：refreshSession 写回的是旧会话凭据，作废。
-        // 安全方向明确：宁可让这次恢复白做，也不能把旧账号的会话带进新账号。
-        api.clearTokens();
+        // 换新期间用户退登或换了账号：这次恢复属于旧会话，不切在线。
+        // api.refreshSession 自带世代守卫，不会把旧凭据写回（退登不会复活已退出的会话；
+        // 换号时不会串号，最坏是新账号需要重新登录一次）。这里**不能**再 clearTokens()：
+        // 换号时它清的是刚登录的新账号的凭据。
         return;
       }
       if (resp.user.id !== userId) {
@@ -190,15 +199,31 @@ const useAuthStoreBase = defineStore("auth", () => {
     }
   }
 
+  // 会话恢复在途复用：启动钩子与 MePage 挂载可能同时触发，两次各自发一次 refresh 时，
+  // 若服务端轮换 refresh token，后到的那次会拿 401 并把刚恢复好的会话清回 guest。
+  let pendingRestore: Promise<void> | null = null;
+
+  function restoreSession(): Promise<void> {
+    if (mode.value === "online") return Promise.resolve();
+    if (pendingRestore) return pendingRestore;
+    pendingRestore = restoreSessionOnce().finally(() => {
+      pendingRestore = null;
+    });
+    return pendingRestore;
+  }
+
   async function logout(): Promise<void> {
     sessionEpoch++;
     const userId = serverUser.value?.id;
+    // 冷启动恢复在途时退登：serverUser 还是 null、api 的 currentUserId 也还没设过，
+    // 不补这一步就没人删磁盘上那个账号的 refresh token —— 下次冷启动会把用户刚退出的会话自动恢复回来。
+    const persistedUserId = userId ?? (await readStringSetting(KEY_USER_ID));
     lastSyncFailed.value = false;
     lastSyncedTime.value = null;
     goGuest();
     api.clearTokens();
     // 兜底：api.clearTokens 按 currentUserId 删，这里再按已知的服务端 user id 删一次
-    if (userId) await deleteRefreshToken(userId);
+    if (persistedUserId) await deleteRefreshToken(persistedUserId);
     // 刻意不动 settings 里的 server_url 与账号信息：下次登录不用重填地址
   }
 
@@ -227,11 +252,14 @@ const useAuthStoreBase = defineStore("auth", () => {
 });
 
 /**
- * 单例 store。没有活跃 pinia 时临时建一个：组件外 / 未装 pinia 的裸挂载
- * （单元测试、脚本）也能取到实例，行为与应用内一致。应用里 main.ts 先 `app.use(createPinia())`，
- * 走的是同一份 pinia，不会出现两个实例。
+ * 单例 store。没有活跃 pinia 时传一个**显式实例**，不去 `setActivePinia`：
+ * 设成全局 active 会让游离 store 抢先成为后续所有 `useStore()` 的落点 ——
+ * 一旦有模块级 `useAuthStore()` 早于 `app.use(createPinia())`，登录就写进游离 store、
+ * 界面读 app 的 store，表现为「登录成功但界面仍显示未登录」且完全静默。
+ *
+ * shortcut: 为不改已有测试（placeholderPages.test.ts 裸挂载 MePage）而留；
+ * 升级时机：给 placeholderPages.test.ts 装 pinia 后删掉这个兜底。
  */
 export function useAuthStore(): ReturnType<typeof useAuthStoreBase> {
-  if (!getActivePinia()) setActivePinia(createPinia());
-  return useAuthStoreBase();
+  return useAuthStoreBase(getActivePinia() ?? createPinia());
 }

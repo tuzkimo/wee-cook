@@ -6,6 +6,7 @@ import {
   clearTokens,
   getBaseUrl,
   hasBaseUrl,
+  refreshSession,
   setBaseUrl,
   setTokens,
 } from "@/services/api";
@@ -278,5 +279,46 @@ describe("apiFetch", () => {
       status: 500,
       error: "internal error",
     });
+  });
+});
+
+describe("refreshSession", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    clearTokens();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("在途期间换号登录：返回后不用旧凭据覆盖新会话", async () => {
+    setBaseUrl("http://x:8080");
+    setTokens("u1", "access-a", "refresh-a");
+    await writeRefreshToken("u1", "refresh-a");
+
+    const gate = deferred<Response>();
+    const authHeaders: (string | undefined)[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init?: RequestInit) => {
+        authHeaders.push(headerOf(init, "Authorization"));
+        return gate.promise;
+      }),
+    );
+
+    const pending = refreshSession("refresh-a");
+    // A 的 refresh 在途时用户退登并以 B 身份登录
+    clearTokens();
+    setTokens("u2", "access-b", "refresh-b");
+    gate.resolve(res(200, { user: { id: "u1" }, access_token: "access-a2", refresh_token: "refresh-a2" }));
+
+    await pending;
+    await apiFetch("/api/v1/me");
+
+    // 内存里仍是 B 的 access（旧响应没有覆盖它），也没被清掉
+    expect(authHeaders[1]).toBe("Bearer access-b");
+    expect(authTokenReady.value).toBe(true);
+    await vi.waitFor(() => expect(localStorage.getItem("refresh_token:u2")).toBe("refresh-b"));
   });
 });

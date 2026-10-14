@@ -277,6 +277,73 @@ describe("authStore", () => {
     await vi.waitFor(() => expect(localStorage.getItem("refresh_token:u1")).toBeNull());
   });
 
+  it("并发调两次 restoreSession 只发一次 refresh，后到的 401 不会把会话清掉", async () => {
+    seedSetting("server_url", "https://srv");
+    seedSetting("server_user_id", "u1");
+    await writeRefreshToken("u1", "refresh-1");
+
+    let calls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchMock = vi.fn(async () => {
+      calls++;
+      await gate;
+      // 服务端轮换 / 一次性 refresh token：第二次拿同一个 token 换会 401
+      return calls === 1
+        ? res(200, authBody(user("u1"), "access-new", "refresh-new"))
+        : res(401, { error: "invalid or expired refresh token" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = useAuthStore();
+    const first = store.restoreSession();
+    const second = store.restoreSession();
+    release();
+    await Promise.all([first, second]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(store.mode).toBe("online");
+    expect(api.authTokenReady.value).toBe(true);
+    await vi.waitFor(() => expect(localStorage.getItem("refresh_token:u1")).toBe("refresh-new"));
+  });
+
+  it("在途恢复会话期间换号登录：新账号的凭据不被清掉", async () => {
+    seedSetting("server_url", "https://srv");
+    seedSetting("server_user_id", "u1");
+    await writeRefreshToken("u1", "refresh-1");
+
+    let releaseRefresh!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        // 在途的 refresh 答的是旧账号 u1（服务端确实会回它）
+        if (url.endsWith("/api/v1/auth/refresh")) {
+          return gate.then(() => res(200, authBody(user("u1"), "access-a2", "refresh-a2")));
+        }
+        return Promise.resolve(res(200, authBody(user("u2", { username: "bob" }), "access-b", "refresh-b")));
+      }),
+    );
+
+    const store = useAuthStore();
+    const pending = store.restoreSession();
+    // 让 restoreSession 走到 await refreshSession 之后再换号
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await store.login("https://srv", "bob", "pw");
+    releaseRefresh();
+    await pending;
+
+    expect(store.mode).toBe("online");
+    expect(store.serverUser?.id).toBe("u2");
+    // 旧会话的响应不得把刚登录的新账号清成「无凭据」（否则 T8 的同步会挂空）
+    expect(api.authTokenReady.value).toBe(true);
+    await vi.waitFor(() => expect(localStorage.getItem("refresh_token:u2")).toBe("refresh-b"));
+  });
+
   it("notifySyncComplete 记录上次同步时间并复位失败标记", async () => {
     const store = useAuthStore();
     store.lastSyncFailed = true;
