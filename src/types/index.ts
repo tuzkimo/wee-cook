@@ -62,11 +62,18 @@ export type LabelWithUsage = WithUsage<Label>;
 export type IngredientWithUsage = WithUsage<Ingredient>;
 export type UnitWithUsage = WithUsage<Unit>;
 
-/** 列表页一行：菜谱 + 它的分类与标签 */
+/** 列表行里用到的食材：只要 id 与名字，够筛选和显示摘要 */
+export interface IngredientRef {
+  id: string;
+  name: string;
+}
+
+/** 列表页一行：菜谱 + 它的分类、标签、食材 */
 export interface RecipeListItem {
   recipe: Recipe;
   category: Label;
   tags: Label[];
+  ingredients: IngredientRef[];
 }
 
 /** 详情页：食材行已 JOIN 出名字，省得页面再查一遍 */

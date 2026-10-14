@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { ref, type Ref } from "vue";
 import { getDb } from "@/db";
 import type {
+  IngredientRef,
   Label,
   Recipe,
   RecipeDetail,
@@ -39,6 +40,17 @@ export const useRecipeStore = defineStore("recipe", (): RecipeStore => {
        WHERE l.deleted_at IS NULL
        ORDER BY l.name ASC, l.id ASC`,
     );
+    // 内 JOIN 且不加 i.deleted_at IS NULL：被引用的食材删不掉，JOIN 得出来的必然没软删；
+    // 加上反而会把关联静默漏掉。
+    const ingredientRows = await db.select<
+      { recipe_id: string; ingredient_id: string; ingredient_name: string }[]
+    >(
+      `SELECT ri.recipe_id, ri.ingredient_id, i.name AS ingredient_name
+       FROM recipe_ingredients ri
+       JOIN ingredients i ON i.id = ri.ingredient_id
+       WHERE ri.deleted_at IS NULL
+       ORDER BY ri.recipe_id ASC, ri.sort_order ASC, ri.id ASC`,
+    );
 
     const categoryById = new Map(categories.map((category) => [category.id, category]));
     const tagsByRecipe = new Map<string, Label[]>();
@@ -47,12 +59,22 @@ export const useRecipeStore = defineStore("recipe", (): RecipeStore => {
       if (list) list.push(link);
       else tagsByRecipe.set(link.recipe_id, [link]);
     }
+    const ingredientsByRecipe = new Map<string, IngredientRef[]>();
+    for (const row of ingredientRows) {
+      const list = ingredientsByRecipe.get(row.recipe_id) ?? [];
+      // 同一道菜里同一个食材可能有多行（编辑页允许重复添加），列表里只留第一次出现的
+      if (!list.some((item) => item.id === row.ingredient_id)) {
+        list.push({ id: row.ingredient_id, name: row.ingredient_name });
+      }
+      ingredientsByRecipe.set(row.recipe_id, list);
+    }
 
     recipes.value = rows.map((recipe) => ({
       recipe,
       // category_id 是 NOT NULL 外键，分类只软删不物理删，查不到只可能是库被改坏了
       category: categoryById.get(recipe.category_id)!,
       tags: tagsByRecipe.get(recipe.id) ?? [],
+      ingredients: ingredientsByRecipe.get(recipe.id) ?? [],
     }));
   }
 

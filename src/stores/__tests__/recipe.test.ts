@@ -416,6 +416,39 @@ describe("recipeStore", () => {
     expect(store.recipes.map((item) => item.recipe.name)).toEqual(["A2", "C"]);
   });
 
+  it("fetchAll 带出食材：按 sort_order、同一食材只留一次", async () => {
+    const pork = await newIngredient("五花肉");
+    const potato = await newIngredient("土豆");
+    const store = useRecipeStore();
+    await store.create(
+      input({
+        category_id: await newCategory(),
+        // 传入顺序：土豆 → 五花肉 → 五花肉（同一食材重复添加，编辑页允许）
+        ingredients: [
+          { ingredient_id: potato, amount: 2, unit_id: null },
+          { ingredient_id: pork, amount: 500, unit_id: null },
+          { ingredient_id: pork, amount: 100, unit_id: null },
+        ],
+      }),
+    );
+
+    await store.fetchAll();
+
+    expect(store.recipes[0].ingredients).toEqual([
+      { id: potato, name: "土豆" },
+      { id: pork, name: "五花肉" },
+    ]);
+  });
+
+  it("fetchAll 里没有食材的菜谱拿到空数组而不是 undefined", async () => {
+    const store = useRecipeStore();
+    await store.create(input({ category_id: await newCategory() }));
+
+    await store.fetchAll();
+
+    expect(store.recipes[0].ingredients).toEqual([]);
+  });
+
   it("remove 只软删父行，子行原封不动", async () => {
     const categoryId = await newCategory();
     const pork = await newIngredient("五花肉");

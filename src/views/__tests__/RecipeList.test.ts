@@ -29,7 +29,12 @@ function label(id: string, name: string, kind: LabelKind): Label {
 function item(
   id: string,
   name: string,
-  opts: { cover?: string | null; category?: string; tags?: string[] } = {},
+  opts: {
+    cover?: string | null;
+    category?: string;
+    tags?: string[];
+    ingredients?: string[];
+  } = {},
 ): RecipeListItem {
   const recipe: Recipe = {
     id,
@@ -44,6 +49,10 @@ function item(
     recipe,
     category: label(recipe.category_id, opts.category ?? "家常菜", "category"),
     tags: (opts.tags ?? []).map((tag, index) => label(`${id}-t${index}`, tag, "tag")),
+    ingredients: (opts.ingredients ?? []).map((name, index) => ({
+      id: `${id}-i${index}`,
+      name,
+    })),
   };
 }
 
