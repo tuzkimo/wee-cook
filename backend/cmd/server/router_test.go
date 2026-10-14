@@ -181,3 +181,28 @@ func TestJoinRouteIsRateLimitedPerIP(t *testing.T) {
 		}
 	}
 }
+
+// /files 必须在受保护组内：无 token 时 401 且 401 来自 AuthMiddleware。
+// 路由挪出受保护组时这里会变成 handler 自己的 400/404，本用例即变红。
+func TestFileRoutesRequireAuth(t *testing.T) {
+	cfg := &config.Config{JWTSecret: testJWTSecret}
+	// 这个用例只验路由与中间件，碰不到 service：pool 置空即可
+	r := newRouter(cfg, handlers{file: handler.NewFileHandler(service.NewFileService(nil, "", 0))})
+
+	for _, rt := range []struct{ method, path string }{
+		{"POST", "/api/v1/files?name=x.jpg"},
+		{"GET", "/api/v1/files/x.jpg"},
+	} {
+		req := httptest.NewRequest(rt.method, rt.path, nil)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s: got %d, want 401", rt.method, rt.path, rec.Code)
+			continue
+		}
+		if !bytes.Contains(rec.Body.Bytes(), []byte("missing or invalid Authorization header")) {
+			t.Errorf("%s %s: 401 应来自 AuthMiddleware；实际: %s", rt.method, rt.path, rec.Body.String())
+		}
+	}
+}

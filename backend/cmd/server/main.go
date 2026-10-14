@@ -5,6 +5,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"wee-cook/backend/internal/config"
@@ -39,6 +40,11 @@ func main() {
 	authSvc := service.NewAuthService(pool, cfg.JWTSecret)
 	teamSvc := service.NewTeamService(pool, redisClient)
 	syncSvc := service.NewSyncService(pool)
+	// 图片目录提前建好：启动时就报错，比第一次上传才发现目录不在强
+	if err := os.MkdirAll(cfg.FilesDir, 0o755); err != nil {
+		log.Fatalf("创建 FILES_DIR %s: %v", cfg.FilesDir, err)
+	}
+	fileSvc := service.NewFileService(pool, cfg.FilesDir, cfg.MaxFileBytes)
 
 	srv := &http.Server{
 		Addr: ":" + cfg.Port,
@@ -46,6 +52,7 @@ func main() {
 			auth: handler.NewAuthHandler(authSvc),
 			team: handler.NewTeamHandler(teamSvc),
 			sync: handler.NewSyncHandler(syncSvc),
+			file: handler.NewFileHandler(fileSvc),
 		}),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 60 * time.Second, // 图片下载的写超时放宽
