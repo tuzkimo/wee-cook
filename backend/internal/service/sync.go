@@ -445,22 +445,28 @@ func (s *SyncService) getRemoteChanges(ctx context.Context, q dbQuerier, userID 
 // 外层 `r.id` 必须带前缀：queryRecipes 的 LEFT JOIN users 也有一列 id，裸写 id 会 42702（owner_id 两表都无，可裸写）。
 const recipesVisibleScope = "(owner_id = $2) OR r.id IN (SELECT f.recipe_id FROM favorites f JOIN recipes r2 ON r2.id = f.recipe_id WHERE f.user_id = $2 AND r2.is_public = 1 AND r2.deleted_at IS NULL)"
 
+// recipeSelectColumns 是菜谱行的列清单（含作者昵称）：增量与社区详情都用它，
+// 两处返回的菜谱形状才会一致（客户端可以拿同一份落库逻辑处理）。
+const recipeSelectColumns = `r.id, r.owner_id, r.is_public, r.name, r.cover_path, r.category_id, r.created_at, r.updated_at, r.deleted_at, u.nickname`
+
+// scanRecipeRow 从 recipeSelectColumns 的一行扫出菜谱。
+// 子集合给空切片：JSON 里的空数组才表达得出「清空」（model.Recipe 的契约）。
+func scanRecipeRow(rows pgx.Rows) (model.Recipe, error) {
+	var r model.Recipe
+	err := rows.Scan(&r.ID, &r.OwnerID, &r.IsPublic, &r.Name, &r.CoverPath, &r.CategoryID,
+		&r.CreatedAt, &r.UpdatedAt, &r.DeletedAt, &r.OwnerNickname)
+	r.Steps, r.Ingredients, r.LabelIDs = []model.RecipeStep{}, []model.RecipeIngredient{}, []string{}
+	return r, err
+}
+
 func queryRecipes(ctx context.Context, q dbQuerier, userID string, sinceSeq int64) ([]model.Recipe, error) {
 	// 菜谱行必须先读完并关掉再查子表：读阶段整个跑在同一个只读事务里，共享一条连接。
 	// LEFT JOIN users 只为取作者昵称，不改变行数（users.id 是主键）。
 	recipes, err := queryList(ctx, q,
-		`SELECT r.id, r.owner_id, r.is_public, r.name, r.cover_path, r.category_id, r.created_at, r.updated_at, r.deleted_at, u.nickname
+		`SELECT `+recipeSelectColumns+`
 		 FROM recipes r LEFT JOIN users u ON u.id = r.owner_id
 		 WHERE r.server_seq > $1 AND (`+recipesVisibleScope+`)`,
-		[]any{sinceSeq, userID},
-		func(rows pgx.Rows) (model.Recipe, error) {
-			var r model.Recipe
-			err := rows.Scan(&r.ID, &r.OwnerID, &r.IsPublic, &r.Name, &r.CoverPath, &r.CategoryID,
-				&r.CreatedAt, &r.UpdatedAt, &r.DeletedAt, &r.OwnerNickname)
-			// 子集合给空切片：JSON 里的空数组才表达得出「清空」（model.Recipe 的契约）。
-			r.Steps, r.Ingredients, r.LabelIDs = []model.RecipeStep{}, []model.RecipeIngredient{}, []string{}
-			return r, err
-		})
+		[]any{sinceSeq, userID}, scanRecipeRow)
 	if err != nil {
 		return nil, err
 	}

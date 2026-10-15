@@ -6,11 +6,14 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"wee-cook/backend/internal/model"
 )
@@ -312,6 +315,315 @@ func TestProfileCountsOnlyPublicRecipes(t *testing.T) {
 	}
 	if p.PublicCount != 2 {
 		t.Errorf("PublicCount = %d, want 2（私有与已删除的不计）", p.PublicCount)
+	}
+}
+
+// --- 社区列表与详情（spec §8） ---
+
+// seedCommunityRecipe 直接落库一条菜谱，updated_at 由调用方指定：列表按它倒序翻页，必须可控。
+func seedCommunityRecipe(t *testing.T, pool *pgxpool.Pool, ownerID, name string, isPublic int16, updatedAt time.Time, deleted bool) string {
+	t.Helper()
+	var deletedAt *time.Time
+	if deleted {
+		now := time.Now()
+		deletedAt = &now
+	}
+	id := "r-" + uuid.NewString()
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO recipes (id, owner_id, is_public, name, category_id, created_at, updated_at, deleted_at)
+		VALUES ($1, $2, $3, $4, '', $5, $5, $6)`,
+		id, ownerID, isPublic, name, updatedAt, deletedAt); err != nil {
+		t.Fatalf("插入菜谱失败: %v", err)
+	}
+	return id
+}
+
+func findCommunityRecipe(recipes []model.CommunityRecipe, id string) *model.CommunityRecipe {
+	for i := range recipes {
+		if recipes[i].ID == id {
+			return &recipes[i]
+		}
+	}
+	return nil
+}
+
+// 列表只列别人的公开菜谱：自己的公开菜谱不走社区列表（spec §8）。
+func TestListExcludesOwnPublicRecipes(t *testing.T) {
+	pool := filesTestDB(t)
+	community := NewCommunityService(pool)
+	ctx := context.Background()
+
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+	now := time.Now().UTC()
+	mine := seedCommunityRecipe(t, pool, a, "我的菜", 1, now, false)
+	theirs := seedCommunityRecipe(t, pool, b, "别人的菜", 1, now.Add(-time.Minute), false)
+
+	got, _, err := community.ListPublicRecipes(ctx, a, model.CommunityListOptions{})
+	if err != nil {
+		t.Fatalf("列表失败: %v", err)
+	}
+	if findCommunityRecipe(got, mine) != nil {
+		t.Errorf("列表不该包含自己的公开菜谱 %s", mine)
+	}
+	if findCommunityRecipe(got, theirs) == nil {
+		t.Errorf("列表应包含别人的公开菜谱 %s", theirs)
+	}
+}
+
+// 私有与已删除都不入列表：它们没资格出现在社区里。
+func TestListExcludesPrivateAndDeleted(t *testing.T) {
+	pool := filesTestDB(t)
+	community := NewCommunityService(pool)
+	ctx := context.Background()
+
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+	now := time.Now().UTC()
+	public := seedCommunityRecipe(t, pool, a, "公开", 1, now, false)
+	private := seedCommunityRecipe(t, pool, a, "私有", 0, now.Add(-time.Minute), false)
+	deleted := seedCommunityRecipe(t, pool, a, "已删", 1, now.Add(-2*time.Minute), true)
+
+	got, _, err := community.ListPublicRecipes(ctx, b, model.CommunityListOptions{})
+	if err != nil {
+		t.Fatalf("列表失败: %v", err)
+	}
+	if findCommunityRecipe(got, public) == nil {
+		t.Errorf("列表应包含公开菜谱 %s", public)
+	}
+	if findCommunityRecipe(got, private) != nil {
+		t.Errorf("列表不该包含私有菜谱 %s", private)
+	}
+	if findCommunityRecipe(got, deleted) != nil {
+		t.Errorf("列表不该包含已删除菜谱 %s", deleted)
+	}
+}
+
+// 只看我关注的：followed_only 按 follows 收窄到被我关注的作者，默认视图仍能看到所有人。
+func TestListFollowedOnlyReturnsOnlyFollowedAuthors(t *testing.T) {
+	pool := filesTestDB(t)
+	community := NewCommunityService(pool)
+	ctx := context.Background()
+
+	a := seedUser(t, pool)
+	c := seedUser(t, pool)
+	b := seedUser(t, pool)
+	if err := community.Follow(ctx, b, a); err != nil {
+		t.Fatalf("关注失败: %v", err)
+	}
+	now := time.Now().UTC()
+	followed := seedCommunityRecipe(t, pool, a, "关注的人的菜", 1, now, false)
+	stranger := seedCommunityRecipe(t, pool, c, "陌生人的菜", 1, now.Add(-time.Minute), false)
+
+	got, _, err := community.ListPublicRecipes(ctx, b, model.CommunityListOptions{FollowedOnly: true})
+	if err != nil {
+		t.Fatalf("只看关注列表失败: %v", err)
+	}
+	if findCommunityRecipe(got, followed) == nil {
+		t.Errorf("只看关注时应包含我关注的人的菜谱 %s", followed)
+	}
+	if findCommunityRecipe(got, stranger) != nil {
+		t.Errorf("只看关注时不该包含陌生人的菜谱 %s", stranger)
+	}
+
+	// 默认视图（followed_only = false）两人都要在：否则上面那条可能被「永远只返回关注的人」蒙混过关。
+	all, _, err := community.ListPublicRecipes(ctx, b, model.CommunityListOptions{})
+	if err != nil {
+		t.Fatalf("列表失败: %v", err)
+	}
+	if findCommunityRecipe(all, followed) == nil || findCommunityRecipe(all, stranger) == nil {
+		t.Errorf("默认列表应同时包含两人的菜谱，got %d 条", len(all))
+	}
+}
+
+// 翻页：limit=2 造 3 条，第一页满且 hasMore，第二页只剩 1 条且 hasMore=false，两页合起来不重不漏。
+func TestListPaginationReportsHasMore(t *testing.T) {
+	pool := filesTestDB(t)
+	community := NewCommunityService(pool)
+	ctx := context.Background()
+
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+	now := time.Now().UTC()
+	var want []string
+	for i := range 3 {
+		want = append(want, seedCommunityRecipe(t, pool, a, fmt.Sprintf("菜%d", i), 1, now.Add(-time.Duration(i)*time.Minute), false))
+	}
+
+	// 测试库是所有用例共用的，必须按作者收窄（a 是本用例新造的用户），否则别的用例留下的公开菜谱会混进页码。
+	first, hasMore, err := community.ListPublicRecipes(ctx, b, model.CommunityListOptions{Limit: 2, AuthorID: a})
+	if err != nil {
+		t.Fatalf("第一页失败: %v", err)
+	}
+	if len(first) != 2 {
+		t.Fatalf("第一页应返回 2 条，实际 %d", len(first))
+	}
+	if !hasMore {
+		t.Errorf("还有第三条时 hasMore = false, want true")
+	}
+
+	second, hasMore, err := community.ListPublicRecipes(ctx, b, model.CommunityListOptions{Limit: 2, Offset: 2, AuthorID: a})
+	if err != nil {
+		t.Fatalf("第二页失败: %v", err)
+	}
+	if len(second) != 1 {
+		t.Fatalf("第二页应返回 1 条，实际 %d", len(second))
+	}
+	if hasMore {
+		t.Errorf("没有更多时 hasMore = true, want false")
+	}
+
+	seen := map[string]bool{}
+	for _, r := range append(first, second...) {
+		seen[r.ID] = true
+	}
+	if len(seen) != len(want) {
+		t.Errorf("两页合起来有 %d 条不重复菜谱，want %d", len(seen), len(want))
+	}
+	for _, id := range want {
+		if !seen[id] {
+			t.Errorf("翻页漏掉了菜谱 %s", id)
+		}
+	}
+	// updated_at 倒序：第一条应是最近更新的菜0。
+	if first[0].ID != want[0] {
+		t.Errorf("第一页第一条 = %s, want %s（应按 updated_at 倒序）", first[0].ID, want[0])
+	}
+}
+
+// 我收藏了的菜谱在列表里打上 favorited 标记，没收藏的不打。
+func TestListMarksFavorited(t *testing.T) {
+	pool := filesTestDB(t)
+	community := NewCommunityService(pool)
+	ctx := context.Background()
+
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+	now := time.Now().UTC()
+	favorited := seedCommunityRecipe(t, pool, a, "收藏的", 1, now, false)
+	other := seedCommunityRecipe(t, pool, a, "没收藏的", 1, now.Add(-time.Minute), false)
+	addFavorite(t, pool, b, favorited)
+
+	got, _, err := community.ListPublicRecipes(ctx, b, model.CommunityListOptions{})
+	if err != nil {
+		t.Fatalf("列表失败: %v", err)
+	}
+	if r := findCommunityRecipe(got, favorited); r == nil {
+		t.Errorf("列表缺少收藏的菜谱 %s", favorited)
+	} else if !r.Favorited {
+		t.Errorf("已收藏菜谱的 Favorited = false, want true")
+	}
+	if r := findCommunityRecipe(got, other); r == nil {
+		t.Errorf("列表缺少菜谱 %s", other)
+	} else if r.Favorited {
+		t.Errorf("未收藏菜谱的 Favorited = true, want false")
+	}
+}
+
+// 详情要能离线渲染：菜谱引用的字典行即使 server_seq 很老（三天前建的）也必须随详情一起回来。
+func TestGetPublicRecipeReturnsDictRowsForOfflineRender(t *testing.T) {
+	pool := filesTestDB(t)
+	syncSvc := NewSyncService(pool)
+	community := NewCommunityService(pool)
+	ctx := context.Background()
+
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+	now := time.Now().UTC()
+	recipeID := "r-" + uuid.NewString()
+	ingredientID := "ing-" + uuid.NewString()
+	unitID := "u-" + uuid.NewString()
+	labelID := "l-" + uuid.NewString()
+
+	// 三天前建的字典行，server_seq 给 0：任何增量游标都早已推过它们，正常同步不会再下发。
+	// 详情按引用反查补齐，与 seq 无关，所以必须原样带回来（客户端离线渲染要外键行）。
+	old := now.Add(-72 * time.Hour)
+	// 字典名字必须全局唯一：别的用例（如同名合并）靠固定名字查库，名字撞车会污染它们。
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO ingredients (id, name, created_at, updated_at, server_seq) VALUES ($1, $2, $3, $3, 0)`,
+		ingredientID, "食材-"+uuid.NewString(), old); err != nil {
+		t.Fatalf("插入食材失败: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO units (id, name, created_at, updated_at, server_seq) VALUES ($1, $2, $3, $3, 0)`,
+		unitID, "单位-"+uuid.NewString(), old); err != nil {
+		t.Fatalf("插入单位失败: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO labels (id, name, kind, created_at, updated_at, server_seq) VALUES ($1, $2, 'category', $3, $3, 0)`,
+		labelID, "标签-"+uuid.NewString(), old); err != nil {
+		t.Fatalf("插入标签失败: %v", err)
+	}
+
+	recipe := syncRecipe(recipeID, "A的公开菜", now, 1)
+	recipe.CategoryID = labelID
+	recipe.LabelIDs = []string{labelID}
+	recipe.Ingredients = []model.RecipeIngredient{{ID: "ri-" + uuid.NewString(), IngredientID: ingredientID, UnitID: &unitID, SortOrder: 0}}
+	recipe.Steps = []model.RecipeStep{{ID: "st-" + uuid.NewString(), SortOrder: 0, Text: "切块"}}
+	mustPush(t, syncSvc, a, model.SyncPayload{Recipes: []model.Recipe{recipe}})
+
+	payload, err := community.GetPublicRecipe(ctx, b, recipeID)
+	if err != nil {
+		t.Fatalf("读公开菜谱详情失败: %v", err)
+	}
+	if len(payload.Recipes) != 1 {
+		t.Fatalf("详情应返回 1 条菜谱，实际 %d", len(payload.Recipes))
+	}
+	got := payload.Recipes[0]
+	if got.ID != recipeID || got.OwnerID != a || got.Name != "A的公开菜" {
+		t.Errorf("详情菜谱 = %+v, want id=%s owner=%s", got, recipeID, a)
+	}
+	if len(got.Steps) != 1 || got.Steps[0].Text != "切块" {
+		t.Errorf("详情要带步骤子行，got %+v", got.Steps)
+	}
+	if len(got.Ingredients) != 1 || got.Ingredients[0].IngredientID != ingredientID {
+		t.Errorf("详情要带食材子行，got %+v", got.Ingredients)
+	}
+	if !slices.ContainsFunc(payload.Ingredients, func(it model.Ingredient) bool { return it.ID == ingredientID }) {
+		t.Errorf("详情必须补齐引用的食材字典行 %s，got %+v", ingredientID, payload.Ingredients)
+	}
+	if !slices.ContainsFunc(payload.Units, func(it model.Unit) bool { return it.ID == unitID }) {
+		t.Errorf("详情必须补齐引用的单位字典行 %s，got %+v", unitID, payload.Units)
+	}
+	if !slices.ContainsFunc(payload.Labels, func(it model.Label) bool { return it.ID == labelID }) {
+		t.Errorf("详情必须补齐引用的标签字典行 %s，got %+v", labelID, payload.Labels)
+	}
+
+	// 作者读自己的公开菜谱同样要成功：公开条件只有「公开且未删」，排除自己只是列表的规矩。
+	if own, err := community.GetPublicRecipe(ctx, a, recipeID); err != nil || len(own.Recipes) != 1 {
+		t.Errorf("作者读自己的公开菜谱详情 err=%v recipes=%d, want 1", err, len(own.Recipes))
+	}
+
+	// 没有任何引用的菜谱：详情里五个集合必须是空切片而不是 nil（客户端拿去直接落库，null 会炸）。
+	bareID := "r-" + uuid.NewString()
+	mustPush(t, syncSvc, a, model.SyncPayload{Recipes: []model.Recipe{syncRecipe(bareID, "A的清水菜", now.Add(time.Minute), 1)}})
+	bare, err := community.GetPublicRecipe(ctx, b, bareID)
+	if err != nil {
+		t.Fatalf("读无引用菜谱详情失败: %v", err)
+	}
+	if bare.Ingredients == nil || bare.Units == nil || bare.Labels == nil || bare.Recipes == nil || bare.Files == nil {
+		t.Errorf("空载荷集合必须是空切片而非 nil: %+v", bare)
+	}
+	if len(bare.Ingredients) != 0 || len(bare.Units) != 0 || len(bare.Labels) != 0 || len(bare.Files) != 0 {
+		t.Errorf("无引用的菜谱不该带出字典行，got %+v", bare)
+	}
+}
+
+// 私有菜谱与不存在的菜谱在详情上都是同一个 404：不能泄漏「这条 id 存在但不可见」。
+func TestGetPublicRecipeOfPrivateReturnsNotVisible(t *testing.T) {
+	pool := filesTestDB(t)
+	community := NewCommunityService(pool)
+	ctx := context.Background()
+
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+	private := seedRecipe(t, pool, a, nil, false) // is_public 默认 0
+
+	if _, err := community.GetPublicRecipe(ctx, b, private); !errors.Is(err, ErrRecipeNotVisible) {
+		t.Fatalf("读私有菜谱详情 err = %v, want ErrRecipeNotVisible", err)
+	}
+	if _, err := community.GetPublicRecipe(ctx, b, "r-"+uuid.NewString()); !errors.Is(err, ErrRecipeNotVisible) {
+		t.Fatalf("读不存在的菜谱详情 err = %v, want ErrRecipeNotVisible", err)
 	}
 }
 

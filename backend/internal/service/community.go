@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -134,4 +135,93 @@ func (s *CommunityService) Profile(ctx context.Context, viewerID, userID string)
 	}
 
 	return p, nil
+}
+
+// ListPublicRecipes 翻页列出社区里别人的公开菜谱（spec §8）。
+// 第二个返回值是 hasMore：靠多取一条算出来，调用方不用再发一次「还有没有下一页」的请求。
+func (s *CommunityService) ListPublicRecipes(ctx context.Context, viewerID string, opts model.CommunityListOptions) ([]model.CommunityRecipe, bool, error) {
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	offset := max(opts.Offset, 0)
+
+	// $1 固定是 viewer：列表要排除自己的菜谱，LEFT JOIN 的收藏标记也按它取。
+	args := []any{viewerID}
+	conds := []string{"r.owner_id <> $1", "r.is_public = 1", "r.deleted_at IS NULL"}
+	if opts.AuthorID != "" {
+		args = append(args, opts.AuthorID)
+		conds = append(conds, fmt.Sprintf("r.owner_id = $%d", len(args)))
+	}
+	if opts.FollowedOnly {
+		conds = append(conds, "r.owner_id IN (SELECT followee_id FROM follows WHERE follower_id = $1)")
+	}
+	args = append(args, limit+1, offset)
+
+	recipes, err := queryList(ctx, s.pool, fmt.Sprintf(
+		`SELECT r.id, r.name, r.cover_path, r.owner_id, u.nickname, r.updated_at, (f.user_id IS NOT NULL)
+		 FROM recipes r
+		 LEFT JOIN users u ON u.id = r.owner_id
+		 LEFT JOIN favorites f ON f.recipe_id = r.id AND f.user_id = $1
+		 WHERE %s
+		 ORDER BY r.updated_at DESC, r.id ASC
+		 LIMIT $%d OFFSET $%d`,
+		strings.Join(conds, " AND "), len(args)-1, len(args)), args,
+		func(rows pgx.Rows) (model.CommunityRecipe, error) {
+			var it model.CommunityRecipe
+			err := rows.Scan(&it.ID, &it.Name, &it.CoverPath, &it.AuthorID, &it.AuthorNickname, &it.UpdatedAt, &it.Favorited)
+			return it, err
+		})
+	if err != nil {
+		return nil, false, fmt.Errorf("list public recipes: %w", err)
+	}
+
+	// 多取的那一条只用来判断 hasMore，不返回给客户端。
+	hasMore := len(recipes) > limit
+	if hasMore {
+		recipes = recipes[:limit]
+	}
+	return recipes, hasMore, nil
+}
+
+// GetPublicRecipe 返回一条公开菜谱的完整载荷，形状与 /sync 的 remote_changes 一致：
+// 子行、引用到的字典行、图片清单都在里面，客户端可以直接喂给现有的落库逻辑。
+// 不存在、未公开、已删除对外都是同一个 ErrRecipeNotVisible（spec §8）。
+func (s *CommunityService) GetPublicRecipe(ctx context.Context, viewerID, recipeID string) (*model.SyncPayload, error) {
+	// viewerID 不参与查询：公开条件只有「公开且未删」，详情不排除自己的公开菜谱
+	// （排除自己只是列表的规矩），保留参数是为了与 ListPublicRecipes 的签名对称。
+	recipes, err := queryList(ctx, s.pool,
+		`SELECT `+recipeSelectColumns+`
+		 FROM recipes r LEFT JOIN users u ON u.id = r.owner_id
+		 WHERE r.id = $1 AND r.is_public = 1 AND r.deleted_at IS NULL`,
+		[]any{recipeID}, scanRecipeRow)
+	if err != nil {
+		return nil, fmt.Errorf("query public recipe: %w", err)
+	}
+	if len(recipes) == 0 {
+		return nil, ErrRecipeNotVisible
+	}
+	if recipes, err = attachRecipeChildren(ctx, s.pool, recipes); err != nil {
+		return nil, fmt.Errorf("attach recipe children: %w", err)
+	}
+
+	// 三个字典数组给空切片而不是 nil：客户端拿这份载荷直接落库，JSON 里的 [] 与 null 不同。
+	payload := model.SyncPayload{
+		Ingredients: []model.Ingredient{},
+		Units:       []model.Unit{},
+		Labels:      []model.Label{},
+		Recipes:     recipes,
+		Files:       []model.FileRef{},
+	}
+	// 增量同步不会带上「菜谱引用到但 server_seq 很老」的字典行，详情必须补齐，否则客户端缺外键行。
+	if err := backfillReferenced(ctx, s.pool, &payload); err != nil {
+		return nil, fmt.Errorf("backfill referenced: %w", err)
+	}
+	if payload.Files, err = queryFiles(ctx, s.pool, payload.Recipes); err != nil {
+		return nil, fmt.Errorf("query files: %w", err)
+	}
+	return &payload, nil
 }
