@@ -370,7 +370,8 @@ func TestPrivateRecipesInvisibleToOthers(t *testing.T) {
 	}
 }
 
-// addFavorite 直接往库里插一条收藏：Task 2 只做表与同步载荷，写收藏的 REST 接口本 Task 还没有。
+// addFavorite 直接往库里插一条收藏：这里要的是「收藏行已存在」这个状态，不关心 server_seq 是否被推进，
+// 所以绕过 CommunityService.Favorite 直接写表。
 func addFavorite(t *testing.T, pool *pgxpool.Pool, userID, recipeID string) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(),
