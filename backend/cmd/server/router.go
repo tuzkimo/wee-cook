@@ -18,9 +18,10 @@ import (
 
 // handlers 汇总路由需要的 handler，避免 newRouter 的参数列表过长。
 type handlers struct {
-	auth *handler.AuthHandler
-	sync *handler.SyncHandler
-	file *handler.FileHandler
+	auth      *handler.AuthHandler
+	sync      *handler.SyncHandler
+	file      *handler.FileHandler
+	community *handler.CommunityHandler
 }
 
 // newRouter 构造完整路由。**从 main 抽出来是为了让测试能直接断言中间件顺序**：
@@ -72,6 +73,15 @@ func newRouter(cfg *config.Config, h handlers) http.Handler {
 			r.Put("/auth/profile", h.auth.UpdateProfile)
 
 			r.Post("/sync", h.sync.Sync)
+
+			// 社区：浏览、收藏、关注（spec §8）。全部要求登录：内容与订阅关系都挂在我的身份上。
+			r.Get("/community/recipes", h.community.ListRecipes)
+			r.Get("/community/recipes/{id}", h.community.GetRecipe)
+			r.Get("/users/{id}", h.community.GetProfile)
+			r.Post("/favorites/{recipe_id}", h.community.Favorite)
+			r.Delete("/favorites/{recipe_id}", h.community.Unfavorite)
+			r.Post("/follows/{user_id}", h.community.Follow)
+			r.Delete("/follows/{user_id}", h.community.Unfollow)
 
 			// 图片走独立通道：body 是裸二进制，文件名由客户端给（spec §8.1）
 			r.Post("/files", h.file.Upload)

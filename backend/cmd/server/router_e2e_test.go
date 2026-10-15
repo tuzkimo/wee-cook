@@ -81,9 +81,10 @@ func newE2ERouter(t *testing.T) (*e2eEnv, http.Handler) {
 	dir := t.TempDir() // t.TempDir 已建好目录（生产由 main 的 MkdirAll 负责）
 	cfg := &config.Config{JWTSecret: testJWTSecret, FilesDir: dir, MaxFileBytes: 5 << 20}
 	router := newRouter(cfg, handlers{
-		auth: handler.NewAuthHandler(service.NewAuthService(env.pool, testJWTSecret)),
-		sync: handler.NewSyncHandler(service.NewSyncService(env.pool)),
-		file: handler.NewFileHandler(service.NewFileService(env.pool, dir, 5<<20)),
+		auth:      handler.NewAuthHandler(service.NewAuthService(env.pool, testJWTSecret)),
+		sync:      handler.NewSyncHandler(service.NewSyncService(env.pool)),
+		file:      handler.NewFileHandler(service.NewFileService(env.pool, dir, 5<<20)),
+		community: handler.NewCommunityHandler(service.NewCommunityService(env.pool)),
 	})
 	return env, router
 }
@@ -250,5 +251,15 @@ func TestEndToEndNonOwnerCannotEdit(t *testing.T) {
 	// 可见范围只有作者本人：B 拉不到 A 的菜谱
 	if forB := e2eFindRecipe(e2eSync(t, h, tokenB, model.SyncRequest{LastServerSeq: 0}).RemoteChanges.Recipes, recipeID); forB != nil {
 		t.Errorf("B 不该看到 A 的菜谱，实际: %+v", forB)
+	}
+}
+
+// 社区列表未带 token 必须 401：证明 /community/recipes 真的挂在受保护组里（404 说明没挂）。
+func TestEndToEndCommunityRequiresAuth(t *testing.T) {
+	_, h := newE2ERouter(t)
+
+	rec := e2eDo(t, h, "GET", "/api/v1/community/recipes", "", nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("无 token 访问社区列表: got %d, want 401；响应体: %s", rec.Code, rec.Body.String())
 	}
 }

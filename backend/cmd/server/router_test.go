@@ -126,3 +126,34 @@ func TestFileRoutesRequireAuth(t *testing.T) {
 		}
 	}
 }
+
+// 七条社区路由全部必须在受保护组内：无 token 时 401，且 401 来自 AuthMiddleware。
+// 漏挂一条会变成 404（路由不存在），挪出受保护组会走到 handler 自己的 401，
+// 后者没有 AuthMiddleware 的响应体，本用例靠 body 区分两者。
+func TestCommunityRoutesRequireAuth(t *testing.T) {
+	cfg := &config.Config{JWTSecret: testJWTSecret}
+	// 只验路由与中间件，鉴权在 handler 之前拦下，碰不到 service
+	r := newRouter(cfg, handlers{community: handler.NewCommunityHandler(service.NewCommunityService(nil))})
+
+	for _, rt := range []struct{ method, path string }{
+		{"GET", "/api/v1/community/recipes"},
+		{"GET", "/api/v1/community/recipes/r-1"},
+		{"GET", "/api/v1/users/u-1"},
+		{"POST", "/api/v1/favorites/r-1"},
+		{"DELETE", "/api/v1/favorites/r-1"},
+		{"POST", "/api/v1/follows/u-2"},
+		{"DELETE", "/api/v1/follows/u-2"},
+	} {
+		req := httptest.NewRequest(rt.method, rt.path, nil)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s: got %d, want 401", rt.method, rt.path, rec.Code)
+			continue
+		}
+		if !bytes.Contains(rec.Body.Bytes(), []byte("missing or invalid Authorization header")) {
+			t.Errorf("%s %s: 401 应来自 AuthMiddleware；实际: %s", rt.method, rt.path, rec.Body.String())
+		}
+	}
+}

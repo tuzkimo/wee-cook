@@ -45,13 +45,15 @@ func main() {
 		log.Fatalf("创建 FILES_DIR %s: %v", cfg.FilesDir, err)
 	}
 	fileSvc := service.NewFileService(pool, cfg.FilesDir, cfg.MaxFileBytes)
+	communitySvc := service.NewCommunityService(pool)
 
 	srv := &http.Server{
 		Addr: ":" + cfg.Port,
 		Handler: newRouter(cfg, handlers{
-			auth: handler.NewAuthHandler(authSvc),
-			sync: handler.NewSyncHandler(syncSvc),
-			file: handler.NewFileHandler(fileSvc),
+			auth:      handler.NewAuthHandler(authSvc),
+			sync:      handler.NewSyncHandler(syncSvc),
+			file:      handler.NewFileHandler(fileSvc),
+			community: handler.NewCommunityHandler(communitySvc),
 		}),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 60 * time.Second, // 图片下载的写超时放宽
