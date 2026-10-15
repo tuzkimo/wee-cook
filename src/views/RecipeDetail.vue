@@ -9,7 +9,7 @@ import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import { imageSrc } from "@/services/imageStore";
 import { canEdit, useRecipeStore } from "@/stores/recipe";
-import type { RecipeDetail } from "@/types";
+import type { RecipeDetail, RecipeInput } from "@/types";
 import { amountText } from "@/utils/amount";
 
 const route = useRoute();
@@ -21,6 +21,8 @@ const detail = ref<RecipeDetail | null>(null);
 const error = ref("");
 const showDeleteConfirm = ref(false);
 const deleteError = ref("");
+const publicError = ref("");
+const toggling = ref(false);
 
 // store 已经按 sort_order 查出来，这里再排一次是为了「页面自己保证顺序」这件事可被断言
 const steps = computed(() =>
@@ -42,6 +44,43 @@ onMounted(async () => {
 
 function edit(): void {
   void router.push(`/recipe/${recipeId.value}/edit`);
+}
+
+// 快捷公开开关：update 是「子行整组替换」，必须带上当前详情里的步骤/食材/标签/分类，
+// 否则点一下开关会把这道菜的步骤与食材清空。取消公开是可撤销动作，不弹二次确认（spec §9.2）。
+async function togglePublic(): Promise<void> {
+  // update 是「先插后删」的非事务子行替换，两次并发会互相删掉新行：跟编辑页一样挡在入口
+  if (toggling.value) return;
+  const current = detail.value;
+  if (!current) return;
+  const next = current.recipe.is_public === 1 ? 0 : 1;
+  const input: RecipeInput = {
+    name: current.recipe.name,
+    cover_path: current.recipe.cover_path,
+    category_id: current.category.id,
+    is_public: next,
+    tag_ids: current.tags.map((tag) => tag.id),
+    steps: current.steps.map((step) => ({ text: step.text, image_path: step.image_path })),
+    ingredients: current.ingredients.map((line) => ({
+      ingredient_id: line.ingredient_id,
+      amount: line.amount,
+      unit_id: line.unit_id,
+    })),
+  };
+  publicError.value = "";
+  const before = current.recipe.is_public;
+  current.recipe.is_public = next;
+  toggling.value = true;
+  try {
+    await store.update(recipeId.value, input);
+  } catch (updateError: unknown) {
+    // 失败回滚开关，别让界面显示一个没落库的状态
+    current.recipe.is_public = before;
+    publicError.value =
+      updateError instanceof Error && updateError.message ? updateError.message : "操作失败，请重试";
+  } finally {
+    toggling.value = false;
+  }
 }
 
 async function confirmDelete(): Promise<void> {
@@ -100,6 +139,29 @@ async function confirmDelete(): Promise<void> {
         >
           {{ deleteError }}
         </p>
+
+        <p
+          v-if="publicError"
+          data-test="public-error"
+          class="mb-2 rounded-xl bg-danger/10 px-4 py-3 text-sm text-danger"
+        >
+          {{ publicError }}
+        </p>
+
+        <label
+          v-if="canEdit(detail.recipe)"
+          class="mb-4 flex items-center justify-between rounded-xl border border-gray-200 px-3 py-3 text-sm"
+        >
+          <span class="text-text-secondary">公开到社区</span>
+          <input
+            data-test="recipe-public-toggle"
+            type="checkbox"
+            class="h-5 w-5 accent-primary"
+            :checked="detail.recipe.is_public === 1"
+            :disabled="toggling"
+            @change="togglePublic"
+          />
+        </label>
 
         <div class="mb-6 flex flex-wrap items-center gap-2">
           <span data-test="detail-category" class="rounded-full bg-primary/10 px-2.5 py-1 text-xs text-primary">

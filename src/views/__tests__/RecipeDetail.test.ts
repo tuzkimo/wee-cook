@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   back: vi.fn(),
   routeParams: {} as Record<string, string>,
   getDetail: vi.fn(),
+  update: vi.fn(),
   remove: vi.fn(),
 }));
 
@@ -37,7 +38,7 @@ vi.mock("@/stores/recipe", async (importOriginal) => {
       fetchAll: vi.fn(async () => {}),
       getDetail: mocks.getDetail,
       create: vi.fn(async () => ""),
-      update: vi.fn(async () => {}),
+      update: mocks.update,
       remove: mocks.remove,
     }),
   };
@@ -110,6 +111,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.routeParams = { id: "r1" };
   mocks.getDetail.mockResolvedValue(detail());
+  mocks.update.mockResolvedValue(undefined);
   mocks.remove.mockResolvedValue(undefined);
 });
 
@@ -314,6 +316,73 @@ describe("RecipeDetail", () => {
     expect(wrapper.get('[data-test="detail-name"]').text()).toBe("红烧肉");
     expect(wrapper.find('[data-test="edit"]').exists()).toBe(false);
     expect(wrapper.find('[data-test="delete"]').exists()).toBe(false);
+  });
+
+  it("我的菜谱详情页能一键公开，父行 is_public 变 1", async () => {
+    const wrapper = await page();
+
+    expect(wrapper.find('[data-test="recipe-public-toggle"]').exists()).toBe(true);
+    await wrapper.get('[data-test="recipe-public-toggle"]').trigger("change");
+    await flushPromises();
+
+    expect(mocks.update).toHaveBeenCalledTimes(1);
+    const [id, input] = mocks.update.mock.calls[0];
+    expect(id).toBe("r1");
+    expect(input.is_public).toBe(1);
+    // update 是整组替换子行：完整输入必须带上步骤 / 食材 / 标签 / 分类，漏了就清空这道菜
+    expect(input.name).toBe("红烧肉");
+    expect(input.cover_path).toBe("c.jpg");
+    expect(input.category_id).toBe("c1");
+    expect(input.tag_ids).toEqual(["t1", "t2"]);
+    expect(input.steps).toEqual([
+      { text: "切块", image_path: null },
+      { text: "下锅", image_path: null },
+    ]);
+    expect(input.ingredients).toEqual([
+      { ingredient_id: "i-ri1", amount: 200, unit_id: "u-ri1" },
+    ]);
+    // 页面立即反映新状态
+    expect(
+      (wrapper.get('[data-test="recipe-public-toggle"]').element as HTMLInputElement).checked,
+    ).toBe(true);
+    // 回归网：写完子行没被清掉
+    expect(wrapper.findAll('[data-test="step-row"]')).toHaveLength(2);
+    expect(rowTexts(wrapper)).toEqual(["200 克 五花肉"]);
+  });
+
+  it("别人的菜谱没有公开开关（也没有编辑/删除）", async () => {
+    mocks.getDetail.mockResolvedValue({
+      ...detail(),
+      recipe: { ...detail().recipe, owner_id: "other" },
+    });
+
+    const wrapper = await page();
+
+    expect(wrapper.find('[data-test="recipe-public-toggle"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="edit"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="delete"]').exists()).toBe(false);
+    // 别人的菜谱根本不能触发写入：步骤与食材原样显示
+    expect(mocks.update).not.toHaveBeenCalled();
+    expect(wrapper.findAll('[data-test="step-row"]')).toHaveLength(2);
+    expect(rowTexts(wrapper)).toEqual(["200 克 五花肉"]);
+  });
+
+  it("公开开关写入在途时重复点不会并发写（update 非事务，会互相删子行）", async () => {
+    let resolveUpdate: () => void = () => {};
+    mocks.update.mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveUpdate = resolve;
+      }),
+    );
+    const wrapper = await page();
+
+    const toggle = wrapper.get('[data-test="recipe-public-toggle"]');
+    await toggle.trigger("change");
+    await toggle.trigger("change");
+
+    expect(mocks.update).toHaveBeenCalledTimes(1);
+    resolveUpdate();
+    await flushPromises();
   });
 
   it("自己的菜谱渲染编辑与删除按钮", async () => {
