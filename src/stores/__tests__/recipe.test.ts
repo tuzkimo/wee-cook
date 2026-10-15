@@ -477,6 +477,39 @@ describe("recipeStore", () => {
     expect(store.recipes[0].ingredients).toEqual([]);
   });
 
+  it("fetchFavorites 只回收藏的菜谱，JOIN 出的分类 / 标签 / 食材与 fetchAll 一致", async () => {
+    const categoryId = await newCategory();
+    const home = await newTag("家常");
+    const pork = await newIngredient("五花肉");
+    const store = useRecipeStore();
+    const kept = await store.create(
+      input({
+        category_id: categoryId,
+        name: "红烧肉",
+        tag_ids: [home],
+        ingredients: [{ ingredient_id: pork, amount: 500, unit_id: null }],
+      }),
+    );
+    await sleep();
+    const other = await store.create(input({ category_id: categoryId, name: "番茄炒蛋" }));
+    await db.execute("INSERT INTO favorite_recipes (recipe_id) VALUES (?)", [kept]);
+
+    await store.fetchFavorites();
+
+    expect(store.favorites.map((item) => item.recipe.id)).toEqual([kept]);
+    expect(store.favorites[0].category.name).toBe("炒菜");
+    expect(store.favorites[0].tags.map((tag) => tag.id)).toEqual([home]);
+    expect(store.favorites[0].ingredients).toEqual([{ id: pork, name: "五花肉" }]);
+    // 收藏是另一条数据源，不碰「我的」列表
+    expect(store.recipes).toEqual([]);
+
+    // 软删的收藏不再出现
+    await store.remove(other);
+    await store.remove(kept);
+    await store.fetchFavorites();
+    expect(store.favorites).toEqual([]);
+  });
+
   it("remove 只软删父行，子行原封不动", async () => {
     const categoryId = await newCategory();
     const pork = await newIngredient("五花肉");

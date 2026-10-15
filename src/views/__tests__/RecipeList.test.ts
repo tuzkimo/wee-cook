@@ -1,26 +1,59 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import type { Label, LabelKind, Recipe, RecipeListItem } from "@/types";
+import type { CommunityRecipe } from "@/services/community";
 import RecipeList from "@/views/RecipeList.vue";
 import { useRecipeFilterStore } from "@/stores/recipeFilter";
 
 const NOW = "2026-10-13T00:00:00.000Z";
+
+/** 社区 store 的替身形状；items 等用 reactive 包过，CommunityFeed 的 watch 才追得到变化 */
+type CommunityMock = {
+  items: CommunityRecipe[];
+  hasMore: boolean;
+  loading: boolean;
+  error: string | null;
+  followedOnly: boolean;
+  load: ReturnType<typeof vi.fn>;
+  openRecipe: ReturnType<typeof vi.fn>;
+};
 
 // 页面只测「拿到 store 的数据怎么画、点了往哪跳」；真 store 的查询已由 Task 4 覆盖，
 // 跳转用 mock 的 router 断言（真路由是 Task 9 的事）。
 const mocks = vi.hoisted(() => ({
   push: vi.fn(),
   fetchAll: vi.fn(async () => {}),
+  fetchFavorites: vi.fn(async () => {}),
   imageSrc: vi.fn((name: string) => `asset://localhost/images/${name}`),
   recipes: [] as RecipeListItem[],
+  favorites: [] as RecipeListItem[],
   apply: vi.fn(),
   clear: vi.fn(),
+  community: null as CommunityMock | null,
 }));
 
 vi.mock("vue-router", () => ({ useRouter: () => ({ push: mocks.push }) }));
 vi.mock("@/stores/recipe", () => ({
-  useRecipeStore: () => ({ recipes: mocks.recipes, fetchAll: mocks.fetchAll }),
+  useRecipeStore: () => ({
+    recipes: mocks.recipes,
+    favorites: mocks.favorites,
+    fetchAll: mocks.fetchAll,
+    fetchFavorites: mocks.fetchFavorites,
+  }),
 }));
+vi.mock("@/stores/community", async () => {
+  const { reactive } = await import("vue");
+  mocks.community = reactive({
+    items: [] as CommunityRecipe[],
+    hasMore: false,
+    loading: false,
+    error: null as string | null,
+    followedOnly: false,
+    load: vi.fn(async () => {}),
+    openRecipe: vi.fn(async (id: string) => id),
+  });
+  return { useCommunityStore: () => mocks.community };
+});
 vi.mock("@/services/imageStore", () => ({ imageSrc: mocks.imageSrc }));
 vi.mock("@/stores/recipeFilter", async () => {
   const { reactive } = await import("vue");
@@ -85,6 +118,22 @@ function names(wrapper: VueWrapper): string[] {
   return wrapper.findAll('[data-test="recipe-name"]').map((node) => node.text());
 }
 
+function communityStore(): CommunityMock {
+  return mocks.community!;
+}
+
+function communityRecipe(id: string, name: string): CommunityRecipe {
+  return {
+    id,
+    name,
+    cover_path: null,
+    author_id: "a1",
+    author_nickname: "老王",
+    updated_at: NOW,
+    favorited: false,
+  };
+}
+
 /** 每个用例从空筛选开始；filter 是 mock 工厂里的单例 reactive 对象，必须手动重置 */
 function resetFilter(): void {
   const { filter } = useRecipeFilterStore();
@@ -97,6 +146,12 @@ function resetFilter(): void {
 beforeEach(() => {
   vi.clearAllMocks();
   resetFilter();
+  const community = communityStore();
+  community.items = [];
+  community.hasMore = false;
+  community.loading = false;
+  community.error = null;
+  community.followedOnly = false;
 });
 
 afterEach(() => {
@@ -251,6 +306,58 @@ describe("RecipeList", () => {
     await wrapper.get('[data-test="recipe-filter"]').trigger("click");
 
     expect(mocks.push).toHaveBeenCalledWith("/recipe/filter");
+  });
+
+  it("默认「全部」：我的菜谱在上，社区段落在下", async () => {
+    communityStore().items = [communityRecipe("c1", "社区红烧肉")];
+    const wrapper = mountList([item("r1", "我的红烧肉")]);
+    await flushPromises();
+
+    const mine = wrapper.get('[data-test="recipe-card"]');
+    const community = wrapper.get('[data-test="community-card"]');
+    expect(mine.text()).toContain("我的红烧肉");
+    expect(community.text()).toContain("社区红烧肉");
+    // 两个段落、不合并排序：我的整段排在社区整段之前
+    expect(
+      mine.element.compareDocumentPosition(community.element) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("社区接口失败时只社区段落显示失败，我的菜谱照常显示", async () => {
+    communityStore().error = "网络不可用";
+    const wrapper = mountList([item("r1", "红烧肉")]);
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="community-error"]').text()).toContain("加载失败");
+    expect(wrapper.get('[data-test="my-recipes"]').text()).not.toContain("加载失败");
+    expect(wrapper.get('[data-test="recipe-card"]').text()).toContain("红烧肉");
+  });
+
+  it("「收藏」只显示本地收藏的菜谱", async () => {
+    mocks.favorites.splice(0, mocks.favorites.length, item("r2", "收藏的红烧肉"));
+    const wrapper = mountList([item("r1", "我自己的红烧肉")]);
+
+    await wrapper.get('[data-test="tab-fav"]').trigger("click");
+    await flushPromises();
+
+    expect(names(wrapper)).toEqual(["收藏的红烧肉"]);
+    expect(mocks.fetchFavorites).toHaveBeenCalledTimes(1);
+    expect(wrapper.find('[data-test="community-section"]').exists()).toBe(false);
+  });
+
+  it("「关注」把 followed_only=1 传给社区 store", async () => {
+    const wrapper = mountList([item("r1", "我的红烧肉")]);
+    await flushPromises();
+    communityStore().load.mockClear();
+
+    await wrapper.get('[data-test="tab-follow"]').trigger("click");
+    await flushPromises();
+
+    expect(communityStore().followedOnly).toBe(true);
+    // followedOnly 变了就得重拉：feed 在「全部」与「关注」之间不会卸载
+    expect(communityStore().load).toHaveBeenCalledWith(true);
+    // 关注只渲染社区段落
+    expect(wrapper.find('[data-test="recipe-card"]').exists()).toBe(false);
   });
 
   it("搜索框在顶栏里，信息条紧贴顶栏（不在搜索框和列表之间）", async () => {

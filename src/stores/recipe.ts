@@ -16,7 +16,9 @@ import type {
 
 export interface RecipeStore {
   recipes: Ref<RecipeListItem[]>;
+  favorites: Ref<RecipeListItem[]>;
   fetchAll(): Promise<void>;
+  fetchFavorites(): Promise<void>;
   getDetail(id: string): Promise<RecipeDetail>;
   create(input: RecipeInput): Promise<string>;
   update(id: string, input: RecipeInput): Promise<void>;
@@ -49,18 +51,38 @@ export function canEdit(recipe: Recipe): boolean {
 
 export const useRecipeStore = defineStore("recipe", (): RecipeStore => {
   const recipes = ref<RecipeListItem[]>([]);
+  const favorites = ref<RecipeListItem[]>([]);
 
   async function fetchAll(): Promise<void> {
     const db = getDb();
     const visibility = await visibleRecipeFilter();
     const conditions = ["deleted_at IS NULL", `(${visibility.sql})`];
     const params = [...visibility.params];
-    // 分类与标签一次查完，列表每行不用再回一次库
     const rows = await db.select<Recipe[]>(
       `SELECT * FROM recipes WHERE ${conditions.join(" AND ")}
        ORDER BY updated_at DESC, id ASC`,
       params,
     );
+    recipes.value = await assembleItems(rows);
+  }
+
+  /**
+   * 「收藏」段落的数据源：只认本机的收藏关系，**不套可见性过滤**——登录后可见性只剩
+   * 「自己名下」，套上会把别人的公开菜谱全滤掉（spec §9.1）。
+   */
+  async function fetchFavorites(): Promise<void> {
+    const rows = await getDb().select<Recipe[]>(
+      `SELECT * FROM recipes WHERE deleted_at IS NULL
+         AND id IN (SELECT recipe_id FROM favorite_recipes)
+       ORDER BY updated_at DESC, id ASC`,
+    );
+    favorites.value = await assembleItems(rows);
+  }
+
+  /** 行 → 列表项：分类 / 标签 / 食材各查一次再按 recipe_id 归拢，fetchAll 与 fetchFavorites 共用。 */
+  async function assembleItems(rows: Recipe[]): Promise<RecipeListItem[]> {
+    const db = getDb();
+    // 分类与标签一次查完，列表每行不用再回一次库
     const categories = await db.select<Label[]>("SELECT * FROM labels");
     const links = await db.select<LabelLink[]>(
       `SELECT rl.recipe_id, l.id, l.name, l.kind, l.created_at, l.updated_at, l.deleted_at
@@ -98,7 +120,7 @@ export const useRecipeStore = defineStore("recipe", (): RecipeStore => {
       ingredientsByRecipe.set(row.recipe_id, list);
     }
 
-    recipes.value = rows.map((recipe) => ({
+    return rows.map((recipe) => ({
       recipe,
       // category_id 是 NOT NULL 外键，分类只软删不物理删，查不到只可能是库被改坏了
       category: categoryById.get(recipe.category_id)!,
@@ -305,5 +327,5 @@ export const useRecipeStore = defineStore("recipe", (): RecipeStore => {
     );
   }
 
-  return { recipes, fetchAll, getDetail, create, update, remove };
+  return { recipes, favorites, fetchAll, fetchFavorites, getDetail, create, update, remove };
 });
