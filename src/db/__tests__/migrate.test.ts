@@ -26,6 +26,44 @@ describe("数据库迁移", () => {
     await expect(initTables(db)).resolves.toBeUndefined();
   });
 
+  it("旧库升级后 recipes 带 is_public 与 owner_nickname", async () => {
+    const { db } = await makeTestDb();
+    await db.execute(
+      `CREATE TABLE recipes (id TEXT PRIMARY KEY, name TEXT NOT NULL, cover_path TEXT,
+        category_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT)`,
+    );
+    await initTables(db);
+    const names = (await db.select<{ name: string }[]>("PRAGMA table_info(recipes)")).map(
+      (column) => column.name,
+    );
+    expect(names).toContain("is_public");
+    expect(names).toContain("owner_nickname");
+  });
+
+  it("旧库升级后 team_id 列被删掉", async () => {
+    const { db } = await makeTestDb();
+    await db.execute(
+      `CREATE TABLE recipes (id TEXT PRIMARY KEY, name TEXT NOT NULL, cover_path TEXT,
+        category_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT,
+        owner_id TEXT, team_id TEXT)`,
+    );
+    await initTables(db);
+    const names = (await db.select<{ name: string }[]>("PRAGMA table_info(recipes)")).map(
+      (column) => column.name,
+    );
+    expect(names).not.toContain("team_id");
+  });
+
+  it("favorite_recipes 与 local_accounts 建了出来", async () => {
+    const { db } = await makeTestDb();
+    await initTables(db);
+    const names = (
+      await db.select<{ name: string }[]>("SELECT name FROM sqlite_master WHERE type = 'table'")
+    ).map((row) => row.name);
+    expect(names).toContain("favorite_recipes");
+    expect(names).toContain("local_accounts");
+  });
+
   it("迁移不丢存量数据", async () => {
     const { db } = await makeTestDb();
     // 先建旧结构（只有 recipes 的旧列），插一行，再跑 initTables

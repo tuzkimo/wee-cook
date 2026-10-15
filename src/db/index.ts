@@ -18,13 +18,15 @@ export function getDb(): Db {
   return db;
 }
 
-// 规格 §4 DDL：七张表 + 七个索引，外加同步用的 uploaded_files。逐字照抄，不在这里拼字符串。
+// 规格 §4 DDL：十张表 + 七个索引。逐字照抄，不在这里拼字符串。
 const DDL = [
   `CREATE TABLE IF NOT EXISTS recipes (
     id           TEXT PRIMARY KEY,
     name         TEXT NOT NULL,
     cover_path   TEXT,
     category_id  TEXT NOT NULL REFERENCES labels(id),
+    is_public    INTEGER NOT NULL DEFAULT 0,
+    owner_nickname TEXT,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL,
     deleted_at   TEXT
@@ -79,6 +81,13 @@ const DDL = [
     name        TEXT PRIMARY KEY,
     uploaded_at TEXT NOT NULL
   )`,
+  // 收藏与本机账号都不是业务实体：服务端每次全量下发、整表替换，取消即删行，用不上 id/updated_at/deleted_at
+  `CREATE TABLE IF NOT EXISTS favorite_recipes (
+    recipe_id TEXT PRIMARY KEY
+  )`,
+  `CREATE TABLE IF NOT EXISTS local_accounts (
+    user_id TEXT PRIMARY KEY
+  )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_labels_name_kind  ON labels(name, kind) WHERE deleted_at IS NULL`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_ingredients_name  ON ingredients(name)  WHERE deleted_at IS NULL`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_units_name        ON units(name)        WHERE deleted_at IS NULL`,
@@ -99,6 +108,12 @@ async function migrateTables(db: Db): Promise<void> {
   const cols = await db.select<{ name: string }[]>("PRAGMA table_info(recipes)");
   const names = new Set(cols.map((c) => c.name));
   if (!names.has("owner_id")) await db.execute("ALTER TABLE recipes ADD COLUMN owner_id TEXT");
+  if (!names.has("is_public"))
+    await db.execute("ALTER TABLE recipes ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0");
+  if (!names.has("owner_nickname"))
+    await db.execute("ALTER TABLE recipes ADD COLUMN owner_nickname TEXT");
+  // 旧库（未发布的团队版）留下的列：SQLite 3.35+ 支持 DROP COLUMN，两个运行时都够新
+  if (names.has("team_id")) await db.execute("ALTER TABLE recipes DROP COLUMN team_id");
 }
 
 export async function initDb(): Promise<void> {
