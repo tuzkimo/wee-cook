@@ -80,6 +80,18 @@ const useCommunityStoreBase = defineStore("community", () => {
     enqueueSync({});
   }
 
+  /**
+   * 本地收藏集合里有没有它。详情页的开局按钮状态读这里（离线也读得出），
+   * 不必为一次展示再发一遍 REST。
+   */
+  async function isFavorited(id: string): Promise<boolean> {
+    const rows = await getDb().select<{ recipe_id: string }[]>(
+      "SELECT recipe_id FROM favorite_recipes WHERE recipe_id = ?",
+      [id],
+    );
+    return rows.length > 0;
+  }
+
   function profile(id: string): Promise<UserProfile> {
     return community.fetchUserProfile(id);
   }
@@ -102,6 +114,7 @@ const useCommunityStoreBase = defineStore("community", () => {
     openRecipe,
     favorite,
     unfavorite,
+    isFavorited,
     profile,
     follow,
     unfollow,

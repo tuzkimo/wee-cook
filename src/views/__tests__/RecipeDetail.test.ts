@@ -21,6 +21,9 @@ const mocks = vi.hoisted(() => ({
   getDetail: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
+  isFavorited: vi.fn(),
+  favorite: vi.fn(),
+  unfavorite: vi.fn(),
 }));
 
 vi.mock("vue-router", () => ({
@@ -46,6 +49,14 @@ vi.mock("@/stores/recipe", async (importOriginal) => {
 
 vi.mock("@/services/imageStore", () => ({
   imageSrc: (name: string) => `asset://localhost/images/${name}`,
+}));
+
+vi.mock("@/stores/community", () => ({
+  useCommunityStore: () => ({
+    isFavorited: mocks.isFavorited,
+    favorite: mocks.favorite,
+    unfavorite: mocks.unfavorite,
+  }),
 }));
 
 const wrappers: VueWrapper[] = [];
@@ -107,12 +118,24 @@ function detail(): RecipeDetailData {
   };
 }
 
+/** 别人的公开菜谱：详情页只读，作者可点、可收藏。 */
+function others(): RecipeDetailData {
+  const data = detail();
+  return {
+    ...data,
+    recipe: { ...data.recipe, owner_id: "u2", owner_nickname: "老王" },
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.routeParams = { id: "r1" };
   mocks.getDetail.mockResolvedValue(detail());
   mocks.update.mockResolvedValue(undefined);
   mocks.remove.mockResolvedValue(undefined);
+  mocks.isFavorited.mockResolvedValue(false);
+  mocks.favorite.mockResolvedValue(undefined);
+  mocks.unfavorite.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -383,6 +406,66 @@ describe("RecipeDetail", () => {
     expect(mocks.update).toHaveBeenCalledTimes(1);
     resolveUpdate();
     await flushPromises();
+  });
+
+  it("别人的菜谱显示作者昵称，点它进 /user/:id", async () => {
+    mocks.getDetail.mockResolvedValue(others());
+
+    const wrapper = await page();
+
+    const author = wrapper.get('[data-test="recipe-author"]');
+    expect(author.text()).toBe("老王");
+    await author.trigger("click");
+    expect(mocks.push).toHaveBeenCalledWith("/user/u2");
+  });
+
+  it("离线时收藏按钮不可用（disabled）", async () => {
+    setActivePinia(createPinia());
+    mocks.getDetail.mockResolvedValue(others());
+
+    const wrapper = await page();
+
+    // 未登录（离线）也看得到按钮，只是不能点
+    expect(wrapper.get('[data-test="recipe-favorite"]').attributes("disabled")).toBeDefined();
+  });
+
+  it("收藏成功后按钮显示已收藏", async () => {
+    setActivePinia(createPinia());
+    useAuthStore().mode = "online";
+    mocks.getDetail.mockResolvedValue(others());
+
+    const wrapper = await page();
+
+    expect(wrapper.get('[data-test="recipe-favorite"]').text()).toBe("收藏");
+    await wrapper.get('[data-test="recipe-favorite"]').trigger("click");
+    await flushPromises();
+
+    expect(mocks.favorite).toHaveBeenCalledWith("r1");
+    expect(wrapper.get('[data-test="recipe-favorite"]').text()).toBe("已收藏");
+  });
+
+  it("本地已收藏的菜谱进详情页直接显示已收藏", async () => {
+    mocks.getDetail.mockResolvedValue(others());
+    mocks.isFavorited.mockResolvedValue(true);
+
+    const wrapper = await page();
+
+    expect(wrapper.get('[data-test="recipe-favorite"]').text()).toBe("已收藏");
+  });
+
+  it("收藏失败时按钮回到原状并提示，不静默", async () => {
+    setActivePinia(createPinia());
+    useAuthStore().mode = "online";
+    mocks.getDetail.mockResolvedValue(others());
+    mocks.favorite.mockRejectedValue(new Error("网络不可用"));
+
+    const wrapper = await page();
+
+    await wrapper.get('[data-test="recipe-favorite"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="favorite-error"]').text()).toContain("网络不可用");
+    expect(wrapper.get('[data-test="recipe-favorite"]').text()).toBe("收藏");
   });
 
   it("自己的菜谱渲染编辑与删除按钮", async () => {

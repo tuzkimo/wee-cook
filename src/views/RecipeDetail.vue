@@ -8,6 +8,8 @@ import { Pencil, Trash2 } from "lucide-vue-next";
 import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import { imageSrc } from "@/services/imageStore";
+import { useAuthStore } from "@/stores/auth";
+import { useCommunityStore } from "@/stores/community";
 import { canEdit, useRecipeStore } from "@/stores/recipe";
 import type { RecipeDetail, RecipeInput } from "@/types";
 import { amountText } from "@/utils/amount";
@@ -15,6 +17,8 @@ import { amountText } from "@/utils/amount";
 const route = useRoute();
 const router = useRouter();
 const store = useRecipeStore();
+const communityStore = useCommunityStore();
+const auth = useAuthStore();
 
 const recipeId = computed(() => (typeof route.params.id === "string" ? route.params.id : ""));
 const detail = ref<RecipeDetail | null>(null);
@@ -22,6 +26,10 @@ const error = ref("");
 const showDeleteConfirm = ref(false);
 const deleteError = ref("");
 const publicError = ref("");
+// 收藏只对别人的菜谱可见（spec §9.3）：初值读本地收藏表，离线也读得出
+const favorited = ref(false);
+const favoriteError = ref("");
+const favoriting = ref(false);
 const toggling = ref(false);
 
 // store 已经按 sort_order 查出来，这里再排一次是为了「页面自己保证顺序」这件事可被断言
@@ -39,8 +47,38 @@ onMounted(async () => {
     detail.value = await store.getDetail(id);
   } catch (loadError: unknown) {
     error.value = loadError instanceof Error ? loadError.message : "菜谱不存在";
+    return;
   }
+  // 读不到（库未就绪）就当没收藏：一个按钮初值不值得挡住整页详情
+  favorited.value = await communityStore.isFavorited(id).catch(() => false);
 });
+
+/** 乐观翻转：先让按钮变，服务端拒绝就翻回去并说明原因，不静默。 */
+async function toggleFavorite(): Promise<void> {
+  if (!detail.value || favoriting.value) return;
+  const next = !favorited.value;
+  favoriteError.value = "";
+  favorited.value = next;
+  favoriting.value = true;
+  try {
+    await (next
+      ? communityStore.favorite(recipeId.value)
+      : communityStore.unfavorite(recipeId.value));
+  } catch (favoriteFailure: unknown) {
+    favorited.value = !next;
+    favoriteError.value =
+      favoriteFailure instanceof Error && favoriteFailure.message
+        ? favoriteFailure.message
+        : "操作失败，请重试";
+  } finally {
+    favoriting.value = false;
+  }
+}
+
+function openAuthor(): void {
+  const ownerId = detail.value?.recipe.owner_id;
+  if (ownerId) void router.push(`/user/${ownerId}`);
+}
 
 function edit(): void {
   void router.push(`/recipe/${recipeId.value}/edit`);
@@ -147,6 +185,45 @@ async function confirmDelete(): Promise<void> {
         >
           {{ publicError }}
         </p>
+
+        <p
+          v-if="favoriteError"
+          data-test="favorite-error"
+          class="mb-2 rounded-xl bg-danger/10 px-4 py-3 text-sm text-danger"
+        >
+          {{ favoriteError }}
+        </p>
+
+        <!-- 别人的菜谱：只读，能给的是「知道是谁的」与「收藏」（spec §9.3） -->
+        <div
+          v-if="!canEdit(detail.recipe)"
+          class="mb-4 flex items-center justify-between gap-3"
+        >
+          <button
+            v-if="detail.recipe.owner_id"
+            type="button"
+            data-test="recipe-author"
+            class="min-w-0 truncate text-sm text-primary"
+            @click="openAuthor"
+          >
+            {{ detail.recipe.owner_nickname }}
+          </button>
+          <span v-else class="min-w-0"></span>
+          <button
+            type="button"
+            data-test="recipe-favorite"
+            class="shrink-0 rounded-lg border px-4 py-2 text-sm font-medium transition-colors"
+            :class="
+              favorited
+                ? 'border-gray-300 text-text-secondary hover:bg-gray-50'
+                : 'border-primary text-primary hover:bg-primary/10'
+            "
+            :disabled="!auth.isOnline || favoriting"
+            @click="toggleFavorite"
+          >
+            {{ favorited ? "已收藏" : "收藏" }}
+          </button>
+        </div>
 
         <label
           v-if="canEdit(detail.recipe)"

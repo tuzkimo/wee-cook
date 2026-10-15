@@ -7,6 +7,7 @@ import AiPage from "@/views/AiPage.vue";
 import MePage from "@/views/MePage.vue";
 import ServerConfig from "@/views/ServerConfig.vue";
 import LoginPage from "@/views/LoginPage.vue";
+import UserPage from "@/views/UserPage.vue";
 
 export default createRouter({
   history: createWebHistory(),
@@ -21,5 +22,6 @@ export default createRouter({
     { path: "/me", name: "me", component: MePage },
     { path: "/me/server", name: "me-server", component: ServerConfig, meta: { hideTab: true } },
     { path: "/me/login", name: "me-login", component: LoginPage, meta: { hideTab: true } },
+    { path: "/user/:id", name: "user", component: UserPage, meta: { hideTab: true } },
   ],
 });

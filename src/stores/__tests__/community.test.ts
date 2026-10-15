@@ -204,6 +204,17 @@ describe("社区 store", () => {
     expect(enqueueSyncMock).toHaveBeenCalledWith({});
   });
 
+  it("isFavorited 读本地收藏集合（详情页收藏按钮的初值）", async () => {
+    const store = useCommunityStore();
+
+    expect(await store.isFavorited("r1")).toBe(false);
+
+    await db.execute("INSERT INTO favorite_recipes (recipe_id) VALUES ('r1')");
+
+    expect(await store.isFavorited("r1")).toBe(true);
+    expect(await store.isFavorited("r2")).toBe(false);
+  });
+
   it("load 在途时切筛选：load(true) 不被丢弃，迟到的旧响应写不进列表", async () => {
     const stale = deferred<ApiResult<CommunityPage>>();
     const fresh = deferred<ApiResult<CommunityPage>>();
