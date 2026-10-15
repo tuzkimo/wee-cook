@@ -42,7 +42,6 @@ vi.mock("@/services/syncFiles", () => ({
 import { apiFetch, hasBaseUrl } from "@/services/api";
 import { uploadPendingFiles } from "@/services/syncFiles";
 import {
-  clearCursor,
   clearPendingSync,
   collectPushPayload,
   emptyPayload,
@@ -88,8 +87,8 @@ async function insertRecipe(
   deletedAt: string | null = null,
 ): Promise<void> {
   await db.execute(
-    `INSERT INTO recipes (id,name,cover_path,category_id,created_at,updated_at,deleted_at,owner_id,team_id)
-     VALUES (?,'菜',NULL,'c1',?,?,?,?,NULL)`,
+    `INSERT INTO recipes (id,name,cover_path,category_id,created_at,updated_at,deleted_at,owner_id)
+     VALUES (?,'菜',NULL,'c1',?,?,?,?)`,
     [id, T0, T0, deletedAt, ownerId],
   );
 }
@@ -151,9 +150,6 @@ describe("游标", () => {
     setLastSyncedAtFor("u1", "7");
     expect(getLastSyncedAtFor("u1")).toBe("7");
     expect(getLastSyncedAtFor("u2")).toBeNull();
-
-    clearCursor("u1");
-    expect(getLastSyncedAtFor("u1")).toBeNull();
   });
 });
 

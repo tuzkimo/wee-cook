@@ -303,15 +303,15 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
     const deletedAt = normDeleted(r.deleted_at);
     if (isNew) {
       await db.execute(
-        `INSERT INTO recipes (id,name,cover_path,category_id,created_at,updated_at,deleted_at,owner_id,team_id)
-         VALUES (?,?,?,?,?,?,?,?,?)`,
-        [r.id, r.name, r.cover_path, r.category_id, toIsoTimestamp(r.created_at), updatedAt, deletedAt, r.owner_id ?? null, r.team_id ?? null],
+        `INSERT INTO recipes (id,name,cover_path,category_id,created_at,updated_at,deleted_at,owner_id)
+         VALUES (?,?,?,?,?,?,?,?)`,
+        [r.id, r.name, r.cover_path, r.category_id, toIsoTimestamp(r.created_at), updatedAt, deletedAt, r.owner_id ?? null],
       );
     } else {
       await db.execute(
-        `UPDATE recipes SET name=?, cover_path=?, category_id=?, updated_at=?, deleted_at=?, owner_id=?, team_id=?
+        `UPDATE recipes SET name=?, cover_path=?, category_id=?, updated_at=?, deleted_at=?, owner_id=?
          WHERE id=?`,
-        [r.name, r.cover_path, r.category_id, updatedAt, deletedAt, r.owner_id ?? null, r.team_id ?? null, r.id],
+        [r.name, r.cover_path, r.category_id, updatedAt, deletedAt, r.owner_id ?? null, r.id],
       );
     }
 
@@ -385,12 +385,7 @@ export function setLastSyncedAtFor(uid: string | null, seq: string): void {
   localStorage.setItem(cursorKeyFor(uid), seq);
 }
 
-/** 清掉某 uid 的拉取游标，下次同步从 0 全量拉（加入团队后用，spec §9.4）。 */
-export function clearCursor(uid: string | null): void {
-  localStorage.removeItem(cursorKeyFor(uid));
-}
-
-// 取当前 uid 的队列；未登录（uid=null）返回一次性空队列，不入 Map、不持久化。
+/** 取当前 uid 的队列；未登录（uid=null）返回一次性空队列，不入 Map、不持久化。 */
 function pendingFor(uid: string | null): SyncPayload {
   if (!uid) return emptyPayload();
   let p = pendingByUid.get(uid);
@@ -690,7 +685,6 @@ async function buildRecipePayload(db: Db, row: Recipe): Promise<RecipePayload> {
   return {
     id: row.id,
     owner_id: row.owner_id,
-    team_id: row.team_id,
     name: row.name,
     cover_path: row.cover_path,
     category_id: row.category_id,

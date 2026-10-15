@@ -48,7 +48,6 @@ function item(
     updated_at: NOW,
     deleted_at: null,
     owner_id: null,
-    team_id: null,
   };
   return {
     recipe,

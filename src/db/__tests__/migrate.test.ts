@@ -9,7 +9,8 @@ describe("数据库迁移", () => {
     const cols = await db.select<{ name: string }[]>("PRAGMA table_info(recipes)");
     const names = cols.map((c) => c.name);
     expect(names).toContain("owner_id");
-    expect(names).toContain("team_id");
+    // 团队已下线：迁移不再给 recipes 加 team_id（已有旧库的列由 Task 2 的 DROP COLUMN 清掉）
+    expect(names).not.toContain("team_id");
   });
 
   it("uploaded_files 建出来了", async () => {

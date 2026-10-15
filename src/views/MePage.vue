@@ -100,24 +100,6 @@ async function logout(): Promise<void> {
           </div>
         </div>
       </section>
-
-      <section class="rounded-xl border border-gray-200">
-        <!-- 已登录才有家庭；未开启同步时给一句话指路，不发任何请求 -->
-        <button
-          v-if="auth.isOnline"
-          type="button"
-          data-test="team-row"
-          class="flex w-full items-center justify-between px-3 py-3 text-sm transition-colors hover:bg-gray-50"
-          @click="router.push('/me/team')"
-        >
-          <span class="text-text">我的家庭</span>
-          <span data-test="team-state" class="text-text-secondary">查看</span>
-        </button>
-        <div v-else data-test="team-row" class="flex items-center justify-between px-3 py-3 text-sm">
-          <span class="text-text">我的家庭</span>
-          <span data-test="team-state" class="text-text-secondary">先开启多设备同步</span>
-        </div>
-      </section>
     </div>
   </div>
 </template>

@@ -26,7 +26,6 @@ function recipe(over: Partial<RecipePayload> & { id: string }): RecipePayload {
     updated_at: T0,
     deleted_at: null,
     owner_id: null,
-    team_id: null,
     steps: [],
     ingredients: [],
     label_ids: [],

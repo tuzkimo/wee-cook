@@ -96,7 +96,6 @@ function detail(): RecipeDetailData {
       updated_at: NOW,
       deleted_at: null,
       owner_id: null,
-      team_id: null,
     },
     category: label("c1", "荤菜", "category"),
     tags: [label("t1", "家常", "tag"), label("t2", "下饭", "tag")],

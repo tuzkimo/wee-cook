@@ -7,9 +7,6 @@ import AiPage from "@/views/AiPage.vue";
 import MePage from "@/views/MePage.vue";
 import ServerConfig from "@/views/ServerConfig.vue";
 import LoginPage from "@/views/LoginPage.vue";
-import TeamPage from "@/views/TeamPage.vue";
-import TeamJoinPage from "@/views/TeamJoinPage.vue";
-import TeamMembersPage from "@/views/TeamMembersPage.vue";
 
 export default createRouter({
   history: createWebHistory(),
@@ -24,9 +21,5 @@ export default createRouter({
     { path: "/me", name: "me", component: MePage },
     { path: "/me/server", name: "me-server", component: ServerConfig, meta: { hideTab: true } },
     { path: "/me/login", name: "me-login", component: LoginPage, meta: { hideTab: true } },
-    { path: "/me/team", name: "me-team", component: TeamPage, meta: { hideTab: true } },
-    // 静态段排在参数段之前：不依赖 vue-router 的打分规则更稳
-    { path: "/me/team/join", name: "me-team-join", component: TeamJoinPage, meta: { hideTab: true } },
-    { path: "/me/team/:id", name: "me-team-members", component: TeamMembersPage, meta: { hideTab: true } },
   ],
 });

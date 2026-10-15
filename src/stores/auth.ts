@@ -25,11 +25,8 @@ const NETWORK_MESSAGE = "连不上服务器，检查地址和网络";
 /**
  * 会话刚变在线：认领存量 + 一次全扫推送（spec §9.3）。fire-and-forget，不阻塞登录返回。
  *
- * 这里刻意用动态 import：`auth → migration → sync/team → auth` 已是一个静态环，若改成顶部静态 import，
- * `team.test.ts` 的 `vi.mock("@/services/sync")`（用 importOriginal 加载原模块）会失效 ——
- * 环内 `team.ts` 绑到未 mock 的 `performSync`。实测后果（静态版本）：team.test 的
- * 「加入成功后清空同步游标」红（`expected "vi.fn()" to be called at least once`），
- * 并伴随未捕获的 `Error: 数据库未打开`。改回静态 import 前先跑一遍 `team.test.ts`。
+ * 这里刻意用动态 import：`auth → migration → sync → auth` 已是一个静态环，顶部静态 import
+ * 会让环在最坏情况下拿到半初始化的模块。保持动态，别改成静态。
  */
 function triggerPostSessionSync(): void {
   void import("@/services/migration")
@@ -248,18 +245,9 @@ const useAuthStoreBase = defineStore("auth", () => {
     goGuest();
     api.clearTokens();
     // spec §9.5：登出只停定时器，各 uid 的积压队列保留。
-    // team 内存态必须一起清：换号后在 team.load() 跑完之前，残留的 A 团队会把 A 的家庭菜谱
-    // 算进 B 的可见范围（共享设备上 B 短暂看到 A 的家庭菜谱）。动态 import 避免 auth→sync→auth 的静态环。
-    const [{ resetSyncTimers }, teamModule] = await Promise.all([
-      import("@/services/sync"),
-      import("@/stores/team"),
-    ]);
+    // 动态 import 避免 auth→sync→auth 的静态环。
+    const { resetSyncTimers } = await import("@/services/sync");
     resetSyncTimers();
-    try {
-      teamModule.useTeamStore().reset();
-    } catch {
-      // 没有活跃 pinia（游离挂载的组件测试）：没有内存态要清
-    }
     // 兜底：api.clearTokens 按 currentUserId 删，这里再按已知的服务端 user id 删一次
     if (persistedUserId) await deleteRefreshToken(persistedUserId);
     // 刻意不动 settings 里的 server_url 与账号信息：下次登录不用重填地址

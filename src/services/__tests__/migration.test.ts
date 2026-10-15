@@ -3,12 +3,10 @@ import { setDb, type Db } from "@/db";
 import { freshTestDb } from "@/db/__tests__/sqliteTestDb";
 
 // auth store 只被读三个字段，用可变对象替身即可（真 store 依赖 plugin-store）。
-// team store 同理：这里只验证迁移逻辑会触发一次 load，不验证 load 内部行为。
 const authState = vi.hoisted(() => ({
   serverUserId: "me" as string | null,
   lastSyncFailed: false,
   syncCompleted: 0,
-  teamLoads: 0,
 }));
 
 vi.mock("@/stores/auth", () => ({
@@ -25,14 +23,6 @@ vi.mock("@/stores/auth", () => ({
     notifySyncComplete() {
       authState.syncCompleted++;
       authState.lastSyncFailed = false;
-    },
-  }),
-}));
-
-vi.mock("@/stores/team", () => ({
-  useTeamStore: () => ({
-    load: async () => {
-      authState.teamLoads++;
     },
   }),
 }));
@@ -76,8 +66,8 @@ async function insertCategory(db: Db, id = "c1"): Promise<void> {
 
 async function insertRecipe(db: Db, id: string, ownerId: string | null): Promise<void> {
   await db.execute(
-    `INSERT INTO recipes (id,name,cover_path,category_id,created_at,updated_at,deleted_at,owner_id,team_id)
-     VALUES (?,'菜',NULL,'c1',?,?,NULL,?,NULL)`,
+    `INSERT INTO recipes (id,name,cover_path,category_id,created_at,updated_at,deleted_at,owner_id)
+     VALUES (?,'菜',NULL,'c1',?,?,NULL,?)`,
     [id, T0, T0, ownerId],
   );
 }
@@ -104,7 +94,6 @@ beforeEach(async () => {
   authState.serverUserId = "me";
   authState.lastSyncFailed = false;
   authState.syncCompleted = 0;
-  authState.teamLoads = 0;
   db = (await freshTestDb()).db;
   setDb(db);
 });
@@ -212,7 +201,6 @@ describe("triggerFullPushAndSync", () => {
     expect(recipe.steps).toHaveLength(1);
     expect(recipe.ingredients).toHaveLength(1);
     expect(recipe.label_ids).toEqual(["t1"]);
-    expect(authState.teamLoads).toBe(1);
   });
 
   it("登出期间录的菜（owner_id 为 NULL）重新登录后被推上去（全扫补推）", async () => {
@@ -244,6 +232,5 @@ describe("triggerFullPushAndSync", () => {
     hasBaseUrlMock.mockReturnValue(false);
     await triggerFullPushAndSync();
     expect(apiFetchMock).not.toHaveBeenCalled();
-    expect(authState.teamLoads).toBe(0);
   });
 });

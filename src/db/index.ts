@@ -99,7 +99,6 @@ async function migrateTables(db: Db): Promise<void> {
   const cols = await db.select<{ name: string }[]>("PRAGMA table_info(recipes)");
   const names = new Set(cols.map((c) => c.name));
   if (!names.has("owner_id")) await db.execute("ALTER TABLE recipes ADD COLUMN owner_id TEXT");
-  if (!names.has("team_id")) await db.execute("ALTER TABLE recipes ADD COLUMN team_id TEXT");
 }
 
 export async function initDb(): Promise<void> {
