@@ -7,12 +7,18 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"wee-cook/backend/internal/model"
 )
 
 // ErrRecipeNotVisible 表示菜谱不存在、未公开或已删除——三种情况对外都是 404（spec §8）。
 var ErrRecipeNotVisible = errors.New("recipe not visible")
 
-// CommunityService 提供社区侧的两个写操作：收藏与取消收藏（spec §8）。
+// ErrSelfFollow 表示试图关注自己，对外是 400（spec §8）。
+// 「用户不存在」复用 auth.go 里的 ErrUserNotFound（同包同义），handler 直接 errors.Is 映射 404。
+var ErrSelfFollow = errors.New("cannot follow yourself")
+
+// CommunityService 提供社区侧的写操作（收藏 / 关注）与用户资料页（spec §8）。
 type CommunityService struct {
 	pool *pgxpool.Pool
 }
@@ -70,4 +76,62 @@ func (s *CommunityService) Unfavorite(ctx context.Context, userID, recipeID stri
 		return fmt.Errorf("delete favorite: %w", err)
 	}
 	return nil
+}
+
+// Follow 关注一个用户，幂等：重复关注靠主键冲突吞掉。不能关注自己，目标用户必须存在。
+func (s *CommunityService) Follow(ctx context.Context, followerID, followeeID string) error {
+	if followerID == followeeID {
+		return ErrSelfFollow
+	}
+
+	var exists bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)`, followeeID).Scan(&exists); err != nil {
+		return fmt.Errorf("check followee exists: %w", err)
+	}
+	if !exists {
+		return ErrUserNotFound
+	}
+
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO follows (follower_id, followee_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+		followerID, followeeID); err != nil {
+		return fmt.Errorf("insert follow: %w", err)
+	}
+	return nil
+}
+
+// Unfollow 取消关注，幂等：没关注过也成功。取消关注不校验目标用户是否存在——
+// 它只删自己名下的订阅关系，用户删了也一样是「已经没有这层关系」。
+func (s *CommunityService) Unfollow(ctx context.Context, followerID, followeeID string) error {
+	if _, err := s.pool.Exec(ctx,
+		`DELETE FROM follows WHERE follower_id = $1 AND followee_id = $2`,
+		followerID, followeeID); err != nil {
+		return fmt.Errorf("delete follow: %w", err)
+	}
+	return nil
+}
+
+// Profile 返回用户资料页视图：昵称、头像、查看者是否已关注，以及 ta 的公开菜谱数。
+func (s *CommunityService) Profile(ctx context.Context, viewerID, userID string) (*model.UserProfile, error) {
+	p := &model.UserProfile{}
+	if err := s.pool.QueryRow(ctx, `
+		SELECT u.id, u.nickname, u.avatar_url,
+		       EXISTS(SELECT 1 FROM follows f WHERE f.follower_id = $1 AND f.followee_id = u.id)
+		FROM users u WHERE u.id = $2`, viewerID, userID).
+		Scan(&p.ID, &p.Nickname, &p.AvatarURL, &p.Followed); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrUserNotFound
+		}
+		return nil, fmt.Errorf("load user profile: %w", err)
+	}
+
+	// 只数公开且未删除的：私有的不该出现在外人看得到的资料页上。
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM recipes WHERE owner_id = $1 AND is_public = 1 AND deleted_at IS NULL`,
+		userID).Scan(&p.PublicCount); err != nil {
+		return nil, fmt.Errorf("count public recipes: %w", err)
+	}
+
+	return p, nil
 }

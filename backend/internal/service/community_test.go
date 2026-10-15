@@ -200,3 +200,161 @@ func TestUnfavoriteIsIdempotent(t *testing.T) {
 		t.Errorf("取消收藏不该推进 server_seq：before = %d, after = %d", seqBefore, seqAfter)
 	}
 }
+
+// 关注幂等：连调两次不报错、库里仍只有一行；Profile 以关注者视角看到的 Followed 为 true。
+func TestFollowIsIdempotentAndProfileReflectsIt(t *testing.T) {
+	pool := filesTestDB(t)
+	community := NewCommunityService(pool)
+	ctx := context.Background()
+
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+
+	for i := 0; i < 2; i++ {
+		if err := community.Follow(ctx, a, b); err != nil {
+			t.Fatalf("第 %d 次关注失败: %v", i+1, err)
+		}
+	}
+
+	var n int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM follows WHERE follower_id = $1 AND followee_id = $2`, a, b).Scan(&n); err != nil {
+		t.Fatalf("统计关注失败: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("关注行数 = %d, want 1", n)
+	}
+
+	p, err := community.Profile(ctx, a, b)
+	if err != nil {
+		t.Fatalf("读资料失败: %v", err)
+	}
+	if !p.Followed {
+		t.Errorf("A 关注了 B，Profile(A, B).Followed = false, want true")
+	}
+}
+
+// 不能关注自己：服务层用 ErrSelfFollow 表达（spec §8，handler 映射 400）。
+func TestFollowSelfReturnsErrSelfFollow(t *testing.T) {
+	pool := filesTestDB(t)
+	community := NewCommunityService(pool)
+	ctx := context.Background()
+
+	a := seedUser(t, pool)
+
+	if err := community.Follow(ctx, a, a); !errors.Is(err, ErrSelfFollow) {
+		t.Fatalf("关注自己 err = %v, want ErrSelfFollow", err)
+	}
+
+	var n int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM follows WHERE follower_id = $1 AND followee_id = $1`, a).Scan(&n); err != nil {
+		t.Fatalf("统计关注失败: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("关注自己后关注行数 = %d, want 0", n)
+	}
+}
+
+// 关注不存在的用户 → ErrUserNotFound（handler 映射 404）。
+func TestFollowUnknownUserReturnsErrUserNotFound(t *testing.T) {
+	pool := filesTestDB(t)
+	community := NewCommunityService(pool)
+	ctx := context.Background()
+
+	a := seedUser(t, pool)
+	missing := uuid.NewString()
+	if err := community.Follow(ctx, a, missing); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("关注不存在的用户 err = %v, want ErrUserNotFound", err)
+	}
+	if _, err := community.Profile(ctx, a, missing); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("读不存在的用户的资料 err = %v, want ErrUserNotFound", err)
+	}
+}
+
+// PublicCount 只数公开且未删除的菜谱：私有与已删除的都不计。
+func TestProfileCountsOnlyPublicRecipes(t *testing.T) {
+	pool := filesTestDB(t)
+	community := NewCommunityService(pool)
+	ctx := context.Background()
+
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+	if _, err := pool.Exec(ctx,
+		`UPDATE users SET nickname = '阿花', avatar_url = 'https://example.com/a.png' WHERE id = $1`, a); err != nil {
+		t.Fatalf("更新用户失败: %v", err)
+	}
+
+	public1 := seedRecipe(t, pool, a, nil, false)
+	public2 := seedRecipe(t, pool, a, nil, false)
+	seedRecipe(t, pool, a, nil, false)                 // 私有
+	deletedPublic := seedRecipe(t, pool, a, nil, true) // 已删除
+	if _, err := pool.Exec(ctx,
+		`UPDATE recipes SET is_public = 1 WHERE id = ANY($1)`, []string{public1, public2, deletedPublic}); err != nil {
+		t.Fatalf("公开菜谱失败: %v", err)
+	}
+
+	p, err := community.Profile(ctx, b, a)
+	if err != nil {
+		t.Fatalf("读资料失败: %v", err)
+	}
+	if p.ID != a {
+		t.Errorf("Profile.ID = %q, want %q", p.ID, a)
+	}
+	if p.Nickname != "阿花" {
+		t.Errorf("Profile.Nickname = %q, want 阿花", p.Nickname)
+	}
+	if p.AvatarURL == nil || *p.AvatarURL != "https://example.com/a.png" {
+		t.Errorf("Profile.AvatarURL = %v, want 头像地址", p.AvatarURL)
+	}
+	if p.Followed {
+		t.Errorf("B 没关注 A，Profile(B, A).Followed = true, want false")
+	}
+	if p.PublicCount != 2 {
+		t.Errorf("PublicCount = %d, want 2（私有与已删除的不计）", p.PublicCount)
+	}
+}
+
+// 取消关注幂等：没关注过也能调；关注后调两次行没了，Profile 回到 Followed = false。
+func TestUnfollowIsIdempotent(t *testing.T) {
+	pool := filesTestDB(t)
+	community := NewCommunityService(pool)
+	ctx := context.Background()
+
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+
+	// 从没关注过的用户也能调
+	if err := community.Unfollow(ctx, a, uuid.NewString()); err != nil {
+		t.Fatalf("取消未关注的用户失败: %v", err)
+	}
+	if err := community.Unfollow(ctx, a, a); err != nil {
+		t.Fatalf("取消关注自己失败: %v", err)
+	}
+
+	if err := community.Follow(ctx, a, b); err != nil {
+		t.Fatalf("关注失败: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := community.Unfollow(ctx, a, b); err != nil {
+			t.Fatalf("第 %d 次取消关注失败: %v", i+1, err)
+		}
+	}
+
+	var n int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM follows WHERE follower_id = $1 AND followee_id = $2`, a, b).Scan(&n); err != nil {
+		t.Fatalf("统计关注失败: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("取消关注后关注行数 = %d, want 0", n)
+	}
+
+	p, err := community.Profile(ctx, a, b)
+	if err != nil {
+		t.Fatalf("读资料失败: %v", err)
+	}
+	if p.Followed {
+		t.Errorf("取消关注后 Profile.Followed = true, want false")
+	}
+}
