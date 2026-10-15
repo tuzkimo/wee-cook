@@ -143,11 +143,43 @@ describe("UserPage", () => {
     expect(wrapper.get('[data-test="user-follow"]').text()).toBe("关注");
   });
 
-  it("离线时关注按钮不可用（disabled）", async () => {
+  it("掉线后关注按钮变为不可用（disabled，且视觉上也灰着）", async () => {
+    const wrapper = await page();
+    expect(wrapper.get('[data-test="user-follow"]').attributes("disabled")).toBeUndefined();
+
+    useAuthStore().mode = "guest";
+    await flushPromises();
+
+    const follow = wrapper.get('[data-test="user-follow"]');
+    expect(follow.attributes("disabled")).toBeDefined();
+    expect(follow.classes()).toContain("disabled:opacity-50");
+  });
+
+  it("离线时不发任何请求，显示离线提示、重试按钮不可用", async () => {
     useAuthStore().mode = "guest";
     const wrapper = await page();
 
-    expect(wrapper.get('[data-test="user-follow"]').attributes("disabled")).toBeDefined();
+    // 两个端点对 guest 一律 401：一个请求都不该发出去
+    expect(mocks.profile).not.toHaveBeenCalled();
+    expect(mocks.list).not.toHaveBeenCalled();
+    expect(wrapper.get('[data-test="user-error"]').text()).toContain("需要联网");
+    expect(wrapper.get('[data-test="user-retry"]').attributes("disabled")).toBeDefined();
+  });
+
+  it("恢复在线后重试可用，能拉到资料", async () => {
+    useAuthStore().mode = "guest";
+    const wrapper = await page();
+    expect(mocks.profile).not.toHaveBeenCalled();
+
+    useAuthStore().mode = "online";
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="user-retry"]').attributes("disabled")).toBeUndefined();
+    await wrapper.get('[data-test="user-retry"]').trigger("click");
+    await flushPromises();
+
+    expect(mocks.profile).toHaveBeenCalledWith("u2");
+    expect(wrapper.get('[data-test="user-nickname"]').text()).toBe("老王");
   });
 
   it("加载失败显示失败与重试", async () => {

@@ -212,7 +212,7 @@ async function confirmDelete(): Promise<void> {
           <button
             type="button"
             data-test="recipe-favorite"
-            class="shrink-0 rounded-lg border px-4 py-2 text-sm font-medium transition-colors"
+            class="shrink-0 rounded-lg border px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50"
             :class="
               favorited
                 ? 'border-gray-300 text-text-secondary hover:bg-gray-50'

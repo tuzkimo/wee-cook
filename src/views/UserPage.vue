@@ -26,12 +26,20 @@ const followError = ref("");
 const loading = ref(false);
 const following = ref(false);
 
+// 未登录 / 离线一个请求都不发（spec §9.4）：这两个端点对 guest 一律 401，
+// 发了只会永远停在失败态。本机仍会显示别人的菜谱副本，所以这条路真的会被走到。
+const OFFLINE_MESSAGE = "用户资料需要联网查看";
+
 // 列表直接调服务层：社区 store 的 load 不接受 author_id，而且它带着菜谱页的筛选状态。
 // shortcut: 只取第一页，公开菜谱超过 50 条的作者需要「加载更多」时再加。
 async function load(): Promise<void> {
   const id = userId.value;
   if (!id) {
     error.value = "用户不存在";
+    return;
+  }
+  if (!auth.isOnline) {
+    error.value = OFFLINE_MESSAGE;
     return;
   }
   loading.value = true;
@@ -105,7 +113,8 @@ async function open(id: string): Promise<void> {
         <button
           type="button"
           data-test="user-retry"
-          class="mt-4 rounded-lg bg-primary px-6 py-2.5 text-sm font-medium text-white"
+          class="mt-4 rounded-lg bg-primary px-6 py-2.5 text-sm font-medium text-white disabled:opacity-50"
+          :disabled="!auth.isOnline"
           @click="load"
         >
           重试
@@ -125,7 +134,7 @@ async function open(id: string): Promise<void> {
           <button
             type="button"
             data-test="user-follow"
-            class="shrink-0 rounded-lg border px-4 py-2 text-sm font-medium transition-colors"
+            class="shrink-0 rounded-lg border px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50"
             :class="
               profile.followed
                 ? 'border-gray-300 text-text-secondary hover:bg-gray-50'

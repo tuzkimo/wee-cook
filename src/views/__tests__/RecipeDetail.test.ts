@@ -415,18 +415,22 @@ describe("RecipeDetail", () => {
 
     const author = wrapper.get('[data-test="recipe-author"]');
     expect(author.text()).toBe("老王");
+    // 收藏按钮与作者同属「别人的菜谱」这一态
+    expect(wrapper.find('[data-test="recipe-favorite"]').exists()).toBe(true);
     await author.trigger("click");
     expect(mocks.push).toHaveBeenCalledWith("/user/u2");
   });
 
-  it("离线时收藏按钮不可用（disabled）", async () => {
+  it("离线时收藏按钮不可用（disabled，且视觉上也灰着）", async () => {
     setActivePinia(createPinia());
     mocks.getDetail.mockResolvedValue(others());
 
     const wrapper = await page();
 
     // 未登录（离线）也看得到按钮，只是不能点
-    expect(wrapper.get('[data-test="recipe-favorite"]').attributes("disabled")).toBeDefined();
+    const favorite = wrapper.get('[data-test="recipe-favorite"]');
+    expect(favorite.attributes("disabled")).toBeDefined();
+    expect(favorite.classes()).toContain("disabled:opacity-50");
   });
 
   it("收藏成功后按钮显示已收藏", async () => {
@@ -487,5 +491,8 @@ describe("RecipeDetail", () => {
 
     expect(wrapper.find('[data-test="edit"]').exists()).toBe(true);
     expect(wrapper.find('[data-test="delete"]').exists()).toBe(true);
+    // 自己的菜谱不是「别人的」：没有作者入口、也没有收藏按钮
+    expect(wrapper.find('[data-test="recipe-author"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="recipe-favorite"]').exists()).toBe(false);
   });
 });
