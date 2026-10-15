@@ -19,7 +19,7 @@ type SyncHandler struct {
 	svc syncService
 }
 
-// 同步请求体上限。全量首同步会上传本地全部数据，故比 auth/team 的 1MB 宽松得多；
+// 同步请求体上限。全量首同步会上传本地全部数据，故比 auth 的 1MB 宽松得多；
 // 但仍必须设限，否则任何注册用户可用超大 body 打满服务端内存并在写事务内长时间
 // 独占全局 advisory 写锁，串行化所有用户的同步（横向 DoS）。
 // 用 var 而非 const，便于测试用小值触发超限分支。

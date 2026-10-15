@@ -17,8 +17,8 @@ import (
 	"wee-cook/backend/internal/database"
 )
 
-// 图片的读权限完全由「有没有一条我可见的菜谱引用了它」这条 SQL 决定（spec §8.1），
-// fake querier 无法表达「同一个文件名被私人菜谱和团队菜谱同时引用」这类语义，
+// 图片的读权限完全由「有没有一条我的菜谱引用了它」这条 SQL 决定（spec §8.1），
+// fake querier 无法表达「同一个文件名被多条菜谱引用」这类语义，
 // 所以这一组用例起真 postgres。容器由一个 sync.Once 里的池共用，各用例用随机 UUID 的
 // id / 文件名，互不干扰（迁移只需跑一次）。
 var (
@@ -76,26 +76,8 @@ func seedUser(t *testing.T, pool *pgxpool.Pool) string {
 	return id
 }
 
-func seedTeam(t *testing.T, pool *pgxpool.Pool, creator string) string {
-	t.Helper()
-	var id string
-	if err := pool.QueryRow(context.Background(),
-		`INSERT INTO teams (name, created_by) VALUES ('家庭', $1) RETURNING id`, creator).Scan(&id); err != nil {
-		t.Fatalf("插入团队失败: %v", err)
-	}
-	return id
-}
-
-func joinTeam(t *testing.T, pool *pgxpool.Pool, teamID, userID string) {
-	t.Helper()
-	if _, err := pool.Exec(context.Background(),
-		`INSERT INTO team_members (team_id, user_id) VALUES ($1, $2)`, teamID, userID); err != nil {
-		t.Fatalf("加入团队失败: %v", err)
-	}
-}
-
-// seedRecipe 插入一条菜谱；teamID / coverPath 为 nil 表示私人 / 无封面，deleted 决定 deleted_at。
-func seedRecipe(t *testing.T, pool *pgxpool.Pool, ownerID string, teamID, coverPath *string, deleted bool) string {
+// seedRecipe 插入一条菜谱；coverPath 为 nil 表示无封面，deleted 决定 deleted_at。
+func seedRecipe(t *testing.T, pool *pgxpool.Pool, ownerID string, coverPath *string, deleted bool) string {
 	t.Helper()
 	var deletedAt *time.Time
 	if deleted {
@@ -104,9 +86,9 @@ func seedRecipe(t *testing.T, pool *pgxpool.Pool, ownerID string, teamID, coverP
 	}
 	id := "r-" + uuid.NewString()
 	if _, err := pool.Exec(context.Background(), `
-		INSERT INTO recipes (id, owner_id, team_id, name, cover_path, category_id, created_at, updated_at, deleted_at)
-		VALUES ($1, $2, $3, '红烧肉', $4, 'cat-1', NOW(), NOW(), $5)`,
-		id, ownerID, teamID, coverPath, deletedAt); err != nil {
+		INSERT INTO recipes (id, owner_id, is_public, name, cover_path, category_id, created_at, updated_at, deleted_at)
+		VALUES ($1, $2, 0, '红烧肉', $3, 'cat-1', NOW(), NOW(), $4)`,
+		id, ownerID, coverPath, deletedAt); err != nil {
 		t.Fatalf("插入菜谱失败: %v", err)
 	}
 	return id
@@ -147,45 +129,25 @@ func TestCanReadPrivateFileOnlyForOwner(t *testing.T) {
 	a := seedUser(t, pool)
 	b := seedUser(t, pool)
 	file := newFileName()
-	// 私人菜谱通过步骤图引用（覆盖 recipe_steps.image_path 分支）
-	seedStepImage(t, pool, seedRecipe(t, pool, a, nil, nil, false), file)
+	// 通过步骤图引用（覆盖 recipe_steps.image_path 分支）
+	seedStepImage(t, pool, seedRecipe(t, pool, a, nil, false), file)
 
 	assertCanRead(t, svc, a, file, true)
 	assertCanRead(t, svc, b, file, false)
 }
 
-func TestCanReadTeamFileForMembers(t *testing.T) {
+// 可见性跟着「引用它的那条菜谱」走，不看 files 的 owner_id：同一个文件名先被 A 的菜谱引用，
+// 随后又被 B 的菜谱引用，B 也必须读得到——这条钉子防的是
+// 「只认第一次引用它的那条菜谱 / 只认 files 的归属」那类实现。
+func TestCanReadFileReferencedByLaterRecipe(t *testing.T) {
 	svc, pool := newFileService(t)
 	a := seedUser(t, pool)
 	b := seedUser(t, pool)
-	c := seedUser(t, pool)
-	team := seedTeam(t, pool, a)
-	joinTeam(t, pool, team, a)
-	joinTeam(t, pool, team, b)
-	file := newFileName()
-	// 团队菜谱通过封面引用（覆盖 cover_path 分支）
-	seedRecipe(t, pool, a, &team, &file, false)
-
-	assertCanRead(t, svc, a, file, true)
-	assertCanRead(t, svc, b, file, true)
-	assertCanRead(t, svc, c, file, false)
-}
-
-// Review Focus ③：A 先在自己的私人菜谱里用过 X，随后团队菜谱也引用 X（同名文件、files 只有一行）。
-// 可见性跟着「使用它的菜谱」走，所以同团队的人必须读得到——这条钉子防的是
-// 「只认第一次引用它的那本菜谱 / 只认 files 的归属」那类实现。
-func TestCanReadFileReferencedByRecipeInAnotherBook(t *testing.T) {
-	svc, pool := newFileService(t)
-	a := seedUser(t, pool)
-	b := seedUser(t, pool)
-	team := seedTeam(t, pool, a)
-	joinTeam(t, pool, team, a)
-	joinTeam(t, pool, team, b)
 
 	file := newFileName()
-	seedRecipe(t, pool, a, nil, &file, false) // 先被 A 的私人菜谱引用
-	teamRecipe := seedRecipe(t, pool, b, &team, nil, false)
-	seedStepImage(t, pool, teamRecipe, file) // 随后又被团队菜谱引用
+	seedRecipe(t, pool, a, &file, false) // 先被 A 的菜谱引用
+	bRecipe := seedRecipe(t, pool, b, nil, false)
+	seedStepImage(t, pool, bRecipe, file) // 随后又被 B 的菜谱引用
 
 	assertCanRead(t, svc, b, file, true)
 	assertCanRead(t, svc, a, file, true)
@@ -195,7 +157,7 @@ func TestCanReadSoftDeletedRecipeFile(t *testing.T) {
 	svc, pool := newFileService(t)
 	a := seedUser(t, pool)
 	file := newFileName()
-	seedRecipe(t, pool, a, nil, &file, true)
+	seedRecipe(t, pool, a, &file, true)
 
 	assertCanRead(t, svc, a, file, true)
 }

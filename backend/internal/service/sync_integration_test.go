@@ -1,7 +1,7 @@
 // 同步服务的真库集成测试：复用 files_test.go 的容器/seed 辅助（同一个 postgres 容器，
 // 各用例用随机 UUID 的 id 隔离数据）。这些用例吃的是真 SQL + 真事务，覆盖 spec
-// §7.2（整条合并）、§7.3（子行整组替换）、§7.4（字典同名合并）、§7.5（快照游标）、
-// §9.4（加入团队要清游标）这几条只有真库才验得出的规格。
+// §7.2（整条合并）、§7.3（子行整组替换）、§7.4（字典同名合并）、§7.5（快照游标）
+// 这几条只有真库才验得出的规格。
 package service
 
 import (
@@ -20,11 +20,11 @@ import (
 )
 
 // syncRecipe 造一条待同步的菜谱，三个子集合给空切片而不是 nil：空数组才表达得出「清空」。
-func syncRecipe(id, name string, updatedAt time.Time, teamID *string) model.Recipe {
+func syncRecipe(id, name string, updatedAt time.Time, isPublic int16) model.Recipe {
 	return model.Recipe{
 		ID:          id,
 		Name:        name,
-		TeamID:      teamID,
+		IsPublic:    isPublic,
 		CreatedAt:   updatedAt.Add(-time.Hour),
 		UpdatedAt:   updatedAt,
 		Steps:       []model.RecipeStep{},
@@ -93,7 +93,7 @@ func recipeLabelIDs(t *testing.T, pool *pgxpool.Pool, recipeID string) []string 
 	return columnValues(t, pool, `SELECT label_id FROM recipe_labels WHERE recipe_id = $1 ORDER BY label_id`, recipeID)
 }
 
-// Review Focus ①：同一用户的两台设备离线各改同一条团队菜谱，服务端必须留下较新的那一份，
+// Review Focus ①：同一用户的两台设备离线各改同一条菜谱，服务端必须留下较新的那一份，
 // 且三张子表整组来自同一版本——不是把两版的子行拼起来（spec §7.3）。
 func TestTwoDevicesConvergeOnRecipeEdit(t *testing.T) {
 	pool := filesTestDB(t)
@@ -101,8 +101,6 @@ func TestTwoDevicesConvergeOnRecipeEdit(t *testing.T) {
 	ctx := context.Background()
 
 	a := seedUser(t, pool)
-	team := seedTeam(t, pool, a)
-	joinTeam(t, pool, team, a)
 
 	now := time.Now().UTC()
 	recipeID := "r-" + uuid.NewString()
@@ -114,12 +112,12 @@ func TestTwoDevicesConvergeOnRecipeEdit(t *testing.T) {
 		labelV2  = "lbl-v2"
 	)
 
-	base := syncRecipe(recipeID, "原始菜谱", now.Add(-3*time.Hour), &team)
+	base := syncRecipe(recipeID, "原始菜谱", now.Add(-3*time.Hour), 1)
 	base.Steps = []model.RecipeStep{{ID: stepBase, SortOrder: 0, Text: "原始步骤"}}
 	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{base}})
 
 	// 设备 1 离线期间的修改
-	v1 := syncRecipe(recipeID, "设备1版", now.Add(-2*time.Hour), &team)
+	v1 := syncRecipe(recipeID, "设备1版", now.Add(-2*time.Hour), 1)
 	v1.Steps = []model.RecipeStep{
 		{ID: stepV1, SortOrder: 0, Text: "设备1的步骤"},
 		{ID: stepV1 + "-b", SortOrder: 1, Text: "设备1的步骤2"},
@@ -128,7 +126,7 @@ func TestTwoDevicesConvergeOnRecipeEdit(t *testing.T) {
 	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{v1}})
 
 	// 设备 2 离线期间的修改，时间更晚
-	v2 := syncRecipe(recipeID, "设备2版", now.Add(-1*time.Hour), &team)
+	v2 := syncRecipe(recipeID, "设备2版", now.Add(-1*time.Hour), 1)
 	v2.Steps = []model.RecipeStep{{ID: stepV2, SortOrder: 0, Text: "设备2的步骤"}}
 	v2.LabelIDs = []string{labelV2}
 	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{v2}})
@@ -158,6 +156,10 @@ func TestTwoDevicesConvergeOnRecipeEdit(t *testing.T) {
 	if got.Name != "设备2版" {
 		t.Errorf("拉回来的菜谱名 = %q, want 设备2版", got.Name)
 	}
+	// is_public 是菜谱主人自己的选择，入库后必须原样回传（INSERT 与 UPDATE 两条路径都走过）
+	if got.IsPublic != 1 {
+		t.Errorf("拉回来的 is_public = %d, want 1", got.IsPublic)
+	}
 	if len(got.Steps) != 1 || got.Steps[0].ID != stepV2 {
 		t.Errorf("拉回来的步骤 = %+v, want 只有 %s", got.Steps, stepV2)
 	}
@@ -166,65 +168,8 @@ func TestTwoDevicesConvergeOnRecipeEdit(t *testing.T) {
 	}
 }
 
-// Review Focus ② + spec §9.4 的根因钉子：后加入的人能拿到存量团队数据，前提是客户端把
-// last_server_seq 清 0。用例显式验证「用加入前的旧游标拉，一条都拉不到」——这就是必须清游标的原因。
-func TestJoinTeamThenPullExistingRecipes(t *testing.T) {
-	pool := filesTestDB(t)
-	svc := NewSyncService(pool)
-
-	a := seedUser(t, pool)
-	b := seedUser(t, pool)
-	team := seedTeam(t, pool, a)
-	joinTeam(t, pool, team, a)
-
-	// A 先在团队里录 5 道菜，此刻的全局游标就是 B「加入前」的旧游标
-	now := time.Now().UTC()
-	ids := make([]string, 5)
-	recipes := make([]model.Recipe, 5)
-	for i := range recipes {
-		ids[i] = "r-" + uuid.NewString()
-		recipes[i] = syncRecipe(ids[i], fmt.Sprintf("团队菜谱%d", i), now.Add(time.Duration(i)*time.Second), &team)
-	}
-	joinCursor := mustPush(t, svc, a, model.SyncPayload{Recipes: recipes}).ServerSeq
-
-	// B 此刻才加入团队
-	joinTeam(t, pool, team, b)
-
-	// 旧游标拉：一条都拉不到（不报错，只是全空）——回归网：若这里能拉到，§9.4 就白写了
-	old := mustPull(t, svc, b, joinCursor)
-	if len(old.RemoteChanges.Recipes) != 0 {
-		t.Errorf("B 用加入前的旧游标应一条菜谱都拉不到，实际 %d 条: %v",
-			len(old.RemoteChanges.Recipes), recipeIDs(old.RemoteChanges.Recipes))
-	}
-
-	// 清 0 全量重拉：5 条团队菜谱都在
-	fresh := mustPull(t, svc, b, 0)
-	got := map[string]bool{}
-	for _, r := range fresh.RemoteChanges.Recipes {
-		got[r.ID] = true
-	}
-	for _, id := range ids {
-		if !got[id] {
-			t.Errorf("B 清 0 重拉后缺少团队菜谱 %s", id)
-		}
-	}
-	// B 只在这一个团队里，所以全量重拉应恰好是这 5 条
-	if len(fresh.RemoteChanges.Recipes) != 5 {
-		t.Errorf("B 清 0 重拉应恰好拿到 5 条团队菜谱，实际 %d 条: %v",
-			len(fresh.RemoteChanges.Recipes), recipeIDs(fresh.RemoteChanges.Recipes))
-	}
-}
-
-func recipeIDs(recipes []model.Recipe) []string {
-	ids := make([]string, 0, len(recipes))
-	for _, r := range recipes {
-		ids = append(ids, r.ID)
-	}
-	return ids
-}
-
-// Review Focus ⑤：同团队成员推同 id 的菜谱、owner_id 伪造成自己、时间更晚——服务端必须整体跳过，
-// 库里仍是原作者、内容一字未改（spec §7.1）。
+// Review Focus ⑤：B 推同 id 的菜谱、owner_id 伪造成自己、时间更晚——服务端必须整体跳过，
+// 库里仍是原作者、内容一字未改（spec §7.1）；可见范围只有作者本人，B 全量拉也拉不到 A 的菜谱。
 func TestNonOwnerCannotOverwriteRecipe(t *testing.T) {
 	pool := filesTestDB(t)
 	svc := NewSyncService(pool)
@@ -232,18 +177,15 @@ func TestNonOwnerCannotOverwriteRecipe(t *testing.T) {
 
 	a := seedUser(t, pool)
 	b := seedUser(t, pool)
-	team := seedTeam(t, pool, a)
-	joinTeam(t, pool, team, a)
-	joinTeam(t, pool, team, b)
 
 	now := time.Now().UTC()
 	recipeID := "r-" + uuid.NewString()
-	owned := syncRecipe(recipeID, "A的菜谱", now.Add(-time.Hour), &team)
+	owned := syncRecipe(recipeID, "A的菜谱", now.Add(-time.Hour), 0)
 	owned.Steps = []model.RecipeStep{{ID: "st-a", SortOrder: 0, Text: "A的步骤"}}
 	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{owned}})
 
-	// B 在团队里（team 校验放行），伪造 owner_id 与更晚的 updated_at 试图覆盖
-	forged := syncRecipe(recipeID, "被B篡改", now, &team)
+	// B 拿着一模一样的 id、伪造 owner_id 与更晚的 updated_at 试图覆盖
+	forged := syncRecipe(recipeID, "被B篡改", now, 0)
 	forged.OwnerID = b
 	forged.Steps = []model.RecipeStep{{ID: "st-b", SortOrder: 0, Text: "B的步骤"}}
 	mustPush(t, svc, b, model.SyncPayload{Recipes: []model.Recipe{forged}})
@@ -262,17 +204,21 @@ func TestNonOwnerCannotOverwriteRecipe(t *testing.T) {
 		t.Errorf("步骤 = %v, want [st-a]；非作者越权改了子行", got)
 	}
 
-	// B 拉回来看到的仍是 A 的内容与归属
-	resp := mustPull(t, svc, b, 0)
-	got := findRecipe(resp.RemoteChanges.Recipes, recipeID)
+	// 可见范围只有作者本人：B 全量拉也看不到 A 的菜谱
+	if got := findRecipe(mustPull(t, svc, b, 0).RemoteChanges.Recipes, recipeID); got != nil {
+		t.Errorf("B 不该看到 A 的菜谱，实际拉到: %+v", got)
+	}
+
+	// A 拉回来仍是自己的内容与归属
+	got := findRecipe(mustPull(t, svc, a, 0).RemoteChanges.Recipes, recipeID)
 	if got == nil {
-		t.Fatalf("团队成员应看得到该菜谱")
+		t.Fatalf("A 应看得到自己的菜谱")
 	}
 	if got.OwnerID != a {
-		t.Errorf("B 拉到的 owner_id = %s, want A(%s)", got.OwnerID, a)
+		t.Errorf("A 拉到的 owner_id = %s, want A(%s)", got.OwnerID, a)
 	}
 	if got.Name != "A的菜谱" {
-		t.Errorf("B 拉到的名字 = %q, want A的菜谱", got.Name)
+		t.Errorf("A 拉到的名字 = %q, want A的菜谱", got.Name)
 	}
 }
 
@@ -298,7 +244,7 @@ func TestConcurrentSyncTransactionsDoNotSkipChanges(t *testing.T) {
 		wg.Add(1)
 		go func(i int, id string) {
 			defer wg.Done()
-			r := syncRecipe(id, fmt.Sprintf("并发菜谱%d", i), time.Now().UTC().Add(time.Duration(i)*time.Second), nil)
+			r := syncRecipe(id, fmt.Sprintf("并发菜谱%d", i), time.Now().UTC().Add(time.Duration(i)*time.Second), 0)
 			if _, err := svc.Sync(ctx, a, model.SyncRequest{
 				LocalChanges: model.SyncPayload{Recipes: []model.Recipe{r}},
 			}); err != nil {
@@ -364,7 +310,7 @@ func TestDictSameNameDedupesAcrossUsers(t *testing.T) {
 
 	ingB := "ing-b-" + uuid.NewString()
 	recipeID := "r-" + uuid.NewString()
-	recipe := syncRecipe(recipeID, "回锅肉", now, nil)
+	recipe := syncRecipe(recipeID, "回锅肉", now, 0)
 	recipe.Ingredients = []model.RecipeIngredient{{ID: "ri-" + uuid.NewString(), IngredientID: ingB, SortOrder: 0}}
 	mustPush(t, svc, b, model.SyncPayload{
 		Ingredients: []model.Ingredient{{ID: ingB, Name: "五花肉", CreatedAt: now, UpdatedAt: now}},
@@ -403,27 +349,24 @@ func TestDictSameNameDedupesAcrossUsers(t *testing.T) {
 	}
 }
 
-// 私人菜谱（team_id IS NULL）只有作者本人可见，团队队友也不行（spec §7.5 的可见范围）。
+// 私人菜谱只有作者本人可见（spec §7.5 的可见范围）。
 func TestPrivateRecipesInvisibleToOthers(t *testing.T) {
 	pool := filesTestDB(t)
 	svc := NewSyncService(pool)
 
 	a := seedUser(t, pool)
 	b := seedUser(t, pool)
-	team := seedTeam(t, pool, a)
-	joinTeam(t, pool, team, a)
-	joinTeam(t, pool, team, b)
 
 	recipeID := "r-" + uuid.NewString()
 	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{
-		syncRecipe(recipeID, "A的私人菜谱", time.Now().UTC(), nil),
+		syncRecipe(recipeID, "A的私人菜谱", time.Now().UTC(), 0),
 	}})
 
 	if got := findRecipe(mustPull(t, svc, a, 0).RemoteChanges.Recipes, recipeID); got == nil {
 		t.Errorf("作者本人应能看到自己的私人菜谱")
 	}
 	if got := findRecipe(mustPull(t, svc, b, 0).RemoteChanges.Recipes, recipeID); got != nil {
-		t.Errorf("B 与 A 同队，但不该看到 A 的私人菜谱")
+		t.Errorf("B 不该看到 A 的私人菜谱")
 	}
 }
 
@@ -517,13 +460,11 @@ func TestSyncReadPhaseIsSingleSnapshot(t *testing.T) {
 	svc := NewSyncService(pool)
 	ctx := context.Background()
 	a := seedUser(t, pool)
-	team := seedTeam(t, pool, a)
-	joinTeam(t, pool, team, a)
 
 	// R1 引用一张已登记的图，读阶段的 queryFiles 才会真的去查 files
 	file := newFileName()
 	fileRef := file
-	r1 := syncRecipe("r-"+uuid.NewString(), "快照菜谱", time.Now().UTC().Add(-time.Hour), &team)
+	r1 := syncRecipe("r-"+uuid.NewString(), "快照菜谱", time.Now().UTC().Add(-time.Hour), 0)
 	r1.CoverPath = &fileRef
 	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{r1}})
 	if _, err := pool.Exec(ctx, `INSERT INTO files (name, owner_id, size) VALUES ($1, $2, 1)`, file, a); err != nil {
@@ -563,8 +504,8 @@ func TestSyncReadPhaseIsSingleSnapshot(t *testing.T) {
 	// 快照已建立，此刻提交一条新菜谱
 	r2ID := "r-" + uuid.NewString()
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO recipes (id, owner_id, team_id, name, cover_path, category_id, created_at, updated_at)
-		VALUES ($1, $2, NULL, '并发提交', NULL, '', NOW(), NOW())`, r2ID, a); err != nil {
+		INSERT INTO recipes (id, owner_id, is_public, name, cover_path, category_id, created_at, updated_at)
+		VALUES ($1, $2, 0, '并发提交', NULL, '', NOW(), NOW())`, r2ID, a); err != nil {
 		t.Fatalf("插入并发菜谱失败: %v", err)
 	}
 	var r2Seq int64
@@ -629,7 +570,7 @@ func TestSyncWritePhaseSerializesOnAdvisoryLock(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		_, err := svc.Sync(ctx, a, model.SyncRequest{LocalChanges: model.SyncPayload{
-			Recipes: []model.Recipe{syncRecipe(recipeID, "被锁挡住的菜谱", time.Now().UTC(), nil)},
+			Recipes: []model.Recipe{syncRecipe(recipeID, "被锁挡住的菜谱", time.Now().UTC(), 0)},
 		}})
 		done <- err
 	}()
@@ -667,12 +608,10 @@ func TestPullRecoversFromServerGenerationRollback(t *testing.T) {
 	svc := NewSyncService(pool)
 	ctx := context.Background()
 	a := seedUser(t, pool)
-	team := seedTeam(t, pool, a)
-	joinTeam(t, pool, team, a)
 
 	recipeID := "r-" + uuid.NewString()
 	mustPush(t, svc, a, model.SyncPayload{
-		Recipes: []model.Recipe{syncRecipe(recipeID, "世代回退后的菜谱", time.Now().UTC(), &team)},
+		Recipes: []model.Recipe{syncRecipe(recipeID, "世代回退后的菜谱", time.Now().UTC(), 0)},
 	})
 
 	maxSeq, err := maxServerSeq(ctx, pool)

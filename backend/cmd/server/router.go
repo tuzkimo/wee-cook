@@ -19,7 +19,6 @@ import (
 // handlers 汇总路由需要的 handler，避免 newRouter 的参数列表过长。
 type handlers struct {
 	auth *handler.AuthHandler
-	team *handler.TeamHandler
 	sync *handler.SyncHandler
 	file *handler.FileHandler
 }
@@ -72,23 +71,11 @@ func newRouter(cfg *config.Config, h handlers) http.Handler {
 			r.Get("/me", h.auth.Me)
 			r.Put("/auth/profile", h.auth.UpdateProfile)
 
-			r.Get("/teams", h.team.List)
-			r.Post("/teams", h.team.Create)
-			r.Post("/teams/{id}/invite", h.team.Invite)
-			r.Get("/teams/{id}/members", h.team.Members)
-
 			r.Post("/sync", h.sync.Sync)
 
 			// 图片走独立通道：body 是裸二进制，文件名由客户端给（spec §8.1）
 			r.Post("/files", h.file.Upload)
 			r.Get("/files/{name}", h.file.Download)
-
-			// 邀请码 6 位（10^6 空间）可被登录用户离线爆破入组，故 join 也限流。
-			// key 信任模型同上：取自 r.RemoteAddr，按 TRUST_PROXY 决定是否信任 X-Forwarded-For。
-			r.Group(func(r chi.Router) {
-				r.Use(httprate.LimitBy(10, time.Minute, clientIPKey))
-				r.Post("/teams/join", h.team.Join)
-			})
 		})
 	})
 

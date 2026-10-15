@@ -4,10 +4,34 @@ import (
 	"context"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"wee-cook/backend/internal/database"
 )
+
+// tableExists 报告库里是否存在该名字的表。
+func tableExists(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string) bool {
+	t.Helper()
+	var ok bool
+	if err := pool.QueryRow(ctx,
+		"SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = $1)", table).Scan(&ok); err != nil {
+		t.Fatal(err)
+	}
+	return ok
+}
+
+// recipeColumn 报告 recipes 表上是否有该名字的列。
+func recipeColumn(ctx context.Context, t *testing.T, pool *pgxpool.Pool, column string) bool {
+	t.Helper()
+	var ok bool
+	if err := pool.QueryRow(ctx,
+		"SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name = 'recipes' AND column_name = $1)",
+		column).Scan(&ok); err != nil {
+		t.Fatal(err)
+	}
+	return ok
+}
 
 // startPostgres 起一个临时 postgres 容器并返回连接串（testcontainers / Ryuk 负责回收）。
 func startPostgres(t *testing.T) string {
@@ -45,7 +69,7 @@ func TestMigrationsCreateAllTables(t *testing.T) {
 	defer pool.Close()
 
 	for _, table := range []string{
-		"users", "teams", "team_members", "recipes", "recipe_steps",
+		"users", "recipes", "recipe_steps",
 		"recipe_ingredients", "recipe_labels", "ingredients", "units", "labels", "files",
 	} {
 		var exists bool
@@ -56,6 +80,26 @@ func TestMigrationsCreateAllTables(t *testing.T) {
 		if !exists {
 			t.Errorf("迁移后应存在表 %s", table)
 		}
+	}
+
+	// teams 与 team_members 必须不存在了
+	if tableExists(context.Background(), t, pool, "teams") || tableExists(context.Background(), t, pool, "team_members") {
+		t.Error("团队表应已删除")
+	}
+
+	// recipes 带 is_public、不带 team_id
+	var dataType, isNullable, columnDefault string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT data_type, is_nullable, column_default FROM information_schema.columns
+		 WHERE table_name = 'recipes' AND column_name = 'is_public'`).
+		Scan(&dataType, &isNullable, &columnDefault); err != nil {
+		t.Fatalf("recipes.is_public 应存在: %v", err)
+	}
+	if dataType != "smallint" || isNullable != "NO" || columnDefault != "0" {
+		t.Errorf("recipes.is_public = %s / %s / %s, want smallint / NO / 0", dataType, isNullable, columnDefault)
+	}
+	if recipeColumn(context.Background(), t, pool, "team_id") {
+		t.Error("recipes 不应再有 team_id 列")
 	}
 
 	// 三张子表按规格不带 deleted_at（AGENTS.md 的确认例外）

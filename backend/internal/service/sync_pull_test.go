@@ -194,43 +194,28 @@ func execCount(q *pullQuerier, sub string) int {
 	return n
 }
 
-// 可见范围必须写进 SQL：私人菜谱（team_id IS NULL）只认作者本人，团队菜谱只认我加入的团队。
-// 少了 owner_id 那一半，别人的私人菜谱会被我一并拉走；少了 team_id 那一半，团队菜谱一条都拉不到。
-// 两个调用者对照着断言：范围里的用户与团队集合都跟着调用者走，没有写死的值。
+// 可见范围必须写进 SQL：只有作者本人看得到自己的菜谱（本 Task 退回到「只有我自己」）。
+// 少了 owner_id 这一半，别人的菜谱会被我一并拉走；$2 必须绑当前用户，不能写死。
 func TestRemoteRecipesFilteredToMyVisibleScope(t *testing.T) {
 	ctx := context.Background()
 
-	for _, tc := range []struct {
-		name   string
-		userID string
-		teams  []string
-	}{
-		{"我", "me", []string{"team-a"}},
-		{"别人", "other", []string{"team-b"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			teamRows := make([][]any, 0, len(tc.teams))
-			for _, id := range tc.teams {
-				teamRows = append(teamRows, []any{id})
-			}
-			q := &pullQuerier{rows: map[string][][]any{"team_members": teamRows}}
+	for _, userID := range []string{"me", "other"} {
+		t.Run(userID, func(t *testing.T) {
+			q := &pullQuerier{}
 
-			if _, err := NewSyncService(nil).getRemoteChanges(ctx, q, tc.userID, 0); err != nil {
+			if _, err := NewSyncService(nil).getRemoteChanges(ctx, q, userID, 0); err != nil {
 				t.Fatalf("getRemoteChanges: %v", err)
 			}
 
 			rq := queryLike(t, q, "FROM recipes")
-			for _, want := range []string{"owner_id = $2", "team_id IS NULL", "team_id = ANY($3)"} {
-				if !strings.Contains(rq.sql, want) {
-					t.Errorf("菜谱增量查询必须带可见范围 %q，got %s", want, rq.sql)
-				}
+			if !strings.Contains(rq.sql, "owner_id = $2") {
+				t.Errorf("菜谱增量查询必须带可见范围 %q，got %s", "owner_id = $2", rq.sql)
 			}
-			if rq.args[1] != tc.userID {
-				t.Errorf("范围里的 owner_id 必须绑当前用户 %q，got %v", tc.userID, rq.args[1])
+			if strings.Contains(rq.sql, "team_id") {
+				t.Errorf("团队已删除，可见范围不该再出现 team_id：%s", rq.sql)
 			}
-			teams, ok := rq.args[2].([]string)
-			if !ok || !slices.Equal(teams, tc.teams) {
-				t.Errorf("范围里的团队集合应是当前用户的团队 %v，got %v", tc.teams, rq.args[2])
+			if len(rq.args) != 2 || rq.args[1] != userID {
+				t.Errorf("可见范围只该有「游标 + 当前用户」两个参数，且 $2 绑当前用户；got %+v", rq.args)
 			}
 		})
 	}
@@ -241,7 +226,6 @@ func TestRemoteDictsHaveNoScopeFilter(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	q := &pullQuerier{rows: map[string][][]any{
-		"team_members":                      {{"team-a"}},
 		"FROM ingredients WHERE server_seq": {{"i-1", "盐", now, now, nil}},
 		"FROM units WHERE server_seq":       {{"u-1", "克", now, now, nil}},
 		"FROM labels WHERE server_seq":      {{"l-1", "川菜", "tag", now, now, nil}},
@@ -279,8 +263,7 @@ func TestBackfillAddsReferencedDictRows(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	q := &pullQuerier{rows: map[string][][]any{
-		"team_members":                        {{"team-a"}},
-		"FROM recipes WHERE server_seq":       {{"r-1", "me", nil, "红烧肉", nil, "cat-1", now, now, nil}},
+		"FROM recipes WHERE server_seq":       {{"r-1", "me", int16(0), "红烧肉", nil, "cat-1", now, now, nil}},
 		"FROM recipe_steps":                   {{"r-1", "s-1", 1, "切肉", nil}},
 		"FROM recipe_ingredients":             {{"r-1", "ri-1", "ing-1", 200.0, "unit-1", 1}},
 		"FROM recipe_labels":                  {{"r-1", "lab-1"}},
@@ -350,10 +333,9 @@ func TestFilesListedOnlyForReturnedRecipes(t *testing.T) {
 
 	q := &pullQuerier{
 		rows: map[string][][]any{
-			"team_members": {{"team-a"}},
 			"FROM recipes WHERE server_seq": {
-				{"r-1", "me", nil, "红烧肉", "a.jpg", "cat-1", now, now, nil},
-				{"r-2", "me", nil, "糖醋排骨", "a.jpg", "cat-1", now, now, nil}, // 与 r-1 同一张封面：去重
+				{"r-1", "me", int16(0), "红烧肉", "a.jpg", "cat-1", now, now, nil},
+				{"r-2", "me", int16(0), "糖醋排骨", "a.jpg", "cat-1", now, now, nil}, // 与 r-1 同一张封面：去重
 			},
 			"FROM recipe_steps": {
 				{"r-1", "s-1", 1, "切肉", "b.jpg"},
@@ -408,8 +390,7 @@ func TestCursorIsSnapshotMax(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	q := &pullQuerier{rows: map[string][][]any{
-		"team_members":                  {{"team-a"}},
-		"FROM recipes WHERE server_seq": {{"r-1", "me", nil, "红烧肉", nil, "cat-1", now, now, nil}},
+		"FROM recipes WHERE server_seq": {{"r-1", "me", int16(0), "红烧肉", nil, "cat-1", now, now, nil}},
 		"MAX(s)":                        {{int64(431)}},
 	}}
 
@@ -438,24 +419,22 @@ func TestCursorIsSnapshotMax(t *testing.T) {
 	}
 }
 
-// 推来的菜谱指向我不在的团队：整条跳过，但同批其余变更照常提交（不因一条越权数据整批回滚）。
-// 顺带钉住写事务的语句顺序：advisory lock 第一句 → 字典（含 remap）→ 菜谱。
-func TestSyncSkipsLocalChangesForInaccessibleTeam(t *testing.T) {
+// 写事务的语句顺序与 remap：advisory lock 第一句 → 字典（含 remap）→ 菜谱；
+// 同批菜谱引用的字典 id 被合并掉时必须先重写引用再落库（spec §7.2 第 2/3 步）。
+func TestMergeLocalChangesOrderAndRemap(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
-	foreignTeam := "team-x"
 	q := &pullQuerier{rowSeq: []pgx.Row{
 		fakeRow{scanErr: pgx.ErrNoRows},                  // 食材按主键查：不存在
 		fakeRow{vals: []any{"i-Y", now.Add(-time.Hour)}}, // 同名行 i-Y：合并到它
-		fakeRow{scanErr: pgx.ErrNoRows},                  // 合法菜谱按主键查：不存在
+		fakeRow{scanErr: pgx.ErrNoRows},                  // 菜谱按主键查：不存在
 	}}
 
-	err := NewSyncService(nil).mergeLocalChanges(ctx, q, "user-1", map[string]bool{"team-y": true},
+	err := NewSyncService(nil).mergeLocalChanges(ctx, q, "user-1",
 		model.SyncPayload{
 			Ingredients: []model.Ingredient{{ID: "i-X", Name: "盐", CreatedAt: now, UpdatedAt: now}},
 			Recipes: []model.Recipe{
-				{ID: "r-bad", Name: "别人的菜", CategoryID: "cat-1", TeamID: &foreignTeam, CreatedAt: now, UpdatedAt: now},
-				{ID: "r-good", Name: "我的菜", CategoryID: "cat-1", CreatedAt: now, UpdatedAt: now,
+				{ID: "r-1", Name: "我的菜", CategoryID: "cat-1", CreatedAt: now, UpdatedAt: now,
 					Ingredients: []model.RecipeIngredient{{ID: "ri-1", IngredientID: "i-X", SortOrder: 1}}},
 			},
 		})
@@ -467,10 +446,10 @@ func TestSyncSkipsLocalChangesForInaccessibleTeam(t *testing.T) {
 		t.Fatalf("写事务第一条语句必须是 advisory lock，got %v", q.stmts)
 	}
 	if n := execCount(q, "INSERT INTO recipes"); n != 1 {
-		t.Fatalf("外来 team 的菜谱要跳过、同批合法的仍要提交，期望 1 条 INSERT INTO recipes，got %d：%+v", n, q.execs)
+		t.Fatalf("期望 1 条 INSERT INTO recipes，got %d：%+v", n, q.execs)
 	}
-	if got := execOf(t, q, "INSERT INTO recipes").args[0]; got != "r-good" {
-		t.Errorf("落库的应只有合法那条菜谱，got %v", got)
+	if got := execOf(t, q, "INSERT INTO recipes").args[0]; got != "r-1" {
+		t.Errorf("落库的应只有 r-1，got %v", got)
 	}
 	dictAt, recipeAt := execAt(q, "UPDATE ingredients"), execAt(q, "INSERT INTO recipes")
 	if dictAt < 0 || recipeAt < 0 || dictAt > recipeAt {

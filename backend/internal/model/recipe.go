@@ -19,11 +19,12 @@ type RecipeIngredient struct {
 }
 
 // Recipe 整条同步。OwnerID 只在响应里有意义，请求里带的值一律丢弃（服务端赋值，spec §7.1）。
+// IsPublic 0 = 私有（默认），1 = 公开到社区；由菜谱主人的客户端写入。
 // 三个子集合不加 omitempty：空数组要能表达「清空」。
 type Recipe struct {
 	ID          string             `json:"id"`
 	OwnerID     string             `json:"owner_id"`
-	TeamID      *string            `json:"team_id"`
+	IsPublic    int16              `json:"is_public"`
 	Name        string             `json:"name"`
 	CoverPath   *string            `json:"cover_path"`
 	CategoryID  string             `json:"category_id"`

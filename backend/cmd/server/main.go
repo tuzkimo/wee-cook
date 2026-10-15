@@ -39,7 +39,6 @@ func main() {
 	defer redisClient.Close()
 
 	authSvc := service.NewAuthService(pool, cfg.JWTSecret)
-	teamSvc := service.NewTeamService(pool, redisClient)
 	syncSvc := service.NewSyncService(pool)
 	// 图片目录提前建好：启动时就报错，比第一次上传才发现目录不在强
 	if err := os.MkdirAll(cfg.FilesDir, 0o755); err != nil {
@@ -51,7 +50,6 @@ func main() {
 		Addr: ":" + cfg.Port,
 		Handler: newRouter(cfg, handlers{
 			auth: handler.NewAuthHandler(authSvc),
-			team: handler.NewTeamHandler(teamSvc),
 			sync: handler.NewSyncHandler(syncSvc),
 			file: handler.NewFileHandler(fileSvc),
 		}),

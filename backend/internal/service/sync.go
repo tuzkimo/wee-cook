@@ -148,15 +148,13 @@ func (s *SyncService) mergeDict(ctx context.Context, tx dbQuerier, spec dictSpec
 
 // mergeRecipe 整条合并一条菜谱：父行 LWW + 三张子表整组替换（空数组即清空）。
 // 只有作者能改，越权写入静默跳过；LWW 比较取库里的 updated_at，不用服务器 now()。
-// team 校验放在任何读写之前：新建与更新两条路径都要过滤外来团队（spec §5 硬规则 1），
-// 若只放在更新路径上，用户能 INSERT 一条指向自己未加入团队的新菜谱、塞进别人团队。
 // remap 是同一批字典合并产出的「旧 id → 有效 id」：必须先重写所有引用再碰库，
 // 否则引用会指向服务器上不存在的行（当前 schema 下 category_id / ingredient_id / unit_id 都没建外键，
 // 不会立刻报错，但引用悬空；补上外键后就是 23503，会把整次同步回滚）（spec §7.2 第 3 步）。
 // LWW 骨架不复用通用辅助：父行必须在同一次 FOR UPDATE 里同时拿到 owner_id 与 updated_at，
 // 而通用辅助只扫单值 updated_at。
 // shortcut: 整条替换以「只有作者能改」为前提，将来允许协作编辑同一条菜谱时必须回到行级 LWW（spec §7.3）。
-func (s *SyncService) mergeRecipe(ctx context.Context, tx dbQuerier, userID string, teamSet map[string]bool, remap map[string]string, r model.Recipe) error {
+func (s *SyncService) mergeRecipe(ctx context.Context, tx dbQuerier, userID string, remap map[string]string, r model.Recipe) error {
 	remapID := func(id string) string {
 		if to, ok := remap[id]; ok {
 			return to
@@ -175,11 +173,6 @@ func (s *SyncService) mergeRecipe(ctx context.Context, tx dbQuerier, userID stri
 		}
 	}
 
-	// 团队归属先于一切数据库动作：新建（ErrNoRows 分支）与更新两条路径都靠这条过滤外来 team（spec §5 硬规则 1）。
-	if r.TeamID != nil && !teamSet[*r.TeamID] {
-		return nil
-	}
-
 	var remoteOwner string
 	var remoteUpdatedAt time.Time
 	err := tx.QueryRow(ctx,
@@ -187,10 +180,11 @@ func (s *SyncService) mergeRecipe(ctx context.Context, tx dbQuerier, userID stri
 		Scan(&remoteOwner, &remoteUpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO recipes (id, owner_id, team_id, name, cover_path, category_id, created_at, updated_at, deleted_at)
+			`INSERT INTO recipes (id, owner_id, is_public, name, cover_path, category_id, created_at, updated_at, deleted_at)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-			// owner_id 取当前用户：请求里带的 OwnerID 是客户端可伪造的，一律丢弃（spec §7.1）
-			r.ID, userID, r.TeamID, r.Name, r.CoverPath, r.CategoryID, r.CreatedAt, r.UpdatedAt, r.DeletedAt,
+			// owner_id 取当前用户：请求里带的 OwnerID 是客户端可伪造的，一律丢弃（spec §7.1）。
+			// is_public 取请求里的值：菜谱的主人就是当前用户，公开与否是他的选择。
+			r.ID, userID, r.IsPublic, r.Name, r.CoverPath, r.CategoryID, r.CreatedAt, r.UpdatedAt, r.DeletedAt,
 		); err != nil {
 			return err
 		}
@@ -206,9 +200,9 @@ func (s *SyncService) mergeRecipe(ctx context.Context, tx dbQuerier, userID stri
 		return nil
 	}
 	if _, err := tx.Exec(ctx,
-		`UPDATE recipes SET team_id=$1, name=$2, cover_path=$3, category_id=$4, updated_at=$5, deleted_at=$6,
+		`UPDATE recipes SET is_public=$1, name=$2, cover_path=$3, category_id=$4, updated_at=$5, deleted_at=$6,
 		        server_seq = nextval('global_server_seq') WHERE id=$7`,
-		r.TeamID, r.Name, r.CoverPath, r.CategoryID, r.UpdatedAt, r.DeletedAt, r.ID,
+		r.IsPublic, r.Name, r.CoverPath, r.CategoryID, r.UpdatedAt, r.DeletedAt, r.ID,
 	); err != nil {
 		return err
 	}
@@ -329,19 +323,13 @@ func maxServerSeq(ctx context.Context, q dbQuerier) (int64, error) {
 
 // applyLocalChanges 在一个写事务里落地客户端改动（spec §7.2）。
 func (s *SyncService) applyLocalChanges(ctx context.Context, userID string, req model.SyncPayload) error {
-	// 团队集合在写事务之外读：写事务的第一条语句必须是 advisory lock。
-	teamSet, err := myTeamIDs(ctx, s.pool, userID)
-	if err != nil {
-		return err
-	}
-
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin write tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	if err := s.mergeLocalChanges(ctx, tx, userID, teamSet, req); err != nil {
+	if err := s.mergeLocalChanges(ctx, tx, userID, req); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -350,7 +338,7 @@ func (s *SyncService) applyLocalChanges(ctx context.Context, userID string, req 
 // mergeLocalChanges 是写事务体（抽出来以便注入 fake 断言语句顺序）：
 // ① advisory lock → ② 合并字典并收集 remap → ③ 合并菜谱（mergeRecipe 内部先按 remap 重写引用）。
 // 顺序不能换：同批菜谱可能引用被合并掉的字典 id，先合并菜谱就会写出悬空引用。
-func (s *SyncService) mergeLocalChanges(ctx context.Context, tx dbQuerier, userID string, teamSet map[string]bool, req model.SyncPayload) error {
+func (s *SyncService) mergeLocalChanges(ctx context.Context, tx dbQuerier, userID string, req model.SyncPayload) error {
 	// 全局串行化所有同步写事务：nextval 按调用序发号，并发交错提交会出现「低 seq 晚提交」被已推进的游标跳过。
 	if _, err := tx.Exec(ctx, advisoryLockSQL); err != nil {
 		return err
@@ -376,9 +364,8 @@ func (s *SyncService) mergeLocalChanges(ctx context.Context, tx dbQuerier, userI
 		}
 	}
 
-	// 菜谱引用的 team 必须在 teamSet 里，否则整条跳过（mergeRecipe 内部判定）。
 	for _, r := range req.Recipes {
-		if err := s.mergeRecipe(ctx, tx, userID, teamSet, remap, r); err != nil {
+		if err := s.mergeRecipe(ctx, tx, userID, remap, r); err != nil {
 			return fmt.Errorf("merge recipe %s: %w", r.ID, err)
 		}
 	}
@@ -399,12 +386,6 @@ func (s *SyncService) mergeOneDict(ctx context.Context, tx dbQuerier, spec dictS
 
 // getRemoteChanges 读本次增量：字典全局共享、无过滤；菜谱按可见范围过滤；再补齐引用、列图片清单。
 func (s *SyncService) getRemoteChanges(ctx context.Context, q dbQuerier, userID string, sinceSeq int64) (model.SyncPayload, error) {
-	// 团队集合在同一个快照里现算：菜谱的过滤条件要用到「我加入的团队」。
-	teamSet, err := myTeamIDs(ctx, q, userID)
-	if err != nil {
-		return model.SyncPayload{}, err
-	}
-
 	// 五个集合一律给空切片而不是 nil：客户端拿到响应直接遍历，首轮同步（服务端还没数据）的 null 会炸。
 	payload := model.SyncPayload{
 		Ingredients: []model.Ingredient{},
@@ -414,6 +395,7 @@ func (s *SyncService) getRemoteChanges(ctx context.Context, q dbQuerier, userID 
 		Files:       []model.FileRef{},
 	}
 
+	var err error
 	if payload.Ingredients, err = queryIngredients(ctx, q, sinceSeq); err != nil {
 		return payload, fmt.Errorf("query ingredients: %w", err)
 	}
@@ -423,7 +405,7 @@ func (s *SyncService) getRemoteChanges(ctx context.Context, q dbQuerier, userID 
 	if payload.Labels, err = queryLabels(ctx, q, sinceSeq); err != nil {
 		return payload, fmt.Errorf("query labels: %w", err)
 	}
-	if payload.Recipes, err = queryRecipes(ctx, q, userID, teamSet, sinceSeq); err != nil {
+	if payload.Recipes, err = queryRecipes(ctx, q, userID, sinceSeq); err != nil {
 		return payload, fmt.Errorf("query recipes: %w", err)
 	}
 
@@ -439,19 +421,18 @@ func (s *SyncService) getRemoteChanges(ctx context.Context, q dbQuerier, userID 
 	return payload, nil
 }
 
-// recipesVisibleScope 是菜谱增量的可见范围，写进 SQL 而不是发完再筛：
-// 私人菜谱（team_id IS NULL）只有作者本人看得到，团队菜谱只有成员看得到。$2 = 我，$3 = 我的团队 id。
-const recipesVisibleScope = `(owner_id = $2 AND team_id IS NULL) OR team_id = ANY($3)`
+// recipesVisibleScope 是菜谱增量的可见范围，写进 SQL 而不是发完再筛：只有作者本人看得到自己的菜谱。$2 = 我。
+const recipesVisibleScope = `owner_id = $2`
 
-func queryRecipes(ctx context.Context, q dbQuerier, userID string, teamSet map[string]bool, sinceSeq int64) ([]model.Recipe, error) {
+func queryRecipes(ctx context.Context, q dbQuerier, userID string, sinceSeq int64) ([]model.Recipe, error) {
 	// 菜谱行必须先读完并关掉再查子表：读阶段整个跑在同一个只读事务里，共享一条连接。
 	recipes, err := queryList(ctx, q,
-		`SELECT id, owner_id, team_id, name, cover_path, category_id, created_at, updated_at, deleted_at
+		`SELECT id, owner_id, is_public, name, cover_path, category_id, created_at, updated_at, deleted_at
 		 FROM recipes WHERE server_seq > $1 AND (`+recipesVisibleScope+`)`,
-		[]any{sinceSeq, userID, slices.Sorted(maps.Keys(teamSet))},
+		[]any{sinceSeq, userID},
 		func(rows pgx.Rows) (model.Recipe, error) {
 			var r model.Recipe
-			err := rows.Scan(&r.ID, &r.OwnerID, &r.TeamID, &r.Name, &r.CoverPath, &r.CategoryID,
+			err := rows.Scan(&r.ID, &r.OwnerID, &r.IsPublic, &r.Name, &r.CoverPath, &r.CategoryID,
 				&r.CreatedAt, &r.UpdatedAt, &r.DeletedAt)
 			// 子集合给空切片：JSON 里的空数组才表达得出「清空」（model.Recipe 的契约）。
 			r.Steps, r.Ingredients, r.LabelIDs = []model.RecipeStep{}, []model.RecipeIngredient{}, []string{}

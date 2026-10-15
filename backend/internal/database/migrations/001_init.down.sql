@@ -8,7 +8,5 @@ DROP TABLE IF EXISTS recipe_labels;
 DROP TABLE IF EXISTS recipe_ingredients;
 DROP TABLE IF EXISTS recipe_steps;
 DROP TABLE IF EXISTS recipes;
-DROP TABLE IF EXISTS team_members;
-DROP TABLE IF EXISTS teams;
 DROP TABLE IF EXISTS users;
 DROP SEQUENCE IF EXISTS global_server_seq;

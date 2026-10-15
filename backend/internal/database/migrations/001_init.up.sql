@@ -13,26 +13,10 @@ CREATE TABLE users (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE teams (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    name VARCHAR(100) NOT NULL,
-    created_by UUID REFERENCES users(id),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE team_members (
-    team_id UUID REFERENCES teams(id),
-    user_id UUID REFERENCES users(id),
-    role VARCHAR(20) DEFAULT 'member',
-    joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (team_id, user_id)
-);
-
 CREATE TABLE recipes (
     id TEXT PRIMARY KEY,                       -- 客户端生成的 UUID 字符串，不用 uuid 类型
     owner_id UUID NOT NULL REFERENCES users(id),
-    team_id UUID REFERENCES teams(id),         -- NULL = 私人
+    is_public SMALLINT NOT NULL DEFAULT 0,     -- 0 = 私有（默认），1 = 公开到社区
     name TEXT NOT NULL,
     cover_path TEXT,                           -- 裸文件名，不是路径
     category_id TEXT NOT NULL,
@@ -97,7 +81,7 @@ CREATE TABLE labels (
     server_seq BIGINT NOT NULL DEFAULT nextval('global_server_seq')
 );
 
--- files 没有 team_id：读权限不看这张表，看「有没有一条我可见的菜谱引用了它」（§8.1）
+-- files 不参与鉴权：读权限看「有没有一条我可见的菜谱引用了它」（§8.1）
 CREATE TABLE files (
     name TEXT PRIMARY KEY,                     -- "<uuid>.jpg"，客户端生成，全局唯一
     owner_id UUID NOT NULL REFERENCES users(id), -- 上传者，只用于排查与将来的 GC，不参与鉴权
@@ -105,7 +89,6 @@ CREATE TABLE files (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_recipes_team ON recipes(team_id);
 CREATE INDEX idx_recipes_owner ON recipes(owner_id);
 CREATE INDEX idx_recipes_server_seq ON recipes(server_seq);
 CREATE INDEX idx_recipes_cover_path ON recipes(cover_path);
@@ -118,4 +101,3 @@ CREATE INDEX idx_units_name ON units(name);
 CREATE INDEX idx_units_server_seq ON units(server_seq);
 CREATE INDEX idx_labels_name ON labels(name);
 CREATE INDEX idx_labels_server_seq ON labels(server_seq);
-CREATE INDEX idx_team_members_user ON team_members(user_id);
