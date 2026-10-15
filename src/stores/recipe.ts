@@ -27,14 +27,17 @@ type LabelLink = Label & { recipe_id: string };
 
 /**
  * 当前可见的菜谱范围（spec §9.1）：
- *   未登录 → 本地全部（不过滤），但可编辑范围另算（见 canEdit）
+ *   未登录 → 本机自己的（无主 + 本机账号白名单）与收藏的菜谱，别人的缓存副本不混进来
  *   已登录 → 只有自己名下的菜谱
  * 返回的 sql 是一段可直接接在 WHERE 后面的条件（调方自行拼），params 顺序与其中的 ? 对应。
  */
 export async function visibleRecipeFilter(): Promise<{ sql: string; params: unknown[] }> {
   const uid = useAuthStore().serverUserId;
-  // 未登录刻意不过滤：认领后 owner_id 已被填成某个账号，过滤掉会让用户以为数据丢了
-  if (!uid) return { sql: "1=1", params: [] };
+  if (!uid)
+    return {
+      sql: "(owner_id IS NULL OR owner_id IN (SELECT user_id FROM local_accounts) OR id IN (SELECT recipe_id FROM favorite_recipes))",
+      params: [],
+    };
   return { sql: "owner_id = ?", params: [uid] };
 }
 

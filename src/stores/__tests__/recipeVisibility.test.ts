@@ -94,21 +94,37 @@ async function updatedAtOf(id: string): Promise<string> {
 }
 
 describe("菜谱可见范围与归属", () => {
-  it("未登录时列表不过滤，但别人的菜谱不可编辑", async () => {
+  it("未登录时收藏的别人的菜谱可见但不可编辑，本机菜可编辑", async () => {
     const mine = await insertRecipe({ name: "本机菜", owner_id: null });
     const others = await insertRecipe({ name: "别人的菜", owner_id: "other" });
+    // 别人的菜谱只在被收藏时才会留在未登录的可见范围里（spec §9.1）
+    await db.execute("INSERT INTO favorite_recipes (recipe_id) VALUES (?)", [others]);
 
     expect(await listNames()).toEqual(["别人的菜", "本机菜"]);
 
     const store = useRecipeStore();
     const recipeOf = (id: string) => store.recipes.find((item) => item.recipe.id === id)!.recipe;
-    // 认领过的菜谱照样显示（过滤掉会让用户以为数据丢了），但不给改
+    // 收藏回来的别人的菜谱照样不给改
     expect(canEdit(recipeOf(others))).toBe(false);
     expect(canEdit(recipeOf(mine))).toBe(true);
   });
 
-  it("未登录时可见范围不过滤", async () => {
-    expect(await visibleRecipeFilter()).toEqual({ sql: "1=1", params: [] });
+  it("未登录只显示本机自己的菜谱与收藏的菜谱，不显示别人的缓存副本", async () => {
+    await insertRecipe({ name: "本机菜", owner_id: null });
+    await db.execute("INSERT INTO local_accounts (user_id) VALUES (?)", ["B"]);
+    await insertRecipe({ name: "B 的", owner_id: "B" });
+    const favorited = await insertRecipe({ name: "收藏的", owner_id: "other" });
+    await insertRecipe({ name: "别人的缓存", owner_id: "other" });
+    await db.execute("INSERT INTO favorite_recipes (recipe_id) VALUES (?)", [favorited]);
+
+    expect(await listNames()).toEqual(["B 的", "收藏的", "本机菜"]);
+  });
+
+  it("未登录时可见范围是本机自己的菜谱与收藏的菜谱", async () => {
+    expect(await visibleRecipeFilter()).toEqual({
+      sql: "(owner_id IS NULL OR owner_id IN (SELECT user_id FROM local_accounts) OR id IN (SELECT recipe_id FROM favorite_recipes))",
+      params: [],
+    });
   });
 
   it("登录后可见范围只有 owner_id = 我", async () => {
@@ -148,10 +164,12 @@ describe("菜谱可见范围与归属", () => {
 
   it("改不动别人的菜谱：未登录被权限拦住，登录后按不可见处理", async () => {
     const otherId = await insertRecipe({ name: "别人的菜", owner_id: "other" });
+    // 未登录也能看到收藏过的别人的菜谱，权限守门在这条可见路径上也必须生效
+    await db.execute("INSERT INTO favorite_recipes (recipe_id) VALUES (?)", [otherId]);
     const before = await updatedAtOf(otherId);
     const store = useRecipeStore();
 
-    // 未登录：别人的菜谱在列表里（1=1），但改 / 删都被权限拦住
+    // 未登录：收藏的别人的菜谱在列表里，但改 / 删都被权限拦住
     await expect(
       store.update(otherId, input("改名", { category_id: await categoryId() })),
     ).rejects.toThrow("没有修改权限");

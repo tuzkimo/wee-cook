@@ -5,7 +5,7 @@
 // 这里只负责：认领无主菜谱、以及把「认领 → 一次全扫同步」串起来。
 import { getDb, type Db } from "@/db";
 import { hasBaseUrl } from "./api";
-import { getCurrentServerUserId, performSync } from "./sync";
+import { getCurrentServerUserId, performSync, registerLocalAccount } from "./sync";
 
 /**
  * 把本机未认领的菜谱（`owner_id IS NULL`）划归当前账号（spec §9.2）。
@@ -40,6 +40,8 @@ export async function triggerFullPushAndSync(): Promise<void> {
   // 未登录 / 未配地址：一次网络都不发（spec §9.5）
   if (!uid || !hasBaseUrl()) return;
   try {
+    // 先把本账号记进白名单：对账清理要拿它豁免本机账号自己的数据（spec §7.2）
+    await registerLocalAccount(uid);
     await claimOrphanRecipes(uid);
     await performSync();
   } catch (e) {
