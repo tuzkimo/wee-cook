@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { setDb, type Db } from "@/db";
 import { freshTestDb } from "@/db/__tests__/sqliteTestDb";
-import { enqueueSync } from "@/services/sync";
+import { cacheCommunityChanges, enqueueSync, type SyncPayload } from "@/services/sync";
 import { useAuthStore } from "@/stores/auth";
 import { useLabelStore } from "@/stores/label";
 import { canEdit, useRecipeStore, visibleRecipeFilter } from "@/stores/recipe";
@@ -46,15 +46,50 @@ async function categoryId(): Promise<string> {
   return category;
 }
 
-/** 直接落一行菜谱，归属由参数钉死：过滤用例不该依赖 create 的归属逻辑。 */
-async function insertRecipe(opts: { name: string; owner_id: string | null }): Promise<string> {
+/** 直接落一行菜谱，归属与 is_public 由参数钉死：过滤用例不该依赖 create 的归属逻辑。 */
+async function insertRecipe(opts: {
+  name: string;
+  owner_id: string | null;
+  is_public?: number;
+}): Promise<string> {
   const id = crypto.randomUUID();
   await db.execute(
-    `INSERT INTO recipes (id, name, cover_path, category_id, created_at, updated_at, deleted_at, owner_id)
-     VALUES (?, ?, NULL, ?, ?, ?, NULL, ?)`,
-    [id, opts.name, await categoryId(), NOW, NOW, opts.owner_id],
+    `INSERT INTO recipes (id, name, cover_path, category_id, is_public, created_at, updated_at, deleted_at, owner_id)
+     VALUES (?, ?, NULL, ?, ?, ?, ?, NULL, ?)`,
+    [id, opts.name, await categoryId(), opts.is_public ?? 0, NOW, NOW, opts.owner_id],
   );
   return id;
+}
+
+/** 一条与社区详情接口同形状的载荷（cacheCommunityChanges 直接落库用）。 */
+function communityDetail(id: string, owner: string): SyncPayload {
+  return {
+    ingredients: [{ id: `ing-${id}`, name: "盐", created_at: NOW, updated_at: NOW, deleted_at: null }],
+    units: [{ id: `unit-${id}`, name: "克", created_at: NOW, updated_at: NOW, deleted_at: null }],
+    labels: [
+      { id: `cat-${id}`, name: "家常", kind: "category", created_at: NOW, updated_at: NOW, deleted_at: null },
+    ],
+    recipes: [
+      {
+        id,
+        owner_id: owner,
+        name: "别人公开的菜",
+        cover_path: null,
+        category_id: `cat-${id}`,
+        is_public: 1,
+        owner_nickname: "老王",
+        created_at: NOW,
+        updated_at: NOW,
+        deleted_at: null,
+        steps: [{ id: `s-${id}`, sort_order: 0, text: "切块", image_path: null }],
+        ingredients: [
+          { id: `ri-${id}`, ingredient_id: `ing-${id}`, amount: 1, unit_id: `unit-${id}`, sort_order: 0 },
+        ],
+        label_ids: [`cat-${id}`],
+      },
+    ],
+    files: [],
+  };
 }
 
 async function listNames(): Promise<string[]> {
@@ -202,12 +237,53 @@ describe("菜谱可见范围与归属", () => {
     expect(detail.recipe.id).toBe(otherId);
   });
 
-  it("登录后没收藏的别人的菜谱，详情仍按不存在处理", async () => {
+  it("登录后别人私有的、未收藏的菜谱：详情仍按不存在处理", async () => {
     loginAs("me");
-    const otherId = await insertRecipe({ name: "别人的", owner_id: "other" });
+    // 显式写 is_public = 0，不依赖 DDL 默认值：这条断言靠的就是「私有」而不是「没设置」
+    const otherId = await insertRecipe({ name: "别人的私有菜", owner_id: "other", is_public: 0 });
     const store = useRecipeStore();
 
     await expect(store.getDetail(otherId)).rejects.toThrow("菜谱不存在");
+  });
+
+  it("登录后别人公开的、未收藏的菜谱：getDetail 也能打开（C1 接缝回归）", async () => {
+    loginAs("me");
+    const otherId = await insertRecipe({
+      name: "别人的公开菜",
+      owner_id: "other",
+      is_public: 1,
+    });
+    const store = useRecipeStore();
+
+    const detail = await store.getDetail(otherId);
+    expect(detail.recipe.id).toBe(otherId);
+    expect(detail.recipe.is_public).toBe(1);
+    expect(detail.recipe.owner_id).toBe("other");
+  });
+
+  it("登录后从社区落库的别人公开菜谱：getDetail 能打开且子行 / 字典行都在（C1 接缝回归）", async () => {
+    loginAs("me");
+    const id = `r-${crypto.randomUUID()}`;
+    // 这就是社区卡片点进去走的路径：openRecipe → cacheCommunityChanges 落库，然后跳详情
+    await cacheCommunityChanges(communityDetail(id, "other"));
+
+    const detail = await useRecipeStore().getDetail(id);
+
+    expect(detail.recipe.id).toBe(id);
+    expect(detail.steps.map((step) => step.text)).toEqual(["切块"]);
+    expect(detail.ingredients[0].ingredient_name).toBe("盐");
+    expect(detail.ingredients[0].unit_name).toBe("克");
+    expect(detail.tags.map((tag) => tag.name)).toEqual(["家常"]);
+  });
+
+  it("游客打开别人公开的本地缓存：仍按不存在处理（spec §9.1 口径）", async () => {
+    const id = `r-${crypto.randomUUID()}`;
+    // 先以登录态浏览落库，再退登：模拟「看过之后登出」，缓存行还在本机
+    loginAs("me");
+    await cacheCommunityChanges(communityDetail(id, "other"));
+    useAuthStore().serverUser = null;
+
+    await expect(useRecipeStore().getDetail(id)).rejects.toThrow("菜谱不存在");
   });
 
   it("新增、修改、删除后都把该条完整形状入同步队列，删除带墓碑", async () => {

@@ -131,13 +131,19 @@ export const useRecipeStore = defineStore("recipe", (): RecipeStore => {
 
   async function getDetail(id: string): Promise<RecipeDetail> {
     const db = getDb();
-    // 不可见的菜谱按「不存在」处理：详情只能从列表进来，越不到可见范围之外。
-    // 收藏的例外：登录后「我的」只剩自己名下，但收藏 tab 会点进来（spec §9.1 / C1）。
-    // favorite_recipes 只由服务端下发的「仍公开未删」集合与收藏成功写入，是合法可见范围。
+    // 不可见的菜谱按「不存在」处理：详情只能从列表进来，越不到可见范围之外。两条例外：
+    //  - 收藏的：登录后「我的」只剩自己名下，但收藏 tab 会点进来（spec §9.1）；
+    //    favorite_recipes 只由服务端下发的「仍公开未删」集合与收藏成功写入，是合法可见范围。
+    //  - 登录态下别人公开的本地缓存：社区列表点卡片就是这条路径（openRecipe 先落库再跳详情，
+    //    spec §11.1），不靠「先收藏才能看」。缓存行只可能是 cacheCommunityChanges 写的，
+    //    服务端社区接口只返回 is_public = 1 AND deleted_at IS NULL。
+    //    游客不加这条：spec §9.1 明写未登录不显示这批缓存，详情口径与列表一致。
+    const uid = useAuthStore().serverUserId;
     const visibility = await visibleRecipeFilter();
+    const publicCache = uid ? " OR (is_public = 1 AND owner_id IS NOT NULL)" : "";
     const rows = await db.select<Recipe[]>(
       `SELECT * FROM recipes WHERE id = ? AND deleted_at IS NULL
-         AND ((${visibility.sql}) OR id IN (SELECT recipe_id FROM favorite_recipes))`,
+         AND ((${visibility.sql})${publicCache} OR id IN (SELECT recipe_id FROM favorite_recipes))`,
       [id, ...visibility.params],
     );
     const recipe = rows[0];
