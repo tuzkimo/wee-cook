@@ -28,8 +28,8 @@ export interface RecipeStore {
 type LabelLink = Label & { recipe_id: string };
 
 /**
- * 当前可见的菜谱范围（spec §9.1）：
- *   未登录 → 本机自己的（无主 + 本机账号白名单）与收藏的菜谱，别人的缓存副本不混进来
+ * 「我的」列表的可见范围（spec §9.1）：
+ *   未登录 → 本机自己的（无主 + 本机账号白名单）；收藏的别人的菜谱归「收藏」tab，不混进来
  *   已登录 → 只有自己名下的菜谱
  * 返回的 sql 是一段可直接接在 WHERE 后面的条件（调方自行拼），params 顺序与其中的 ? 对应。
  */
@@ -37,7 +37,7 @@ export async function visibleRecipeFilter(): Promise<{ sql: string; params: unkn
   const uid = useAuthStore().serverUserId;
   if (!uid)
     return {
-      sql: "(owner_id IS NULL OR owner_id IN (SELECT user_id FROM local_accounts) OR id IN (SELECT recipe_id FROM favorite_recipes))",
+      sql: "(owner_id IS NULL OR owner_id IN (SELECT user_id FROM local_accounts))",
       params: [],
     };
   return { sql: "owner_id = ?", params: [uid] };
@@ -131,10 +131,13 @@ export const useRecipeStore = defineStore("recipe", (): RecipeStore => {
 
   async function getDetail(id: string): Promise<RecipeDetail> {
     const db = getDb();
-    // 不可见的菜谱按「不存在」处理：详情只能从列表进来，越不到可见范围之外
+    // 不可见的菜谱按「不存在」处理：详情只能从列表进来，越不到可见范围之外。
+    // 收藏的例外：登录后「我的」只剩自己名下，但收藏 tab 会点进来（spec §9.1 / C1）。
+    // favorite_recipes 只由服务端下发的「仍公开未删」集合与收藏成功写入，是合法可见范围。
     const visibility = await visibleRecipeFilter();
     const rows = await db.select<Recipe[]>(
-      `SELECT * FROM recipes WHERE id = ? AND deleted_at IS NULL AND (${visibility.sql})`,
+      `SELECT * FROM recipes WHERE id = ? AND deleted_at IS NULL
+         AND ((${visibility.sql}) OR id IN (SELECT recipe_id FROM favorite_recipes))`,
       [id, ...visibility.params],
     );
     const recipe = rows[0];

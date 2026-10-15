@@ -34,8 +34,20 @@ vi.mock("@/stores/community", () => ({
 
 // 用户页的菜谱列表不走社区的 load（它不接受 author_id），直接调服务层
 vi.mock("@/services/community", () => ({ listCommunityRecipes: mocks.list }));
+vi.mock("@/services/imageStore", () => ({
+  imageSrc: (name: string) => `asset://localhost/images/${name}`,
+}));
+// I1：封面补下载走鉴权通道，网络层换成替身，文件 IO 用 setFileSyncDeps 注入假文件系统。
+vi.mock("@/services/api", () => ({
+  hasBaseUrl: () => true,
+  fetchWithAuth: vi.fn(),
+}));
 
 import UserPage from "@/views/UserPage.vue";
+import { fetchWithAuth } from "@/services/api";
+import { setFileSyncDeps, type FileSyncDeps } from "@/services/syncFiles";
+
+const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
 const wrappers: VueWrapper[] = [];
 
@@ -50,15 +62,41 @@ function profile(overrides: Partial<UserProfile> = {}): UserProfile {
   };
 }
 
-function recipe(id: string, name: string): CommunityRecipe {
+function recipe(id: string, name: string, cover: string | null = null): CommunityRecipe {
   return {
     id,
     name,
-    cover_path: null,
+    cover_path: cover,
     author_id: "u2",
     author_nickname: "老王",
     updated_at: NOW,
     favorited: false,
+  };
+}
+
+/** 只喂 downloadOne 用到的 ok/status/arrayBuffer。 */
+function fileRes(status: number, bytes: Uint8Array): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    arrayBuffer: async () => bytes.buffer as ArrayBuffer,
+  } as unknown as Response;
+}
+
+/** 内存假文件系统：只实现封面通道用到的 exists / writeFile / rename。 */
+function fakeIo(): FileSyncDeps {
+  const store = new Map<string, Uint8Array>();
+  return {
+    readFile: async () => new Uint8Array(),
+    exists: async (path) => store.has(path),
+    writeFile: async (path, bytes) => {
+      store.set(path, bytes);
+    },
+    rename: async (from, to) => {
+      const bytes = store.get(from);
+      store.delete(from);
+      if (bytes) store.set(to, bytes);
+    },
   };
 }
 
@@ -77,6 +115,7 @@ beforeEach(() => {
 afterEach(() => {
   for (const wrapper of wrappers) wrapper.unmount();
   wrappers.length = 0;
+  setFileSyncDeps(null);
   vi.restoreAllMocks();
 });
 
@@ -194,5 +233,31 @@ describe("UserPage", () => {
     await flushPromises();
 
     expect(wrapper.get('[data-test="user-nickname"]').text()).toBe("老王");
+  });
+
+  it("封面图下载到本地后才渲染 <img>，下载失败时出字母兜底（I1 回归）", async () => {
+    setFileSyncDeps(fakeIo());
+    fetchWithAuthMock.mockResolvedValue(fileRes(200, new Uint8Array([1, 2])));
+    mocks.list.mockResolvedValue({
+      items: [recipe("c1", "红烧肉", "cover.jpg")],
+      has_more: false,
+    });
+    const wrapper = await page();
+
+    await vi.waitFor(() => expect(wrapper.find("img").exists()).toBe(true));
+    expect(wrapper.get("img").attributes("src")).toBe("asset://localhost/images/cover.jpg");
+
+    // 同一页换成下载失败：不出 <img>，走字母兜底
+    fetchWithAuthMock.mockRejectedValue(new Error("断网"));
+    setFileSyncDeps(fakeIo());
+    mocks.list.mockResolvedValue({
+      items: [recipe("c2", "番茄炒蛋", "broken.jpg")],
+      has_more: false,
+    });
+    const failed = await page();
+    await vi.waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    await flushPromises();
+    expect(failed.find("img").exists()).toBe(false);
+    expect(failed.text()).toContain("番");
   });
 });

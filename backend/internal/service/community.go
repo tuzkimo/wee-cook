@@ -38,6 +38,14 @@ func (s *CommunityService) Favorite(ctx context.Context, userID, recipeID string
 	}
 	defer tx.Rollback(ctx)
 
+	// 先拿全局同步写锁再碰 recipes 行（与 sync.go 同一个顺序，不会引入新死锁）：
+	// Favorite 是第二个 nextval('global_server_seq') 分配者，不排队就会出现
+	// 「同步事务领号 100 未提交 → Favorite 领号 101 先提交 → 客户端游标推到 101 →
+	// 同步事务提交后 seq=100 被永久跳过」的静默分叉（spec §7.2 / §7.4）。
+	if _, err := tx.Exec(ctx, advisoryLockSQL); err != nil {
+		return fmt.Errorf("acquire advisory lock: %w", err)
+	}
+
 	var one int
 	// 取排他锁而不是 FOR SHARE：同一事务随后还要 UPDATE 这一行来推进 server_seq，
 	// 共享锁升级时并发收藏彼此互等（40P01）；sync.go 也对同一行取 FOR UPDATE，一起排队才不死锁。

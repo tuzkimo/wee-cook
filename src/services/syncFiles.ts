@@ -159,13 +159,35 @@ export async function downloadMissingFiles(
 
   let downloaded = 0;
   let failed = 0;
-  // 串行：家庭场景一次几十张，不值得为并发加一层池子，也避免同时写盘互相抢
+  // 串行：社区场景一次几十张，不值得为并发加一层池子，也避免同时写盘互相抢
   for (const ref of refs) {
     const outcome = await downloadOne(ref, deps);
     if (outcome === "downloaded") downloaded++;
     else if (outcome !== "skipped") failed++;
   }
   return { downloaded, failed };
+}
+
+/**
+ * 补下载社区封面，返回其中**本机确已落盘**的名字。
+ *
+ * 社区列表 / 用户页的 `cover_path` 只是本机文件名，图还没经下载通道下来（spec §11.1）。
+ * 模板据此决定出 `<img>` 还是字母兜底：文件没到时出 `<img>` 就是破图（spec §2 目标：在线浏览要看到图片）。
+ * 未配地址 / 已退登时 `downloadMissingFiles` 自己早退，这里只会返回空集合。
+ */
+export async function ensureLocalCovers(
+  coverPaths: (string | null)[],
+  deps: FileSyncDeps = activeDeps,
+): Promise<Set<string>> {
+  const names = [...new Set(coverPaths.filter((name): name is string => name !== null))];
+  if (names.length === 0) return new Set();
+  await downloadMissingFiles(
+    names.map((name) => ({ name, size: 0 })),
+    deps,
+  );
+  const present: string[] = [];
+  for (const name of names) if (await deps.exists(`images/${name}`)) present.push(name);
+  return new Set(present);
 }
 
 /**

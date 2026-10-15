@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
   apply: vi.fn(),
   clear: vi.fn(),
   community: null as CommunityMock | null,
+  auth: { isOnline: true },
 }));
 
 vi.mock("vue-router", () => ({ useRouter: () => ({ push: mocks.push }) }));
@@ -55,6 +56,8 @@ vi.mock("@/stores/community", async () => {
   return { useCommunityStore: () => mocks.community };
 });
 vi.mock("@/services/imageStore", () => ({ imageSrc: mocks.imageSrc }));
+// 未登录时社区段不渲染（C3）；默认站在登录态，个别用例自己改。
+vi.mock("@/stores/auth", () => ({ useAuthStore: () => mocks.auth }));
 vi.mock("@/stores/recipeFilter", async () => {
   const { reactive } = await import("vue");
   const filter = reactive({
@@ -145,6 +148,7 @@ function resetFilter(): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.auth.isOnline = true;
   resetFilter();
   // recipes 由 mountList 重置；favorites 得自己清，否则上一条用例的收藏会漏进下一条
   mocks.favorites.length = 0;
@@ -360,6 +364,23 @@ describe("RecipeList", () => {
     expect(communityStore().load).toHaveBeenCalledWith(true);
     // 关注只渲染社区段落
     expect(wrapper.find('[data-test="recipe-card"]').exists()).toBe(false);
+  });
+
+  it("未登录时不渲染社区段，关注 tab 给登录提示（C3 回归）", async () => {
+    mocks.auth.isOnline = false;
+    const wrapper = mountList([item("r1", "红烧肉")]);
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="community-section"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="community-error"]').exists()).toBe(false);
+    expect(communityStore().load).not.toHaveBeenCalled();
+
+    await wrapper.get('[data-test="tab-follow"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="community-section"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="community-error"]').exists()).toBe(false);
+    expect(wrapper.get('[data-test="follow-login-hint"]').text()).toContain("登录后");
   });
 
   it("登录态没有自有菜谱时，「收藏」仍渲染收藏的社区菜谱", async () => {

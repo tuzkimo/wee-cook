@@ -6,6 +6,7 @@ import AppHeader from "@/components/AppHeader.vue";
 import CommunityFeed from "@/components/CommunityFeed.vue";
 import { useRecipeStore } from "@/stores/recipe";
 import { useCommunityStore } from "@/stores/community";
+import { useAuthStore } from "@/stores/auth";
 import { useRecipeFilterStore } from "@/stores/recipeFilter";
 import { imageSrc } from "@/services/imageStore";
 import { filterRecipes, filterSummary, isFilterActive } from "@/utils/recipeFilter";
@@ -22,6 +23,7 @@ type Tab = (typeof TABS)[number]["value"];
 const router = useRouter();
 const store = useRecipeStore();
 const communityStore = useCommunityStore();
+const auth = useAuthStore();
 const filterStore = useRecipeFilterStore();
 
 const tab = ref<Tab>("all");
@@ -208,7 +210,15 @@ onMounted(async () => {
         </ul>
       </section>
 
-      <CommunityFeed v-if="showCommunity" class="mt-4" />
+      <CommunityFeed v-if="showCommunity && auth.isOnline" class="mt-4" />
+      <!-- 未登录：关注一定为空，给一句提示而不是让社区段去发请求后显示失败态 -->
+      <p
+        v-else-if="tab === 'follow'"
+        data-test="follow-login-hint"
+        class="mt-4 py-6 text-center text-sm text-text-secondary"
+      >
+        登录后可以关注别人
+      </p>
     </div>
   </div>
 </template>

@@ -37,8 +37,17 @@ vi.mock("@/stores/community", async () => {
 vi.mock("@/services/imageStore", () => ({
   imageSrc: (name: string) => `asset://localhost/images/${name}`,
 }));
+// I1：封面补下载走鉴权通道，网络层换成替身，文件 IO 用 setFileSyncDeps 注入假文件系统。
+vi.mock("@/services/api", () => ({
+  hasBaseUrl: () => true,
+  fetchWithAuth: vi.fn(),
+}));
 
 import CommunityFeed from "@/components/CommunityFeed.vue";
+import { fetchWithAuth } from "@/services/api";
+import { setFileSyncDeps, type FileSyncDeps } from "@/services/syncFiles";
+
+const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
 function store(): CommunityMock {
   return mocks.community!;
@@ -78,7 +87,37 @@ beforeEach(() => {
 afterEach(() => {
   for (const wrapper of wrappers) wrapper.unmount();
   wrappers.length = 0;
+  setFileSyncDeps(null);
 });
+
+/** 只喂 downloadOne 用到的 ok/status/arrayBuffer。 */
+function fileRes(status: number, bytes: Uint8Array): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    arrayBuffer: async () => bytes.buffer as ArrayBuffer,
+  } as unknown as Response;
+}
+
+/** 内存假文件系统：只实现封面通道用到的 exists / writeFile / rename。 */
+function fakeIo(): { deps: FileSyncDeps; store: Map<string, Uint8Array> } {
+  const store = new Map<string, Uint8Array>();
+  return {
+    store,
+    deps: {
+      readFile: async () => new Uint8Array(),
+      exists: async (path) => store.has(path),
+      writeFile: async (path, bytes) => {
+        store.set(path, bytes);
+      },
+      rename: async (from, to) => {
+        const bytes = store.get(from);
+        store.delete(from);
+        if (bytes) store.set(to, bytes);
+      },
+    },
+  };
+}
 
 describe("CommunityFeed", () => {
   it("点一条公开菜谱：先落库再跳详情", async () => {
@@ -124,5 +163,34 @@ describe("CommunityFeed", () => {
     await flushPromises();
 
     expect(store().load).toHaveBeenCalledWith(true);
+  });
+
+  it("封面图下载到本地后才渲染 <img>，未落盘时用字母兜底（I1 回归）", async () => {
+    const io = fakeIo();
+    setFileSyncDeps(io.deps);
+    fetchWithAuthMock.mockResolvedValue(fileRes(200, new Uint8Array([1, 2])));
+    store().items = [recipe("c1", { name: "红烧肉", cover_path: "cover.jpg" })];
+    const wrapper = mountFeed();
+
+    await vi.waitFor(() =>
+      expect(wrapper.find('[data-test="community-cover"]').exists()).toBe(true),
+    );
+    expect(wrapper.get('[data-test="community-cover"]').attributes("src")).toBe(
+      "asset://localhost/images/cover.jpg",
+    );
+    expect(wrapper.find('[data-test="community-cover-fallback"]').exists()).toBe(false);
+  });
+
+  it("封面图下载失败时不渲染 <img>，出字母兜底（I1 回归）", async () => {
+    const io = fakeIo();
+    setFileSyncDeps(io.deps);
+    fetchWithAuthMock.mockRejectedValue(new Error("断网"));
+    store().items = [recipe("c1", { name: "红烧肉", cover_path: "cover.jpg" })];
+    const wrapper = mountFeed();
+
+    await vi.waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    await flushPromises();
+    expect(wrapper.find('[data-test="community-cover"]').exists()).toBe(false);
+    expect(wrapper.get('[data-test="community-cover-fallback"]').text()).toBe("红");
   });
 });

@@ -3,6 +3,7 @@ import { ref } from "vue";
 import { getDb } from "@/db";
 import * as community from "@/services/community";
 import { bumpFavoriteOps, cacheCommunityChanges, enqueueSync } from "@/services/sync";
+import { useAuthStore } from "@/stores/auth";
 import type { CommunityRecipe, UserProfile } from "@/services/community";
 
 /** 社区列表一页的条数；未知总量，到位靠 has_more。 */
@@ -25,6 +26,9 @@ const useCommunityStoreBase = defineStore("community", () => {
 
   /** 拉一页。`reset` 为 true 时从第一页重来，否则接着已有条数往后翻。 */
   async function load(reset = false): Promise<void> {
+    // 未登录 / 已退登：一个请求都不发（spec §2 目标 1 / §9.4）。
+    // 这里是唯一的咽喉：地址在登出后仍保留，不挡的话社区段会停在「加载失败」。
+    if (!useAuthStore().isOnline) return;
     // 翻页防重（`reset` 必须真的发出去：它同时换了筛选口径，丢掉就没人会再纠正列表）
     if (loading.value && !reset) return;
     const epoch = ++loadEpoch;

@@ -25,6 +25,7 @@ vi.mock("@/services/sync", async (importOriginal) => {
 import { apiFetch } from "@/services/api";
 import type { ApiResult } from "@/services/api";
 import { enqueueSync } from "@/services/sync";
+import { useAuthStore } from "@/stores/auth";
 import { useCommunityStore } from "@/stores/community";
 import type { CommunityPage, CommunityRecipe } from "@/services/community";
 import type { SyncPayload } from "@/services/sync";
@@ -109,10 +110,23 @@ beforeEach(async () => {
   ({ db } = await freshTestDb());
   setDb(db);
   localStorage.clear();
+  // 社区请求只在登录态发出；下面大多数用例要先站在登录态上（C3 的咽喉在 store.load）
+  useAuthStore().mode = "online";
   vi.clearAllMocks();
 });
 
 describe("社区 store", () => {
+  it("未登录时不发任何社区请求，也不进失败态（C3 回归）", async () => {
+    useAuthStore().mode = "guest";
+    const store = useCommunityStore();
+
+    await store.load(true);
+
+    expect(apiFetchMock).not.toHaveBeenCalled();
+    expect(store.loading).toBe(false);
+    expect(store.error).toBeNull();
+  });
+
   it("openRecipe 把详情落本地，返回 id", async () => {
     apiFetchMock.mockResolvedValue(ok(detailPayload()));
 

@@ -128,7 +128,7 @@ onMounted(async () => {
   if (id) {
     try {
       const loaded = await recipeStore.getDetail(id);
-      // 没有修改权限（别人的团队菜谱）：退回详情页，别让用户白编一通
+      // 没有修改权限（别人的菜谱）：退回详情页，别让用户白编一通
       if (!canEdit(loaded.recipe)) {
         initial.value = snapshot(); // 先定格基线，否则离页守卫会拦住这次 replace
         await router.replace(`/recipe/${id}`);

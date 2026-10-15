@@ -1,12 +1,24 @@
 <script setup lang="ts">
-import { onMounted, watch } from "vue";
+import { onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { Star } from "lucide-vue-next";
 import { useCommunityStore } from "@/stores/community";
 import { imageSrc } from "@/services/imageStore";
+import { ensureLocalCovers } from "@/services/syncFiles";
 
 const router = useRouter();
 const store = useCommunityStore();
+
+// 列表的 cover_path 只是本机文件名，图得走鉴权下载通道补下来；只把已落盘的名字交给模板，
+// 文件没到时用字母兜底，不出破图（spec §2 目标：在线浏览要能看到图片）。
+const localCovers = ref<Set<string>>(new Set());
+watch(
+  () => store.items,
+  async () => {
+    localCovers.value = await ensureLocalCovers(store.items.map((item) => item.cover_path));
+  },
+  { immediate: true },
+);
 
 onMounted(() => {
   void store.load(true);
@@ -64,7 +76,7 @@ async function open(id: string): Promise<void> {
           @click="open(item.id)"
         >
           <img
-            v-if="item.cover_path"
+            v-if="item.cover_path && localCovers.has(item.cover_path)"
             data-test="community-cover"
             :src="imageSrc(item.cover_path)"
             :alt="item.name"

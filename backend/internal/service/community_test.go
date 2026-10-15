@@ -153,6 +153,66 @@ func TestConcurrentFavoriteOnSameRecipeDoesNotDeadlock(t *testing.T) {
 	}
 }
 
+// C2：Favorite 也分配 global_server_seq，必须和同步写事务排同一把全局写锁（spec §7.2）。
+// 用一条独立连接以**会话级** pg_advisory_lock 占住同一编号：Favorite 必须等在那里；
+// 不拿锁的话它会毫无阻塞地直接完成，用例立刻变红（比并发压测那条概率网可靠）。
+func TestFavoriteWaitsOnGlobalWriteLock(t *testing.T) {
+	pool := filesTestDB(t)
+	community := NewCommunityService(pool)
+	ctx := context.Background()
+
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+	recipeID := seedRecipe(t, pool, a, nil, false)
+	if _, err := pool.Exec(ctx, `UPDATE recipes SET is_public = 1 WHERE id = $1`, recipeID); err != nil {
+		t.Fatalf("公开菜谱失败: %v", err)
+	}
+
+	lockConn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("取连接失败: %v", err)
+	}
+	defer lockConn.Release()
+	lockSQL := fmt.Sprintf("SELECT pg_advisory_lock(%d)", syncWriteLockID)
+	unlockSQL := fmt.Sprintf("SELECT pg_advisory_unlock(%d)", syncWriteLockID)
+	if _, err := lockConn.Exec(ctx, lockSQL); err != nil {
+		t.Fatalf("占住 advisory lock 失败: %v", err)
+	}
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			_, _ = lockConn.Exec(ctx, unlockSQL)
+		}
+	}()
+
+	done := make(chan error, 1)
+	go func() { done <- community.Favorite(ctx, b, recipeID) }()
+
+	waitForBlockedSession(t, pool, 15*time.Second)
+	select {
+	case err := <-done:
+		t.Fatalf("Favorite 没有在 advisory lock 上等待就完成了（err=%v）；收藏没拿全局写锁", err)
+	default:
+	}
+
+	if _, err := lockConn.Exec(ctx, unlockSQL); err != nil {
+		t.Fatalf("释放 advisory lock 失败: %v", err)
+	}
+	unlocked = true
+	if err := <-done; err != nil {
+		t.Fatalf("释放锁后收藏应完成: %v", err)
+	}
+
+	var n int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM favorites WHERE user_id = $1 AND recipe_id = $2`, b, recipeID).Scan(&n); err != nil {
+		t.Fatalf("统计收藏失败: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("解锁后收藏行数 = %d, want 1", n)
+	}
+}
+
 // 取消收藏幂等：没收藏过也能调；已收藏的调两次后行没了；且不推进 server_seq（spec §7.4）。
 func TestUnfavoriteIsIdempotent(t *testing.T) {
 	pool := filesTestDB(t)

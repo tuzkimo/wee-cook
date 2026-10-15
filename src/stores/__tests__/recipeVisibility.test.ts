@@ -94,22 +94,24 @@ async function updatedAtOf(id: string): Promise<string> {
 }
 
 describe("菜谱可见范围与归属", () => {
-  it("未登录时收藏的别人的菜谱可见但不可编辑，本机菜可编辑", async () => {
+  it("未登录时收藏的别人的菜谱不进「我的」列表，收藏 tab 里能打开但不可编辑", async () => {
     const mine = await insertRecipe({ name: "本机菜", owner_id: null });
     const others = await insertRecipe({ name: "别人的菜", owner_id: "other" });
-    // 别人的菜谱只在被收藏时才会留在未登录的可见范围里（spec §9.1）
     await db.execute("INSERT INTO favorite_recipes (recipe_id) VALUES (?)", [others]);
 
-    expect(await listNames()).toEqual(["别人的菜", "本机菜"]);
+    // I2：收藏的别人的菜谱只在「收藏」tab，不混进「我的」列表（spec §9.1、反目标 3）
+    expect(await listNames()).toEqual(["本机菜"]);
 
     const store = useRecipeStore();
+    await store.fetchFavorites();
+    expect(store.favorites.map((item) => item.recipe.name)).toEqual(["别人的菜"]);
     const recipeOf = (id: string) => store.recipes.find((item) => item.recipe.id === id)!.recipe;
     // 收藏回来的别人的菜谱照样不给改
-    expect(canEdit(recipeOf(others))).toBe(false);
+    expect(canEdit(store.favorites[0].recipe)).toBe(false);
     expect(canEdit(recipeOf(mine))).toBe(true);
   });
 
-  it("未登录只显示本机自己的菜谱与收藏的菜谱，不显示别人的缓存副本", async () => {
+  it("未登录只显示本机自己的菜谱，收藏的与别人的缓存副本都不混进来", async () => {
     await insertRecipe({ name: "本机菜", owner_id: null });
     await db.execute("INSERT INTO local_accounts (user_id) VALUES (?)", ["B"]);
     await insertRecipe({ name: "B 的", owner_id: "B" });
@@ -117,12 +119,12 @@ describe("菜谱可见范围与归属", () => {
     await insertRecipe({ name: "别人的缓存", owner_id: "other" });
     await db.execute("INSERT INTO favorite_recipes (recipe_id) VALUES (?)", [favorited]);
 
-    expect(await listNames()).toEqual(["B 的", "收藏的", "本机菜"]);
+    expect(await listNames()).toEqual(["B 的", "本机菜"]);
   });
 
-  it("未登录时可见范围是本机自己的菜谱与收藏的菜谱", async () => {
+  it("未登录时可见范围只是本机自己的菜谱（收藏归收藏 tab）", async () => {
     expect(await visibleRecipeFilter()).toEqual({
-      sql: "(owner_id IS NULL OR owner_id IN (SELECT user_id FROM local_accounts) OR id IN (SELECT recipe_id FROM favorite_recipes))",
+      sql: "(owner_id IS NULL OR owner_id IN (SELECT user_id FROM local_accounts))",
       params: [],
     });
   });
@@ -162,27 +164,50 @@ describe("菜谱可见范围与归属", () => {
     expect(await ownerIdOf(id)).toBeNull();
   });
 
-  it("改不动别人的菜谱：未登录被权限拦住，登录后按不可见处理", async () => {
+  it("改不动别人的菜谱：未登录与登录后都按权限拦住，且不混进「我的」列表", async () => {
     const otherId = await insertRecipe({ name: "别人的菜", owner_id: "other" });
-    // 未登录也能看到收藏过的别人的菜谱，权限守门在这条可见路径上也必须生效
+    // 收藏的别人的菜谱详情可读（收藏是合法可见范围，C1），但改 / 删必须被权限拦住
     await db.execute("INSERT INTO favorite_recipes (recipe_id) VALUES (?)", [otherId]);
     const before = await updatedAtOf(otherId);
     const store = useRecipeStore();
 
-    // 未登录：收藏的别人的菜谱在列表里，但改 / 删都被权限拦住
+    // 未登录：它只在「收藏」数据源，不在「我的」列表
+    expect(await listNames()).toEqual([]);
+    await store.fetchFavorites();
+    expect(store.favorites.map((item) => item.recipe.id)).toEqual([otherId]);
     await expect(
       store.update(otherId, input("改名", { category_id: await categoryId() })),
     ).rejects.toThrow("没有修改权限");
     await expect(store.remove(otherId)).rejects.toThrow("没有修改权限");
     expect(await updatedAtOf(otherId)).toBe(before);
-    expect(await listNames()).toEqual(["别人的菜"]);
 
-    // 登录后：别人的菜谱不在可见范围里，直接按「不存在」处理
+    // 登录后：收藏的别人的菜谱仍能从收藏 tab 打开，但同样不给改
     loginAs("me");
     await expect(
       store.update(otherId, input("改名", { category_id: await categoryId() })),
-    ).rejects.toThrow("菜谱不存在");
+    ).rejects.toThrow("没有修改权限");
     expect(await updatedAtOf(otherId)).toBe(before);
+  });
+
+  it("登录后收藏的别人的菜谱：fetchFavorites 含它，getDetail 也能打开（C1 回归）", async () => {
+    loginAs("me");
+    const otherId = await insertRecipe({ name: "别人公开的菜", owner_id: "other" });
+    await db.execute("INSERT INTO favorite_recipes (recipe_id) VALUES (?)", [otherId]);
+    const store = useRecipeStore();
+
+    await store.fetchFavorites();
+    expect(store.favorites.map((item) => item.recipe.id)).toEqual([otherId]);
+
+    const detail = await store.getDetail(otherId);
+    expect(detail.recipe.id).toBe(otherId);
+  });
+
+  it("登录后没收藏的别人的菜谱，详情仍按不存在处理", async () => {
+    loginAs("me");
+    const otherId = await insertRecipe({ name: "别人的", owner_id: "other" });
+    const store = useRecipeStore();
+
+    await expect(store.getDetail(otherId)).rejects.toThrow("菜谱不存在");
   });
 
   it("新增、修改、删除后都把该条完整形状入同步队列，删除带墓碑", async () => {

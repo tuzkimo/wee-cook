@@ -1,10 +1,11 @@
 <script setup lang="ts">
 // 用户页（spec §8 / §9.3）：ta 的公开菜谱 + 关注 / 取消关注。
 // 在线页：资料与列表都走 REST（用户页本身要在线，作者昵称的离线显示在菜谱详情页那边）。
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import AppHeader from "@/components/AppHeader.vue";
 import { imageSrc } from "@/services/imageStore";
+import { ensureLocalCovers } from "@/services/syncFiles";
 import {
   listCommunityRecipes,
   type CommunityRecipe,
@@ -21,6 +22,16 @@ const store = useCommunityStore();
 const userId = computed(() => (typeof route.params.id === "string" ? route.params.id : ""));
 const profile = ref<UserProfile | null>(null);
 const recipes = ref<CommunityRecipe[]>([]);
+// 封面：列表的 cover_path 只是本机文件名，图得走鉴权下载通道补下来；
+// 只把已落盘的名字交给模板，文件没到时用字母兜底，不出破图。
+const localCovers = ref<Set<string>>(new Set());
+watch(
+  () => recipes.value,
+  async () => {
+    localCovers.value = await ensureLocalCovers(recipes.value.map((item) => item.cover_path));
+  },
+  { immediate: true },
+);
 const error = ref("");
 const followError = ref("");
 const loading = ref(false);
@@ -172,7 +183,7 @@ async function open(id: string): Promise<void> {
               @click="open(item.id)"
             >
               <img
-                v-if="item.cover_path"
+                v-if="item.cover_path && localCovers.has(item.cover_path)"
                 :src="imageSrc(item.cover_path)"
                 :alt="item.name"
                 loading="lazy"
