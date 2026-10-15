@@ -6,6 +6,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -94,6 +95,58 @@ func TestFavoritePrivateRecipeReturnsNotVisible(t *testing.T) {
 	err := community.Favorite(context.Background(), b, recipeID)
 	if !errors.Is(err, ErrRecipeNotVisible) {
 		t.Fatalf("收藏私有菜谱 err = %v, want ErrRecipeNotVisible", err)
+	}
+}
+
+// 并发回归网（FOR UPDATE 修复的自检）：8 个用户同时收藏同一条热门菜谱必须全部成功。
+// 旧实现取 FOR SHARE、同事务内再 UPDATE 同一行，共享锁升级会让并发收藏彼此互等，
+// Postgres 判 40P01 deadlock detected（实测 20 并发时 16 次失败）。排他锁把它们串在行锁上
+// （毫秒级排队），不再有第二条路可等，所以这个测试稳定成立。
+// 超时上下文只为防挂死；正常路径每次收藏都在毫秒级完成。
+func TestConcurrentFavoriteOnSameRecipeDoesNotDeadlock(t *testing.T) {
+	pool := filesTestDB(t)
+	community := NewCommunityService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	a := seedUser(t, pool)
+	recipeID := seedRecipe(t, pool, a, nil, false)
+	if _, err := pool.Exec(ctx, `UPDATE recipes SET is_public = 1 WHERE id = $1`, recipeID); err != nil {
+		t.Fatalf("公开菜谱失败: %v", err)
+	}
+
+	const n = 8
+	users := make([]string, n)
+	for i := range users {
+		users[i] = seedUser(t, pool)
+	}
+
+	start := make(chan struct{}) // 拦住所有 goroutine，让它们尽量同时抢同一行的锁
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := range users {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			errs[i] = community.Favorite(ctx, users[i], recipeID)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("并发收藏第 %d 个失败（应排队而非死锁）: %v", i, err)
+		}
+	}
+
+	var favors int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM favorites WHERE recipe_id = $1`, recipeID).Scan(&favors); err != nil {
+		t.Fatalf("统计收藏失败: %v", err)
+	}
+	if favors != n {
+		t.Errorf("收藏行数 = %d, want %d（并发下有收藏丢失）", favors, n)
 	}
 }
 

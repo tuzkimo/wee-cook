@@ -32,8 +32,10 @@ func (s *CommunityService) Favorite(ctx context.Context, userID, recipeID string
 	defer tx.Rollback(ctx)
 
 	var one int
+	// 取排他锁而不是 FOR SHARE：同一事务随后还要 UPDATE 这一行来推进 server_seq，
+	// 共享锁升级时并发收藏彼此互等（40P01）；sync.go 也对同一行取 FOR UPDATE，一起排队才不死锁。
 	err = tx.QueryRow(ctx,
-		`SELECT 1 FROM recipes WHERE id = $1 AND is_public = 1 AND deleted_at IS NULL FOR SHARE`,
+		`SELECT 1 FROM recipes WHERE id = $1 AND is_public = 1 AND deleted_at IS NULL FOR UPDATE`,
 		recipeID).Scan(&one)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrRecipeNotVisible
