@@ -727,10 +727,9 @@ async function doSync(): Promise<boolean> {
   rememberAndDownloadFiles(uid, res.data.remote_changes.files ?? []);
 
   // 收藏对账（spec §7.2）：整表替换收藏集合 → 清别人的缓存副本。
-  // 对账期间又发生了收藏操作则不推进本地状态，补跑一轮把它带上。
-  const opsBeforeReconcile = favoriteOps;
+  // 请求发出后若用户又动过收藏，这份响应快照已过期：对账会自己跳过，这里补跑一轮把它带上。
   await reconcileFavorites(uid, res.data.favorite_recipe_ids ?? [], db);
-  if (favoriteOps !== opsBeforeReconcile) enqueueSync({});
+  if (favoriteOps !== favoriteOpsAtRequest) enqueueSync({});
 
   setLastSyncedAtFor(uid, String(res.data.server_seq));
   pendingByUid.set(uid, emptyPayload());
