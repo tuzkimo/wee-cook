@@ -45,6 +45,7 @@ vi.mock("@/services/api", () => ({
 vi.mock("@/services/syncFiles", () => ({
   uploadPendingFiles: vi.fn(async () => true),
   downloadMissingFiles: vi.fn(async () => ({ downloaded: 0, failed: 0 })),
+  downloadPendingFiles: vi.fn(async () => ({ retry: [] })),
 }));
 
 import { apiFetch, hasBaseUrl } from "@/services/api";

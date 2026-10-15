@@ -51,6 +51,14 @@ const realDeps: FileSyncDeps = {
     rename(from, to, { oldPathBaseDir: BaseDirectory.AppData, newPathBaseDir: BaseDirectory.AppData }),
 };
 
+// 测试注入缝（照 db 的 setDb）：真机走 realDeps，单测换成内存假文件系统，免跑 Tauri IPC。
+let activeDeps: FileSyncDeps = realDeps;
+
+/** 换掉文件通道的 IO 实现；传 null 还原真插件。仅测试用。 */
+export function setFileSyncDeps(deps: FileSyncDeps | null): void {
+  activeDeps = deps ?? realDeps;
+}
+
 /** `changes` 里所有菜谱引用到的图片名（封面 + 步骤图），去重、跳过 null */
 export function collectReferencedFileNames(changes: SyncPayload): string[] {
   const names = new Set<string>();
@@ -69,7 +77,7 @@ export function collectReferencedFileNames(changes: SyncPayload): string[] {
  */
 export async function uploadPendingFiles(
   changes: SyncPayload,
-  deps: FileSyncDeps = realDeps,
+  deps: FileSyncDeps = activeDeps,
 ): Promise<boolean> {
   const names = collectReferencedFileNames(changes);
   if (names.length === 0) return true;
@@ -110,13 +118,40 @@ export async function uploadPendingFiles(
   return allDone;
 }
 
+/** 单张图的搬运结果：downloaded/skipped 算有了；gone=404 放弃；retry=瞬时失败留待下轮。 */
+type DownloadOutcome = "downloaded" | "skipped" | "gone" | "retry";
+
+/** 搬一张图。失败不抛，用返回值区分「永久没有（404）」与「这次没成」。 */
+async function downloadOne(ref: FileRef, deps: FileSyncDeps): Promise<DownloadOutcome> {
+  const path = `images/${ref.name}`;
+  try {
+    if (await deps.exists(path)) return "skipped";
+
+    const res = await fetchWithAuth(`/api/v1/files/${encodeURIComponent(ref.name)}`);
+    if (res.status === 404) return "gone";
+    if (!res.ok) return "retry";
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    // 200 也可能是空 body（服务端契约之外的故障）。空文件一旦 rename 成正式名，
+    // 下次 exists 就为真、永不重下 ⇒ 当失败处理。在写盘前拦下，连 .tmp 都不会产生
+    if (bytes.length === 0) return "retry";
+
+    // 临时名再改名：断网/杀进程留下的是 .tmp，正式名要么不存在、要么就是完整文件
+    const tmp = `${path}.tmp`;
+    await deps.writeFile(tmp, bytes);
+    await deps.rename(tmp, path);
+    return "downloaded";
+  } catch {
+    return "retry";
+  }
+}
+
 /**
  * 串行下载本地没有的图。失败只累加 `failed`，**不抛**（spec §8.3：菜谱先落库、图后补）。
  * 404 本轮记一次失败即止，不重试、不阻塞后面的文件。
  */
 export async function downloadMissingFiles(
   refs: FileRef[],
-  deps: FileSyncDeps = realDeps,
+  deps: FileSyncDeps = activeDeps,
 ): Promise<{ downloaded: number; failed: number }> {
   // 地址没配就是「没开始」，不是「每张都失败」：报 N 个失败等于把缺配置伪装成 N 张坏图，
   // 且会白做 N 次 exists。不发任何请求（api 层约定），也不记失败
@@ -124,29 +159,31 @@ export async function downloadMissingFiles(
 
   let downloaded = 0;
   let failed = 0;
-
   // 串行：家庭场景一次几十张，不值得为并发加一层池子，也避免同时写盘互相抢
   for (const ref of refs) {
-    const path = `images/${ref.name}`;
-    try {
-      if (await deps.exists(path)) continue;
-
-      const res = await fetchWithAuth(`/api/v1/files/${encodeURIComponent(ref.name)}`);
-      if (!res.ok) throw new Error(`下载失败：HTTP ${res.status}`);
-      const bytes = new Uint8Array(await res.arrayBuffer());
-      // 200 也可能是空 body（服务端契约之外的故障）。空文件一旦 rename 成正式名，
-      // 下次 exists 就为真、永不重下 ⇒ 当失败处理。在写盘前拦下，连 .tmp 都不会产生
-      if (bytes.length === 0) throw new Error("下载内容为空");
-
-      // 临时名再改名：断网/杀进程留下的是 .tmp，正式名要么不存在、要么就是完整文件
-      const tmp = `${path}.tmp`;
-      await deps.writeFile(tmp, bytes);
-      await deps.rename(tmp, path);
-      downloaded++;
-    } catch {
-      failed++;
-    }
+    const outcome = await downloadOne(ref, deps);
+    if (outcome === "downloaded") downloaded++;
+    else if (outcome !== "skipped") failed++;
   }
-
   return { downloaded, failed };
+}
+
+/**
+ * 补下载「待下载集合」里的图，返回**瞬时失败、下轮还要再试**的名字。
+ * 成功 / 本地已有 / 404 都不在返回值里：404 是服务端明确说没有，留着只会每轮同步无限刷屏
+ * （Review Focus ④）。调用方（sync.ts）据此维护按 uid 持久化的待下载集合。
+ */
+export async function downloadPendingFiles(
+  names: string[],
+  deps: FileSyncDeps = activeDeps,
+): Promise<{ retry: string[] }> {
+  if (names.length === 0) return { retry: [] };
+  // 没配地址 / 已退登：一张都下不了，全部留待下轮（不是「都失败」）
+  if (!hasBaseUrl()) return { retry: [...names] };
+
+  const retry: string[] = [];
+  for (const name of names) {
+    if ((await downloadOne({ name, size: 0 }, deps)) === "retry") retry.push(name);
+  }
+  return { retry };
 }

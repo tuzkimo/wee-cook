@@ -400,4 +400,82 @@ describe("applyRemoteChanges", () => {
       await db.select("SELECT ingredient_id, unit_id FROM recipe_ingredients WHERE recipe_id = 'r2'"),
     ).toEqual([{ ingredient_id: "ing-y", unit_id: "unit-y" }]);
   });
+
+  it("远端复活本地已软删的同名行时，先并掉本地同名的活行（不撞唯一索引，回归 C1）", async () => {
+    const { db } = await freshTestDb();
+    // 本地历史：X 先建后软删，Y 是后来重建的同名活行。
+    await db.execute(
+      "INSERT INTO ingredients (id,name,created_at,updated_at,deleted_at) VALUES ('ing-x','盐',?,?,?)",
+      [T0, T0, T0],
+    );
+    await db.execute(
+      "INSERT INTO ingredients (id,name,created_at,updated_at,deleted_at) VALUES ('ing-y','盐',?,?,NULL)",
+      [T0, T0],
+    );
+    await db.execute(
+      "INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES ('unit-x','克',?,?,?)",
+      [T0, T0, T0],
+    );
+    await db.execute(
+      "INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES ('unit-y','克',?,?,NULL)",
+      [T0, T0],
+    );
+    await db.execute(
+      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('lab-x','家常','category',?,?,?)",
+      [T0, T0, T0],
+    );
+    await db.execute(
+      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('lab-y','家常','category',?,?,NULL)",
+      [T0, T0],
+    );
+    await db.execute(
+      `INSERT INTO recipes (id,name,cover_path,category_id,created_at,updated_at,deleted_at)
+       VALUES ('r1','红烧肉',NULL,'lab-y',?,?,NULL)`,
+      [T0, T0],
+    );
+    await db.execute("INSERT INTO recipe_labels (recipe_id,label_id) VALUES ('r1','lab-y')");
+    await db.execute(
+      `INSERT INTO recipe_ingredients
+         (id,recipe_id,ingredient_id,amount,unit_id,sort_order,updated_at,deleted_at)
+       VALUES ('ri1','r1','ing-y',1,'unit-y',0,?,NULL)`,
+      [T0],
+    );
+
+    // 远端按 id 命中 X 并把它复活（updated_at 更新）。
+    await expect(
+      applyRemoteChanges(
+        remote({
+          ingredients: [{ id: "ing-x", name: "盐", created_at: T0, updated_at: T1, deleted_at: null }],
+          units: [{ id: "unit-x", name: "克", created_at: T0, updated_at: T1, deleted_at: null }],
+          labels: [{ id: "lab-x", name: "家常", kind: "category", created_at: T0, updated_at: T1, deleted_at: null }],
+        }),
+        db,
+      ),
+    ).resolves.toBeUndefined();
+
+    // 每张表只剩一条活行，且是被复活的 X；同名的活行 Y 不残留。
+    expect(await db.select("SELECT id FROM ingredients WHERE deleted_at IS NULL")).toEqual([
+      { id: "ing-x" },
+    ]);
+    expect(await db.select("SELECT id FROM units WHERE deleted_at IS NULL")).toEqual([
+      { id: "unit-x" },
+    ]);
+    expect(await db.select("SELECT id FROM labels WHERE deleted_at IS NULL")).toEqual([
+      { id: "lab-x" },
+    ]);
+    expect(await db.select("SELECT id FROM ingredients WHERE id='ing-y'")).toEqual([]);
+    expect(await db.select("SELECT id FROM units WHERE id='unit-y'")).toEqual([]);
+    expect(await db.select("SELECT id FROM labels WHERE id='lab-y'")).toEqual([]);
+
+    // 引用从 Y 改指到存活的 X。
+    expect(
+      await db.select("SELECT ingredient_id, unit_id FROM recipe_ingredients WHERE id='ri1'"),
+    ).toEqual([{ ingredient_id: "ing-x", unit_id: "unit-x" }]);
+    expect(await db.select("SELECT category_id FROM recipes WHERE id='r1'")).toEqual([
+      { category_id: "lab-x" },
+    ]);
+    expect(await db.select("SELECT label_id FROM recipe_labels WHERE recipe_id='r1'")).toEqual([
+      { label_id: "lab-x" },
+    ]);
+  });
 });

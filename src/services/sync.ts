@@ -6,7 +6,7 @@
 // 保留：字典同名合并、子行整组替换、队列与游标按 uid 隔离。
 import { getDb, type Db } from "@/db";
 import { apiFetch, hasBaseUrl } from "./api";
-import { downloadMissingFiles, uploadPendingFiles, type FileRef } from "./syncFiles";
+import { downloadPendingFiles, uploadPendingFiles, type FileRef } from "./syncFiles";
 import { useAuthStore } from "@/stores/auth";
 import type { Ingredient, Label, Recipe, Unit } from "@/types";
 
@@ -78,12 +78,20 @@ function normDeleted(v: string | null): string | null {
 }
 
 /**
- * 插入一条字典行；若本地已有同键的行则做同名合并。顺序被外键约束钉死（node:sqlite 与
- * sqlx 都默认开 `foreign_keys`）：引用不能在目标行存在之前指向它，而新行又与老行同名、
- * 撞 `name` 上的局部唯一索引，所以先软删老行释放唯一键 → 插新行 → 改指引用 → 硬删老行。
- * 返回被合并掉的老 id（无同名行为 null），调用方据此记 remap。
+ * 写一条字典行，并守住「同一 (name[, kind]) 最多一条活行」这条不变量。
+ *
+ * 顺序被外键约束钉死（node:sqlite 与 sqlx 都默认开 `foreign_keys`）：引用不能在目标行存在之前
+ * 指向它，而新行又与老行同键、撞 `name` 上的局部唯一索引，所以先软删老行释放唯一键 →
+ * 写新行 → 改指引用 → 硬删老行。
+ *
+ * 两条入口共用：
+ *  - 插入路径（本地没有该 id）：`writeSql` 是 INSERT。
+ *  - 更新路径（本地已有该 id，远端把它复活）：`writeSql` 是 UPDATE，且 `findDupSql` 只找
+ *    **另一条活行**（软删行不占唯一键，不该被误删）。
+ *
+ * 返回被合并掉的老 id（无同键老行为 null），调用方据此记 remap。
  */
-async function insertDictRow(
+async function upsertDictRow(
   db: Db,
   opts: {
     table: "ingredients" | "units" | "labels";
@@ -91,23 +99,22 @@ async function insertDictRow(
     updatedAt: string;
     findDupSql: string;
     findDupParams: unknown[];
-    insertSql: string;
-    insertParams: unknown[];
+    writeSql: string;
+    writeParams: unknown[];
     repointSql: string[];
     cleanupSql?: string[];
   },
 ): Promise<string | null> {
   const dup = await db.select<{ id: string }[]>(opts.findDupSql, opts.findDupParams);
-  if (dup.length === 0) {
-    await db.execute(opts.insertSql, opts.insertParams);
-    return null;
+  const oldId = dup.length > 0 ? dup[0].id : null;
+  if (oldId !== null) {
+    await db.execute(`UPDATE ${opts.table} SET deleted_at = COALESCE(deleted_at, ?) WHERE id = ?`, [
+      opts.updatedAt,
+      oldId,
+    ]);
   }
-  const oldId = dup[0].id;
-  await db.execute(`UPDATE ${opts.table} SET deleted_at = COALESCE(deleted_at, ?) WHERE id = ?`, [
-    opts.updatedAt,
-    oldId,
-  ]);
-  await db.execute(opts.insertSql, opts.insertParams);
+  await db.execute(opts.writeSql, opts.writeParams);
+  if (oldId === null) return null;
   for (const sql of opts.repointSql) await db.execute(sql, [opts.id, oldId]);
   for (const sql of opts.cleanupSql ?? []) await db.execute(sql, [oldId]);
   await db.execute(`DELETE FROM ${opts.table} WHERE id = ?`, [oldId]);
@@ -131,29 +138,47 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
       "SELECT updated_at FROM ingredients WHERE id = ?",
       [item.id],
     );
+    const updatedAt = toIsoTimestamp(item.updated_at);
     if (local.length === 0) {
       // 本地已有同名行（不同 UUID，典型是清库重绑）→ 引用改指、删旧行、插新行。
       // **不过滤软删行**：软删行仍占着「同名」这个坑，漏掉会写出两条同名数据。
-      const oldId = await insertDictRow(db, {
+      const oldId = await upsertDictRow(db, {
         table: "ingredients",
         id: item.id,
-        updatedAt: toIsoTimestamp(item.updated_at),
+        updatedAt,
         // 优先取活行：(deleted_at IS NULL) DESC 把活行排在前。若先取到软删行，只软删它
         // 不会释放 name 的局部唯一索引，INSERT 会撞活行 → 同步永远卡死。
         findDupSql: "SELECT id FROM ingredients WHERE name = ? ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
         findDupParams: [item.name],
-        insertSql: "INSERT INTO ingredients (id,name,created_at,updated_at,deleted_at) VALUES (?,?,?,?,?)",
-        insertParams: [item.id, item.name, toIsoTimestamp(item.created_at), toIsoTimestamp(item.updated_at), normDeleted(item.deleted_at)],
+        writeSql: "INSERT INTO ingredients (id,name,created_at,updated_at,deleted_at) VALUES (?,?,?,?,?)",
+        writeParams: [item.id, item.name, toIsoTimestamp(item.created_at), updatedAt, normDeleted(item.deleted_at)],
         repointSql: ["UPDATE recipe_ingredients SET ingredient_id = ? WHERE ingredient_id = ?"],
       });
       if (oldId !== null) remap.set(oldId, item.id);
     } else if (compareTimestamp(item.updated_at, local[0].updated_at) > 0) {
-      await db.execute("UPDATE ingredients SET name=?, updated_at=?, deleted_at=? WHERE id=?", [
-        item.name,
-        toIsoTimestamp(item.updated_at),
-        normDeleted(item.deleted_at),
-        item.id,
-      ]);
+      if (item.deleted_at === null) {
+        // 远端把一条本地已软删的行复活。若本地另有同名的活行，直接 UPDATE 会写出第二条
+        // 活行、撞 idx_ingredients_name（同步永久卡死），所以先把它并掉（C1）。
+        const oldId = await upsertDictRow(db, {
+          table: "ingredients",
+          id: item.id,
+          updatedAt,
+          // 只找另一条**活行**：软删行不占唯一键，误删它没有意义。
+          findDupSql: "SELECT id FROM ingredients WHERE name = ? AND deleted_at IS NULL AND id != ? LIMIT 1",
+          findDupParams: [item.name, item.id],
+          writeSql: "UPDATE ingredients SET name=?, updated_at=?, deleted_at=? WHERE id=?",
+          writeParams: [item.name, updatedAt, null, item.id],
+          repointSql: ["UPDATE recipe_ingredients SET ingredient_id = ? WHERE ingredient_id = ?"],
+        });
+        if (oldId !== null) remap.set(oldId, item.id);
+      } else {
+        await db.execute("UPDATE ingredients SET name=?, updated_at=?, deleted_at=? WHERE id=?", [
+          item.name,
+          updatedAt,
+          normDeleted(item.deleted_at),
+          item.id,
+        ]);
+      }
     }
   }
 
@@ -163,25 +188,40 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
       "SELECT updated_at FROM units WHERE id = ?",
       [item.id],
     );
+    const updatedAt = toIsoTimestamp(item.updated_at);
     if (local.length === 0) {
-      const oldId = await insertDictRow(db, {
+      const oldId = await upsertDictRow(db, {
         table: "units",
         id: item.id,
-        updatedAt: toIsoTimestamp(item.updated_at),
+        updatedAt,
         findDupSql: "SELECT id FROM units WHERE name = ? ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
         findDupParams: [item.name],
-        insertSql: "INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES (?,?,?,?,?)",
-        insertParams: [item.id, item.name, toIsoTimestamp(item.created_at), toIsoTimestamp(item.updated_at), normDeleted(item.deleted_at)],
+        writeSql: "INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES (?,?,?,?,?)",
+        writeParams: [item.id, item.name, toIsoTimestamp(item.created_at), updatedAt, normDeleted(item.deleted_at)],
         repointSql: ["UPDATE recipe_ingredients SET unit_id = ? WHERE unit_id = ?"],
       });
       if (oldId !== null) remap.set(oldId, item.id);
     } else if (compareTimestamp(item.updated_at, local[0].updated_at) > 0) {
-      await db.execute("UPDATE units SET name=?, updated_at=?, deleted_at=? WHERE id=?", [
-        item.name,
-        toIsoTimestamp(item.updated_at),
-        normDeleted(item.deleted_at),
-        item.id,
-      ]);
+      if (item.deleted_at === null) {
+        const oldId = await upsertDictRow(db, {
+          table: "units",
+          id: item.id,
+          updatedAt,
+          findDupSql: "SELECT id FROM units WHERE name = ? AND deleted_at IS NULL AND id != ? LIMIT 1",
+          findDupParams: [item.name, item.id],
+          writeSql: "UPDATE units SET name=?, updated_at=?, deleted_at=? WHERE id=?",
+          writeParams: [item.name, updatedAt, null, item.id],
+          repointSql: ["UPDATE recipe_ingredients SET unit_id = ? WHERE unit_id = ?"],
+        });
+        if (oldId !== null) remap.set(oldId, item.id);
+      } else {
+        await db.execute("UPDATE units SET name=?, updated_at=?, deleted_at=? WHERE id=?", [
+          item.name,
+          updatedAt,
+          normDeleted(item.deleted_at),
+          item.id,
+        ]);
+      }
     }
   }
 
@@ -191,16 +231,17 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
       "SELECT updated_at FROM labels WHERE id = ?",
       [item.id],
     );
+    const updatedAt = toIsoTimestamp(item.updated_at);
     if (local.length === 0) {
-      const oldId = await insertDictRow(db, {
+      const oldId = await upsertDictRow(db, {
         table: "labels",
         id: item.id,
-        updatedAt: toIsoTimestamp(item.updated_at),
+        updatedAt,
         // 合并键是 (name, kind)：分类与标签不能并成一行（spec §7.4）。
         findDupSql: "SELECT id FROM labels WHERE name = ? AND kind = ? ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
         findDupParams: [item.name, item.kind],
-        insertSql: "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES (?,?,?,?,?,?)",
-        insertParams: [item.id, item.name, item.kind, toIsoTimestamp(item.created_at), toIsoTimestamp(item.updated_at), normDeleted(item.deleted_at)],
+        writeSql: "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES (?,?,?,?,?,?)",
+        writeParams: [item.id, item.name, item.kind, toIsoTimestamp(item.created_at), updatedAt, normDeleted(item.deleted_at)],
         // recipe_labels 的主键是 (recipe_id, label_id)：一条菜谱同时引用新旧两行时，
         // OR IGNORE 跳过冲突行，随后整行删掉旧 id，不留指向已删行的关联。
         repointSql: [
@@ -211,13 +252,31 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
       });
       if (oldId !== null) remap.set(oldId, item.id);
     } else if (compareTimestamp(item.updated_at, local[0].updated_at) > 0) {
-      await db.execute("UPDATE labels SET name=?, kind=?, updated_at=?, deleted_at=? WHERE id=?", [
-        item.name,
-        item.kind,
-        toIsoTimestamp(item.updated_at),
-        normDeleted(item.deleted_at),
-        item.id,
-      ]);
+      if (item.deleted_at === null) {
+        const oldId = await upsertDictRow(db, {
+          table: "labels",
+          id: item.id,
+          updatedAt,
+          findDupSql: "SELECT id FROM labels WHERE name = ? AND kind = ? AND deleted_at IS NULL AND id != ? LIMIT 1",
+          findDupParams: [item.name, item.kind, item.id],
+          writeSql: "UPDATE labels SET name=?, kind=?, updated_at=?, deleted_at=? WHERE id=?",
+          writeParams: [item.name, item.kind, updatedAt, null, item.id],
+          repointSql: [
+            "UPDATE OR IGNORE recipe_labels SET label_id = ? WHERE label_id = ?",
+            "UPDATE recipes SET category_id = ? WHERE category_id = ?",
+          ],
+          cleanupSql: ["DELETE FROM recipe_labels WHERE label_id = ?"],
+        });
+        if (oldId !== null) remap.set(oldId, item.id);
+      } else {
+        await db.execute("UPDATE labels SET name=?, kind=?, updated_at=?, deleted_at=? WHERE id=?", [
+          item.name,
+          item.kind,
+          updatedAt,
+          normDeleted(item.deleted_at),
+          item.id,
+        ]);
+      }
     }
   }
 
@@ -354,8 +413,14 @@ function isEmptyPayload(p: SyncPayload): boolean {
 function persistPending(uid: string | null): void {
   if (!uid) return;
   const p = pendingByUid.get(uid);
-  if (!p || isEmptyPayload(p)) localStorage.removeItem(pendingQueueKey(uid));
-  else localStorage.setItem(pendingQueueKey(uid), JSON.stringify(p));
+  // 队列只是触发/备忘（全扫推送是兜底）：localStorage 写失败（配额/被禁）不能把异常抛给调用方
+  // ——enqueueSync 会沿 recipe.create/update 抛回用户，失败回队路径会让 performSync reject。
+  try {
+    if (!p || isEmptyPayload(p)) localStorage.removeItem(pendingQueueKey(uid));
+    else localStorage.setItem(pendingQueueKey(uid), JSON.stringify(p));
+  } catch {
+    // 只是这次没落盘，下轮全扫同步照常推
+  }
 }
 
 /** 合并一批改动进队列：同 id 只保留 updated_at 更新的一份。 */
@@ -384,7 +449,7 @@ export function enqueueSync(changes: Partial<SyncPayload>): void {
   if (syncTimer) clearTimeout(syncTimer);
   syncTimer = setTimeout(() => {
     syncTimer = null;
-    void performSync();
+    void performSync().catch(() => {});
   }, 3000);
 }
 
@@ -411,6 +476,63 @@ export function clearPendingSync(): void {
   for (const k of keys) localStorage.removeItem(k);
 }
 
+// 待下载图集合，按 uid 隔离并持久化。服务端只在下发菜谱时带上它引用的图，游标推进后就不再重发，
+// 首同步里一张图断网失败若不记账，就固化成「永久缺封面」（spec §8.3 的「下一轮」靠它实现）。
+const pendingFilesByUid = new Map<string, Set<string>>();
+
+function pendingFilesKey(uid: string): string {
+  return `pending_files:${uid}`;
+}
+
+function pendingFilesFor(uid: string | null): Set<string> {
+  if (!uid) return new Set();
+  let files = pendingFilesByUid.get(uid);
+  if (!files) {
+    try {
+      const raw = localStorage.getItem(pendingFilesKey(uid));
+      files = new Set(raw ? (JSON.parse(raw) as string[]) : []);
+    } catch {
+      files = new Set();
+    }
+    pendingFilesByUid.set(uid, files);
+  }
+  return files;
+}
+
+function persistPendingFiles(uid: string | null): void {
+  if (!uid) return;
+  const files = pendingFilesByUid.get(uid);
+  try {
+    if (!files || files.size === 0) localStorage.removeItem(pendingFilesKey(uid));
+    else localStorage.setItem(pendingFilesKey(uid), JSON.stringify([...files]));
+  } catch {
+    // 集合丢了只是少补一次图，不能因此打断同步
+  }
+}
+
+/**
+ * 把远端下发的文件名并入待下载集合，再补一轮下载（不 await，失败只影响封面）。
+ * 下载成功 / 本地已有 / 404 的名字从集合移除，瞬时失败（超时/断网/5xx）留着下次同步再试。
+ */
+function rememberAndDownloadFiles(uid: string, refs: FileRef[]): void {
+  const files = pendingFilesFor(uid);
+  for (const ref of refs) files.add(ref.name);
+  persistPendingFiles(uid);
+  const names = [...files];
+  if (names.length === 0) return;
+  void downloadPendingFiles(names)
+    .then(({ retry }) => {
+      // 只删掉本轮确实拿到归宿的名字；期间新并入的（不在 names 里）原样保留
+      const keep = new Set(retry);
+      const live = pendingFilesFor(uid);
+      for (const name of names) if (!keep.has(name)) live.delete(name);
+      persistPendingFiles(uid);
+    })
+    .catch(() => {
+      // downloadPendingFiles 自身不抛；保险起见吞掉，别冒未处理 rejection
+    });
+}
+
 // 同步失败后按指数退避重新武装定时器：5s → 10s → 20s → 60s（上限）。
 function scheduleRetry(): void {
   if (syncTimer) clearTimeout(syncTimer);
@@ -418,7 +540,7 @@ function scheduleRetry(): void {
   retryAttempt++;
   syncTimer = setTimeout(() => {
     syncTimer = null;
-    void performSync();
+    void performSync().catch(() => {});
   }, delay);
 }
 
@@ -447,7 +569,7 @@ export async function performSync(): Promise<boolean> {
     isSyncing = false;
     if (syncQueued) {
       syncQueued = false;
-      void performSync();
+      void performSync().catch(() => {});
     }
   }
 }
@@ -465,7 +587,11 @@ async function doSync(): Promise<boolean> {
 
   // 推送前先把图传上去。一张失败就整批不推菜谱、只推字典（spec §8.2）：
   // 宁可晚一个周期，也不要服务器上出现没封面的菜谱。
-  if (!(await uploadPendingFiles(changes))) changes.recipes = [];
+  let filesPending = false;
+  if (!(await uploadPendingFiles(changes))) {
+    changes.recipes = [];
+    filesPending = true;
+  }
 
   const lastSyncedAt = getLastSyncedAtFor(uid);
   const lastServerSeq = lastSyncedAt === null ? 0 : parseInt(lastSyncedAt, 10);
@@ -510,17 +636,26 @@ async function doSync(): Promise<boolean> {
     return false;
   }
 
-  // 图片下载不 await：失败只影响封面，不影响菜谱落地（spec §8.3）
-  void downloadMissingFiles(res.data.remote_changes.files ?? []);
+  // 图片下载不 await：失败只影响封面，不影响菜谱落地（spec §8.3）。
+  // 远端只在下发菜谱时带上引用的图，游标推进后就不再重发 ⇒ 把没下来的名字记进按 uid
+  // 持久化的待下载集合，每轮同步末尾再补一轮（瞬时失败下轮再试，404 放弃）。
+  rememberAndDownloadFiles(uid, res.data.remote_changes.files ?? []);
 
   setLastSyncedAtFor(uid, String(res.data.server_seq));
   pendingByUid.set(uid, emptyPayload());
   persistPending(uid);
-  retryAttempt = 0;
   try {
     useAuthStore().notifySyncComplete();
   } catch {
     // auth store 尚未初始化，忽略
+  }
+  if (filesPending) {
+    // 图没传完 → 这批菜谱只是「晚一个周期」推，不是同步成功：界面要能区分，且必须安排退避
+    // 重试（否则用户不编辑就永远推不上去）。不重置 retryAttempt，让退避计数继续涨。
+    markSyncResult(false);
+    scheduleRetry();
+  } else {
+    retryAttempt = 0;
   }
   return true;
 }

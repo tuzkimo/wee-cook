@@ -7,11 +7,21 @@ import * as tokenStorage from "@/services/tokenStorage";
 import { writeRefreshToken } from "@/services/tokenStorage";
 import { triggerFullPushAndSync } from "@/services/migration";
 import { useAuthStore } from "@/stores/auth";
+import { useRecipeStore } from "@/stores/recipe";
+import { useTeamStore } from "@/stores/team";
 
 // spec §9.5：会话从不在线变在线（登录/注册/恢复成功）要触发一次全扫推送。
 // 这里把整块同步替换成 spy，否则在途同步请求会在 teardown 留下 AbortError 噪音，
 // 且「有没有接线」这件事在测试里根本不可断言。
 vi.mock("@/services/migration", () => ({ triggerFullPushAndSync: vi.fn() }));
+
+// resetSyncTimers 换成 spy：logout 用动态 import 调它，需要断言「确实调了」。
+// 其余导出保持真身（team.ts 还在用 clearCursor / performSync）。
+const resetSyncTimersMock = vi.hoisted(() => vi.fn());
+vi.mock("@/services/sync", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/services/sync")>();
+  return { ...actual, resetSyncTimers: resetSyncTimersMock };
+});
 
 const syncMock = vi.mocked(triggerFullPushAndSync);
 
@@ -427,5 +437,53 @@ describe("authStore", () => {
 
     expect(store.lastSyncFailed).toBe(false);
     expect(store.lastSyncedTime).not.toBeNull();
+  });
+
+  it("logout 调 resetSyncTimers 停掉同步调度（spec §9.5）", async () => {
+    stubFetch(() => res(200, authBody(user("u1", { username: "alice" }), "access-1", "refresh-1")));
+    const store = useAuthStore();
+    await store.login("https://srv", "alice", "pw");
+    await vi.waitFor(() => expect(localStorage.getItem("refresh_token:u1")).toBe("refresh-1"));
+    resetSyncTimersMock.mockClear();
+
+    await store.logout();
+
+    expect(resetSyncTimersMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("logout 清掉 team store 内存态，换号后可见范围不含上个账号的团队菜谱", async () => {
+    const fetchMock = stubFetch((url) => {
+      if (url.endsWith("/api/v1/teams")) {
+        return res(200, [{ id: "t1", name: "一家人", created_by: "u1", member_count: 2 }]);
+      }
+      return res(200, authBody(user("u1", { username: "alice" }), "access-1", "refresh-1"));
+    });
+    const store = useAuthStore();
+    await store.login("https://srv", "alice", "pw");
+    await vi.waitFor(() => expect(localStorage.getItem("refresh_token:u1")).toBe("refresh-1"));
+    const teamStore = useTeamStore();
+    await teamStore.load();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(teamStore.teams.map((t) => t.id)).toEqual(["t1"]);
+
+    await store.logout();
+
+    // 换号前内存里不再留着 A 的团队（loadedUid 与 teams 同一个 reset 清掉）
+    expect(teamStore.teams).toEqual([]);
+
+    // 换号 B（直接种会话）：t1 的团队菜谱不在 B 的可见范围里
+    store.serverUser = user("u2");
+    await db.execute(
+      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('c1','家常','category',?,?,NULL)",
+      [NOW, NOW],
+    );
+    await db.execute(
+      `INSERT INTO recipes (id,name,cover_path,category_id,created_at,updated_at,deleted_at,owner_id,team_id)
+       VALUES ('r-a','A 的团队菜',NULL,'c1',?,?,NULL,'u1','t1')`,
+      [NOW, NOW],
+    );
+    const list = useRecipeStore();
+    await list.fetchAll();
+    expect(list.recipes).toEqual([]);
   });
 });

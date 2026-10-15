@@ -67,15 +67,22 @@ export const useTeamStore = defineStore("team", () => {
 
   /** 新团队并入列表（同 id 覆盖）并设为 current。 */
   function adopt(team: Team): void {
+    const uid = auth.serverUserId;
+    // 换号后的迟到响应（或已退登）：loadedUid 已是别的账号，不能把旧账号的团队写进内存与缓存。
+    if (uid === null || (loadedUid !== null && loadedUid !== uid)) return;
     const idx = teams.value.findIndex((t) => t.id === team.id);
     if (idx >= 0) teams.value[idx] = team;
     else teams.value.push(team);
     current.value = team;
-    const uid = auth.serverUserId;
-    if (uid !== null) {
-      loadedUid = uid;
-      writeTeamCache(uid, teams.value);
-    }
+    loadedUid = uid;
+    writeTeamCache(uid, teams.value);
+  }
+
+  /** 登出/换号：清掉内存里的团队与「已加载账号」标记；按 uid 隔离的缓存不动。 */
+  function reset(): void {
+    teams.value = [];
+    current.value = null;
+    loadedUid = null;
   }
 
   async function load(): Promise<void> {
@@ -96,6 +103,8 @@ export const useTeamStore = defineStore("team", () => {
     } catch {
       return; // 拿不到响应：保持现状（缓存已兜底），不误清空列表
     }
+    // 请求在途时账号可能已切换/退登：旧账号的响应不得写进新账号的内存与缓存（deferred #147）。
+    if (auth.serverUserId !== uid) return;
     if (res.ok) {
       teams.value = res.data;
       writeTeamCache(uid, res.data);
@@ -166,5 +175,5 @@ export const useTeamStore = defineStore("team", () => {
     return computed(() => teams.value.some((t) => t.id === teamId));
   }
 
-  return { teams, current, load, create, createInvite, joinByCode, loadMembers, isMemberOf };
+  return { teams, current, load, create, createInvite, joinByCode, loadMembers, isMemberOf, reset };
 });

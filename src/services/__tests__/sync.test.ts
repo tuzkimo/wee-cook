@@ -36,6 +36,7 @@ vi.mock("@/services/api", () => ({
 vi.mock("@/services/syncFiles", () => ({
   uploadPendingFiles: vi.fn(async () => true),
   downloadMissingFiles: vi.fn(async () => ({ downloaded: 0, failed: 0 })),
+  downloadPendingFiles: vi.fn(async () => ({ retry: [] })),
 }));
 
 import { apiFetch, hasBaseUrl } from "@/services/api";
@@ -232,6 +233,55 @@ describe("performSync", () => {
       [T0, T0],
     );
     expect(await db.select("SELECT id FROM units")).toEqual([{ id: "u9" }]);
+  });
+
+  it("图上传失败时本批菜谱不推，但会安排退避重试（I2）", async () => {
+    await insertLabel(db);
+    await insertRecipe(db, "r1", "u1");
+    // 第一次图传失败，退避重试那轮图已传上去 → 菜谱这才推出去
+    uploadMock.mockResolvedValueOnce(false).mockResolvedValue(true);
+    apiFetchMock.mockResolvedValue(okResponse(1));
+
+    vi.useFakeTimers();
+    try {
+      await expect(performSync()).resolves.toBe(true);
+
+      const body = JSON.parse(String(apiFetchMock.mock.calls[0][1]?.body));
+      expect(body.local_changes.recipes).toEqual([]);
+      // 菜谱被扣下 = 不是「已同步」：界面能区分，且 5s 后自动重试
+      expect(authState.lastSyncFailed).toBe(true);
+      expect(apiFetchMock).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(apiFetchMock).toHaveBeenCalledTimes(2);
+      const retryBody = JSON.parse(String(apiFetchMock.mock.calls[1][1]?.body));
+      expect(retryBody.local_changes.recipes.map((r: { id: string }) => r.id)).toEqual(["r1"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("persistPending 写失败（配额）不把异常抛出去：enqueueSync 不抛、performSync 仍 resolve（I4）", async () => {
+    // 直接换掉全局 localStorage：避免不同环境的 Storage 实现差异，setItem 一律抛配额错。
+    const realStorage = localStorage;
+    vi.stubGlobal("localStorage", {
+      length: 0,
+      key: () => null,
+      clear: () => realStorage.clear(),
+      getItem: (k: string) => realStorage.getItem(k),
+      removeItem: (k: string) => realStorage.removeItem(k),
+      setItem: () => {
+        throw new DOMException("quota", "QuotaExceededError");
+      },
+    });
+    try {
+      expect(() => enqueueSync({ units: [unit("u1", "克")] })).not.toThrow();
+      apiFetchMock.mockRejectedValue(new Error("断网"));
+
+      await expect(performSync()).resolves.toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

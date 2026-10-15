@@ -247,6 +247,19 @@ const useAuthStoreBase = defineStore("auth", () => {
     lastSyncedTime.value = null;
     goGuest();
     api.clearTokens();
+    // spec §9.5：登出只停定时器，各 uid 的积压队列保留。
+    // team 内存态必须一起清：换号后在 team.load() 跑完之前，残留的 A 团队会把 A 的家庭菜谱
+    // 算进 B 的可见范围（共享设备上 B 短暂看到 A 的家庭菜谱）。动态 import 避免 auth→sync→auth 的静态环。
+    const [{ resetSyncTimers }, teamModule] = await Promise.all([
+      import("@/services/sync"),
+      import("@/stores/team"),
+    ]);
+    resetSyncTimers();
+    try {
+      teamModule.useTeamStore().reset();
+    } catch {
+      // 没有活跃 pinia（游离挂载的组件测试）：没有内存态要清
+    }
     // 兜底：api.clearTokens 按 currentUserId 删，这里再按已知的服务端 user id 删一次
     if (persistedUserId) await deleteRefreshToken(persistedUserId);
     // 刻意不动 settings 里的 server_url 与账号信息：下次登录不用重填地址
