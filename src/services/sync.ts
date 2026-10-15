@@ -615,6 +615,19 @@ function rememberAndDownloadFiles(uid: string, refs: FileRef[]): void {
     });
 }
 
+/**
+ * 把 `GET /community/recipes/{id}` 的详情载荷落进本地库（spec §11.1：浏览过的公开菜谱走本地缓存，
+ * 详情页 / 图片 / 字典解析都复用现有落库与下载通道）。
+ *
+ * 走 applyRemoteChanges 的 LWW 合并而不是自己写 INSERT：远端的字典行与子行快照可能和本地
+ * 已有数据同键，合并规则必须与 /sync 完全一致。图片下载不 await，失败只影响封面。
+ */
+export async function cacheCommunityChanges(changes: SyncPayload, db: Db = getDb()): Promise<void> {
+  await applyRemoteChanges(changes, db);
+  const uid = getCurrentServerUserId();
+  if (uid) rememberAndDownloadFiles(uid, changes.files ?? []);
+}
+
 // 同步失败后按指数退避重新武装定时器：5s → 10s → 20s → 60s（上限）。
 function scheduleRetry(): void {
   if (syncTimer) clearTimeout(syncTimer);
