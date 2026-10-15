@@ -25,6 +25,7 @@ const communityStore = useCommunityStore();
 const filterStore = useRecipeFilterStore();
 
 const tab = ref<Tab>("all");
+const favoritesLoading = ref(false);
 
 const visible = computed(() => filterRecipes(store.recipes, filterStore.filter));
 const summary = computed(() => filterSummary(filterStore.filter, store.recipes));
@@ -39,8 +40,25 @@ const mineList = computed(() =>
   tab.value === "fav" ? filterRecipes(store.favorites, filterStore.filter) : visible.value,
 );
 
+// 收藏与其他 tab 的空态口径不同：收藏 tab 要区分「一条都没收藏」与「收藏被现有筛选筛空」
+const emptyMessage = computed(() => {
+  if (tab.value === "fav") {
+    return store.favorites.length === 0 ? "还没有收藏的菜谱" : "没有符合条件的菜谱";
+  }
+  return store.recipes.length === 0 ? "还没有菜谱，点右上角加号记一道" : "没有符合条件的菜谱";
+});
+
+async function loadFavorites(): Promise<void> {
+  favoritesLoading.value = true;
+  try {
+    await store.fetchFavorites();
+  } finally {
+    favoritesLoading.value = false;
+  }
+}
+
 function select(next: Tab): void {
-  if (next === "fav") void store.fetchFavorites();
+  if (next === "fav") void loadFavorites();
   // 离开「关注」要复位，否则回到「全部」时社区段还是关注口径
   communityStore.followedOnly = next === "follow";
   tab.value = next;
@@ -132,19 +150,17 @@ onMounted(async () => {
           {{ tab === "fav" ? "收藏" : "我的菜谱" }}
         </h2>
         <p
-          v-if="tab === 'fav' && mineList.length === 0"
+          v-if="favoritesLoading && tab === 'fav'"
+          data-test="favorites-loading"
           class="py-12 text-center text-text-secondary"
         >
-          还没有收藏的菜谱
+          加载中…
         </p>
         <p
-          v-else-if="store.recipes.length === 0"
+          v-else-if="mineList.length === 0"
           class="py-12 text-center text-text-secondary"
         >
-          还没有菜谱，点右上角加号记一道
-        </p>
-        <p v-else-if="mineList.length === 0" class="py-12 text-center text-text-secondary">
-          没有符合条件的菜谱
+          {{ emptyMessage }}
         </p>
         <ul v-else class="flex flex-col gap-2.5">
           <li v-for="item in mineList" :key="item.recipe.id">

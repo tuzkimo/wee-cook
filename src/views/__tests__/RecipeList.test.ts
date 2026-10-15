@@ -146,6 +146,8 @@ function resetFilter(): void {
 beforeEach(() => {
   vi.clearAllMocks();
   resetFilter();
+  // recipes 由 mountList 重置；favorites 得自己清，否则上一条用例的收藏会漏进下一条
+  mocks.favorites.length = 0;
   const community = communityStore();
   community.items = [];
   community.hasMore = false;
@@ -358,6 +360,60 @@ describe("RecipeList", () => {
     expect(communityStore().load).toHaveBeenCalledWith(true);
     // 关注只渲染社区段落
     expect(wrapper.find('[data-test="recipe-card"]').exists()).toBe(false);
+  });
+
+  it("登录态没有自有菜谱时，「收藏」仍渲染收藏的社区菜谱", async () => {
+    // 登录后 store.recipes 只剩自己名下（为空），收藏的社区菜谱 owner_id 是作者、只从 favorites 出来
+    mocks.favorites.splice(0, mocks.favorites.length, item("r2", "收藏的社区菜"));
+    const wrapper = mountList([]);
+
+    await wrapper.get('[data-test="tab-fav"]').trigger("click");
+    await flushPromises();
+
+    expect(names(wrapper)).toEqual(["收藏的社区菜"]);
+    expect(wrapper.get('[data-test="my-recipes"]').text()).not.toContain("还没有菜谱");
+  });
+
+  it("「收藏」为空时显示「还没有收藏的菜谱」", async () => {
+    const wrapper = mountList([]);
+
+    await wrapper.get('[data-test="tab-fav"]').trigger("click");
+    await flushPromises();
+
+    const mine = wrapper.get('[data-test="my-recipes"]').text();
+    expect(mine).toContain("还没有收藏的菜谱");
+    expect(mine).not.toContain("还没有菜谱，点右上角");
+  });
+
+  it("「收藏」有收藏但被筛选筛空时说「没有符合条件的菜谱」", async () => {
+    mocks.favorites.splice(0, mocks.favorites.length, item("r2", "收藏的红烧肉"));
+    const wrapper = mountList([item("r1", "我自己的")]);
+    useRecipeFilterStore().filter.keyword = "不存在的菜";
+
+    await wrapper.get('[data-test="tab-fav"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="my-recipes"]').text()).toContain("没有符合条件的菜谱");
+  });
+
+  it("「收藏」在途时不闪「还没有收藏的菜谱」，先显示加载态", async () => {
+    let resolveFavorites: () => void = () => {};
+    mocks.fetchFavorites.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveFavorites = resolve;
+      }),
+    );
+    const wrapper = mountList([]);
+
+    await wrapper.get('[data-test="tab-fav"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="favorites-loading"]').exists()).toBe(true);
+    expect(wrapper.get('[data-test="my-recipes"]').text()).not.toContain("还没有收藏的菜谱");
+
+    resolveFavorites();
+    await flushPromises();
+    expect(wrapper.find('[data-test="favorites-loading"]').exists()).toBe(false);
   });
 
   it("搜索框在顶栏里，信息条紧贴顶栏（不在搜索框和列表之间）", async () => {
