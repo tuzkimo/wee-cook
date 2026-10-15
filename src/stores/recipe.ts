@@ -151,9 +151,9 @@ export const useRecipeStore = defineStore("recipe", (): RecipeStore => {
     const { owner_id } = currentOwnership();
 
     await getDb().execute(
-      `INSERT INTO recipes (id, name, cover_path, category_id, created_at, updated_at, deleted_at, owner_id)
-       VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`,
-      [id, name, input.cover_path, input.category_id, now, now, owner_id],
+      `INSERT INTO recipes (id, name, cover_path, category_id, is_public, created_at, updated_at, deleted_at, owner_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+      [id, name, input.cover_path, input.category_id, input.is_public, now, now, owner_id],
     );
     await insertSteps(id, input.steps, now);
     await insertIngredients(id, input.ingredients, now);
@@ -294,11 +294,11 @@ export const useRecipeStore = defineStore("recipe", (): RecipeStore => {
     ]);
   }
 
-  /** 规格 §10.7：动过任何子表或封面，父行都要 bump。 */
+  /** 规格 §10.7：动过任何子表或封面，父行都要 bump。归属列（owner_id）不在这里动。 */
   function bumpParent(id: string, input: RecipeInput, name: string, now: string): Promise<unknown> {
     return getDb().execute(
-      "UPDATE recipes SET name = ?, cover_path = ?, category_id = ?, updated_at = ? WHERE id = ?",
-      [name, input.cover_path, input.category_id, now, id],
+      "UPDATE recipes SET name = ?, cover_path = ?, category_id = ?, is_public = ?, updated_at = ? WHERE id = ?",
+      [name, input.cover_path, input.category_id, input.is_public, now, id],
     );
   }
 

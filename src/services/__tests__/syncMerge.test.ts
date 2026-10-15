@@ -5,6 +5,7 @@ import {
   applyRemoteChanges,
   compareTimestamp,
   emptyPayload,
+  recipePayloadFor,
   type RecipePayload,
   type SyncPayload,
 } from "@/services/sync";
@@ -22,6 +23,8 @@ function recipe(over: Partial<RecipePayload> & { id: string }): RecipePayload {
     name: "菜",
     cover_path: null,
     category_id: "c1",
+    is_public: 0,
+    owner_nickname: null,
     created_at: T0,
     updated_at: T0,
     deleted_at: null,
@@ -186,6 +189,32 @@ describe("applyRemoteChanges", () => {
     expect(await db.select("SELECT deleted_at FROM labels WHERE id = 'x'")).toEqual([
       { deleted_at: null },
     ]);
+  });
+
+  it("远端菜谱的 is_public 与 owner_nickname 落到本地", async () => {
+    const { db } = await freshTestDb();
+    await db.execute(
+      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('c1','家常','category',?,?,NULL)",
+      [T0, T0],
+    );
+
+    // 新行走 INSERT：远端首次下发就带公开标记与作者昵称
+    await applyRemoteChanges(
+      remote({ recipes: [recipe({ id: "r1", is_public: 1, owner_nickname: "小明" })] }),
+      db,
+    );
+    expect(
+      await db.select("SELECT is_public, owner_nickname FROM recipes WHERE id = 'r1'"),
+    ).toEqual([{ is_public: 1, owner_nickname: "小明" }]);
+
+    // 已有行走 UPDATE：远端把公开取消掉，本地要跟着回落
+    await applyRemoteChanges(
+      remote({ recipes: [recipe({ id: "r1", updated_at: T1 })] }),
+      db,
+    );
+    expect(
+      await db.select("SELECT is_public, owner_nickname FROM recipes WHERE id = 'r1'"),
+    ).toEqual([{ is_public: 0, owner_nickname: null }]);
   });
 
   it("菜谱的子行整组替换：远端步骤里没有的旧步骤本地必须消失", async () => {
@@ -476,5 +505,25 @@ describe("applyRemoteChanges", () => {
     expect(await db.select("SELECT label_id FROM recipe_labels WHERE recipe_id='r1'")).toEqual([
       { label_id: "lab-x" },
     ]);
+  });
+});
+
+describe("recipePayloadFor", () => {
+  it("我推上去的菜谱载荷带 is_public", async () => {
+    const { db } = await freshTestDb();
+    await db.execute(
+      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('c1','家常','category',?,?,NULL)",
+      [T0, T0],
+    );
+    await db.execute(
+      `INSERT INTO recipes (id,name,cover_path,category_id,is_public,owner_nickname,created_at,updated_at,deleted_at,owner_id)
+       VALUES ('r1','红烧肉',NULL,'c1',1,'小明',?,?,NULL,'u1')`,
+      [T0, T0],
+    );
+
+    const payload = await recipePayloadFor("r1", db);
+
+    expect(payload?.is_public).toBe(1);
+    expect(payload?.owner_nickname).toBe("小明");
   });
 });

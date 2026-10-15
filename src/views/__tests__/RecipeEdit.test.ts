@@ -155,6 +155,8 @@ function detail(): RecipeDetail {
       name: "红烧肉",
       cover_path: "c.jpg",
       category_id: "c1",
+      is_public: 0,
+      owner_nickname: null,
       created_at: NOW,
       updated_at: NOW,
       deleted_at: null,
@@ -274,6 +276,7 @@ describe("RecipeEdit", () => {
       name: "红烧肉",
       cover_path: null,
       category_id: "c1",
+      is_public: 0,
       tag_ids: [],
       steps: [],
       ingredients: [],
@@ -444,6 +447,10 @@ describe("RecipeEdit", () => {
     expect(line.get('[data-test="ingredient-row-amount"]').text()).toContain("克");
     // 封面图 + 步骤图两张图都从详情里恢复
     expect(wrapper.findAll('[data-test="image-preview"]')).toHaveLength(2);
+    // 私有菜谱：公开开关默认关
+    expect(
+      (wrapper.get('[data-test="recipe-public"]').element as HTMLInputElement).checked,
+    ).toBe(false);
   });
 
   it("编辑模式：删掉最后一条步骤后保存，回读详情里没有步骤", async () => {
@@ -457,10 +464,26 @@ describe("RecipeEdit", () => {
       name: "红烧肉",
       cover_path: "c.jpg",
       category_id: "c1",
+      is_public: 0,
       tag_ids: ["t1"],
       steps: [],
       ingredients: [{ ingredient_id: "i1", amount: 200, unit_id: "u1" }],
     });
+  });
+
+  it("公开开关默认关，打开保存后 is_public = 1", async () => {
+    const wrapper = await page();
+    await wrapper.get('[data-test="name"]').setValue("红烧肉");
+    await chooseCategory(wrapper, "家常菜");
+
+    const toggle = wrapper.get('[data-test="recipe-public"]');
+    expect((toggle.element as HTMLInputElement).checked).toBe(false);
+
+    await toggle.setValue(true);
+    await save(wrapper);
+
+    expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({ is_public: 1 }));
+    expect(mocks.push).toHaveBeenCalledWith("/recipe/new-1");
   });
 
   it("有未保存改动时点返回 → 弹 ConfirmDialog，取消则不跳转", async () => {

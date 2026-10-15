@@ -56,6 +56,8 @@ function item(
     name,
     cover_path: opts.cover ?? null,
     category_id: `cat-${id}`,
+    is_public: 0,
+    owner_nickname: null,
     created_at: NOW,
     updated_at: NOW,
     deleted_at: null,

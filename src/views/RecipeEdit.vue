@@ -31,13 +31,23 @@ interface Form {
   name: string;
   cover_path: string | null;
   category_id: string;
+  /** 开关是布尔；提交时转成协议里的 0 / 1（spec §3）。 */
+  is_public: boolean;
   tag_ids: string[];
   steps: StepDraft[];
   ingredients: IngredientDraft[];
 }
 
 function emptyForm(): Form {
-  return { name: "", cover_path: null, category_id: "", tag_ids: [], steps: [], ingredients: [] };
+  return {
+    name: "",
+    cover_path: null,
+    category_id: "",
+    is_public: false,
+    tag_ids: [],
+    steps: [],
+    ingredients: [],
+  };
 }
 
 const route = useRoute();
@@ -92,6 +102,7 @@ function fill(detail: RecipeDetail): void {
     name: detail.recipe.name,
     cover_path: detail.recipe.cover_path,
     category_id: detail.category.id,
+    is_public: detail.recipe.is_public === 1,
     tag_ids: detail.tags.map((tag) => tag.id),
     steps: detail.steps.map((step) => ({
       key: nextKey(),
@@ -218,6 +229,7 @@ function buildInput(): BuildResult {
       name,
       cover_path: form.value.cover_path,
       category_id: form.value.category_id,
+      is_public: form.value.is_public ? 1 : 0,
       tag_ids: [...form.value.tag_ids],
       steps: form.value.steps
         .map((step) => ({ text: step.text.trim(), image_path: step.image_path }))
@@ -356,6 +368,18 @@ onBeforeRouteLeave(() => {
           </span>
         </div>
       </section>
+
+      <label
+        class="flex items-center justify-between rounded-xl border border-gray-200 px-3 py-3 text-sm"
+      >
+        <span class="text-text-secondary">公开到社区</span>
+        <input
+          v-model="form.is_public"
+          data-test="recipe-public"
+          type="checkbox"
+          class="h-5 w-5 accent-primary"
+        />
+      </label>
 
       <section>
         <h2 class="mb-2 text-xs font-medium text-text-secondary">食材</h2>

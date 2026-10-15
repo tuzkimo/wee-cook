@@ -69,6 +69,7 @@ function input(name: string, overrides: Partial<RecipeInput> = {}): RecipeInput 
     name,
     cover_path: null,
     category_id: "",
+    is_public: 0,
     tag_ids: [],
     steps: [],
     ingredients: [],

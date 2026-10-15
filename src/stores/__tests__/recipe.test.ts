@@ -39,6 +39,7 @@ function input(overrides: Partial<RecipeInput> & { category_id: string }): Recip
   return {
     name: "番茄炒蛋",
     cover_path: null,
+    is_public: 0,
     tag_ids: [],
     steps: [],
     ingredients: [],
@@ -57,6 +58,14 @@ async function deletedAtOf(table: string, id: string): Promise<string | null> {
     [id],
   );
   return rows[0].deleted_at;
+}
+
+async function isPublicOf(id: string): Promise<number> {
+  const rows = await db.select<{ is_public: number }[]>(
+    "SELECT is_public FROM recipes WHERE id = ?",
+    [id],
+  );
+  return rows[0].is_public;
 }
 
 describe("recipeStore", () => {
@@ -96,6 +105,25 @@ describe("recipeStore", () => {
     expect(detail.ingredients[1].ingredient_name).toBe("鸡蛋");
     expect(detail.ingredients[1].unit_name).toBeNull();
     expect(detail.ingredients[1].amount).toBeNull();
+  });
+
+  it("新建菜谱默认 is_public = 0", async () => {
+    const categoryId = await newCategory();
+    const store = useRecipeStore();
+
+    const id = await store.create(input({ category_id: categoryId }));
+
+    expect(await isPublicOf(id)).toBe(0);
+  });
+
+  it("编辑时能改成公开（is_public 随输入写入父行）", async () => {
+    const categoryId = await newCategory();
+    const store = useRecipeStore();
+    const id = await store.create(input({ category_id: categoryId }));
+
+    await store.update(id, input({ category_id: categoryId, is_public: 1 }));
+
+    expect(await isPublicOf(id)).toBe(1);
   });
 
   it("create 把标签写进 recipe_labels", async () => {

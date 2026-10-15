@@ -53,6 +53,8 @@ interface SyncRequest {
 interface SyncResponse {
   server_seq: number;
   remote_changes: SyncPayload;
+  /** 我当前有效的收藏（只读下发，整表替换用）。对账接线见 Task 4。 */
+  favorite_recipe_ids: string[];
 }
 
 export function emptyPayload(): SyncPayload {
@@ -301,17 +303,41 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
 
     const updatedAt = toIsoTimestamp(r.updated_at);
     const deletedAt = normDeleted(r.deleted_at);
+    // 旧版本服务端的载荷可能没有这两列：缺失时按「私有、无昵称」兜底。
+    const isPublic = r.is_public ?? 0;
+    const ownerNickname = r.owner_nickname ?? null;
     if (isNew) {
       await db.execute(
-        `INSERT INTO recipes (id,name,cover_path,category_id,created_at,updated_at,deleted_at,owner_id)
-         VALUES (?,?,?,?,?,?,?,?)`,
-        [r.id, r.name, r.cover_path, r.category_id, toIsoTimestamp(r.created_at), updatedAt, deletedAt, r.owner_id ?? null],
+        `INSERT INTO recipes (id,name,cover_path,category_id,is_public,owner_nickname,created_at,updated_at,deleted_at,owner_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        [
+          r.id,
+          r.name,
+          r.cover_path,
+          r.category_id,
+          isPublic,
+          ownerNickname,
+          toIsoTimestamp(r.created_at),
+          updatedAt,
+          deletedAt,
+          r.owner_id ?? null,
+        ],
       );
     } else {
       await db.execute(
-        `UPDATE recipes SET name=?, cover_path=?, category_id=?, updated_at=?, deleted_at=?, owner_id=?
+        `UPDATE recipes SET name=?, cover_path=?, category_id=?, is_public=?, owner_nickname=?, updated_at=?, deleted_at=?, owner_id=?
          WHERE id=?`,
-        [r.name, r.cover_path, r.category_id, updatedAt, deletedAt, r.owner_id ?? null, r.id],
+        [
+          r.name,
+          r.cover_path,
+          r.category_id,
+          isPublic,
+          ownerNickname,
+          updatedAt,
+          deletedAt,
+          r.owner_id ?? null,
+          r.id,
+        ],
       );
     }
 
@@ -688,6 +714,8 @@ async function buildRecipePayload(db: Db, row: Recipe): Promise<RecipePayload> {
     name: row.name,
     cover_path: row.cover_path,
     category_id: row.category_id,
+    is_public: row.is_public,
+    owner_nickname: row.owner_nickname,
     created_at: toIsoTimestamp(row.created_at),
     updated_at: toIsoTimestamp(row.updated_at),
     deleted_at: normDeleted(row.deleted_at),

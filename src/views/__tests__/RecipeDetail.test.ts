@@ -92,6 +92,8 @@ function detail(): RecipeDetailData {
       name: "红烧肉",
       cover_path: "c.jpg",
       category_id: "c1",
+      is_public: 0,
+      owner_nickname: null,
       created_at: NOW,
       updated_at: NOW,
       deleted_at: null,

@@ -25,6 +25,8 @@ function row(
     name,
     cover_path: null,
     category_id: `cat-${category}`,
+    is_public: 0,
+    owner_nickname: null,
     created_at: NOW,
     updated_at: NOW,
     deleted_at: null,

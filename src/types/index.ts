@@ -5,6 +5,10 @@ export interface Recipe {
   name: string;
   cover_path: string | null;
   category_id: string;
+  /** 0 = 私有（默认），1 = 公开给同一服务器的登录用户（spec §3）。 */
+  is_public: number;
+  /** 作者昵称的本地副本，供离线显示（spec §11.12）；本机自建 / 未认领时为 NULL。 */
+  owner_nickname: string | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -97,6 +101,7 @@ export interface RecipeInput {
   name: string;
   cover_path: string | null;
   category_id: string;
+  is_public: number;
   tag_ids: string[];
   steps: { text: string; image_path: string | null }[];
   ingredients: { ingredient_id: string; amount: number | null; unit_id: string | null }[];
