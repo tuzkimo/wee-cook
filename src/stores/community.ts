@@ -20,9 +20,14 @@ const useCommunityStoreBase = defineStore("community", () => {
   /** 只看我关注的（详情页外的社区段落 / 关注筛选共用）。 */
   const followedOnly = ref(false);
 
+  // 请求序号：切筛选 / 重拉会递增，迟到的旧响应据此丢弃，不写回旧口径的 items / hasMore / loading。
+  let loadEpoch = 0;
+
   /** 拉一页。`reset` 为 true 时从第一页重来，否则接着已有条数往后翻。 */
   async function load(reset = false): Promise<void> {
-    if (loading.value) return;
+    // 翻页防重（`reset` 必须真的发出去：它同时换了筛选口径，丢掉就没人会再纠正列表）
+    if (loading.value && !reset) return;
+    const epoch = ++loadEpoch;
     loading.value = true;
     error.value = null;
     try {
@@ -31,13 +36,16 @@ const useCommunityStoreBase = defineStore("community", () => {
         offset: reset ? 0 : items.value.length,
         followedOnly: followedOnly.value,
       });
+      if (epoch !== loadEpoch) return;
       items.value = reset ? page.items : [...items.value, ...page.items];
       hasMore.value = page.has_more;
     } catch (e) {
+      if (epoch !== loadEpoch) return;
       // 社区接口挂掉不影响「我的」段落，这里只记下错误让社区段落显示重试
       error.value = e instanceof Error ? e.message : String(e);
     } finally {
-      loading.value = false;
+      // 只有最新一轮负责复位，否则先返回的旧请求会把在途的新请求标成「不在加载」
+      if (epoch === loadEpoch) loading.value = false;
     }
   }
 

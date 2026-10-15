@@ -23,9 +23,10 @@ vi.mock("@/services/sync", async (importOriginal) => {
 });
 
 import { apiFetch } from "@/services/api";
+import type { ApiResult } from "@/services/api";
 import { enqueueSync } from "@/services/sync";
 import { useCommunityStore } from "@/stores/community";
-import type { CommunityRecipe } from "@/services/community";
+import type { CommunityPage, CommunityRecipe } from "@/services/community";
 import type { SyncPayload } from "@/services/sync";
 
 const apiFetchMock = vi.mocked(apiFetch);
@@ -37,6 +38,15 @@ let db: Db;
 
 function ok<T>(data: T): { ok: true; status: number; data: T } {
   return { ok: true, status: 200, data };
+}
+
+/** 手动控制 resolve 时机的 promise（模拟「响应还在路上」）。 */
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
 }
 
 function recipe(id: string, favorited = false): CommunityRecipe {
@@ -192,5 +202,54 @@ describe("社区 store", () => {
     expect(store.items[0].favorited).toBe(false);
     expect(await favoriteIds()).toEqual([]);
     expect(enqueueSyncMock).toHaveBeenCalledWith({});
+  });
+
+  it("load 在途时切筛选：load(true) 不被丢弃，迟到的旧响应写不进列表", async () => {
+    const stale = deferred<ApiResult<CommunityPage>>();
+    const fresh = deferred<ApiResult<CommunityPage>>();
+    apiFetchMock.mockReturnValueOnce(stale.promise).mockReturnValueOnce(fresh.promise);
+
+    const store = useCommunityStore();
+    const first = store.load(); // followedOnly = false，挂在半路
+    store.followedOnly = true;
+    const second = store.load(true); // 切「关注」重拉：不能被在途的旧请求挤掉
+
+    // reset 的请求真的发出去了，且带的是新筛选与第一页
+    expect(apiFetchMock).toHaveBeenCalledTimes(2);
+    const secondUrl = new URL(apiFetchMock.mock.calls[1][0], "http://x");
+    expect(secondUrl.searchParams.get("followed_only")).toBe("1");
+    expect(secondUrl.searchParams.get("offset")).toBe("0");
+
+    stale.resolve(ok({ items: [recipe("old")], has_more: false })); // 旧响应先到
+    await first;
+    fresh.resolve(ok({ items: [recipe("new")], has_more: true })); // 新响应后到
+    await second;
+
+    expect(store.items.map((item) => item.id)).toEqual(["new"]);
+    expect(store.hasMore).toBe(true);
+    expect(store.loading).toBe(false);
+  });
+
+  it("load 在途时切筛选：新响应先到，迟到的旧响应不覆盖它", async () => {
+    const stale = deferred<ApiResult<CommunityPage>>();
+    const fresh = deferred<ApiResult<CommunityPage>>();
+    apiFetchMock.mockReturnValueOnce(stale.promise).mockReturnValueOnce(fresh.promise);
+
+    const store = useCommunityStore();
+    const first = store.load();
+    store.followedOnly = true;
+    const second = store.load(true);
+
+    fresh.resolve(ok({ items: [recipe("new")], has_more: true })); // 新响应先到
+    await second;
+    expect(store.items.map((item) => item.id)).toEqual(["new"]);
+    expect(store.loading).toBe(false);
+
+    stale.resolve(ok({ items: [recipe("old")], has_more: false })); // 旧响应后到
+    await first;
+
+    expect(store.items.map((item) => item.id)).toEqual(["new"]);
+    expect(store.hasMore).toBe(true);
+    expect(store.loading).toBe(false);
   });
 });
