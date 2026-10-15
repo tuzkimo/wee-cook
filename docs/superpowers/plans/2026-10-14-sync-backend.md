@@ -1,5 +1,7 @@
 # 同步与团队 · 后端实施计划
 
+> ⚠️ **部分作废**：Task 3（团队）与 Task 8 里的团队鉴权已被 `2026-10-15-community-design.md` 取代并从代码里删除；其余任务继续有效。本文件保留为执行记录。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在 `backend/` 里从零建起 WeeCook 的可选自托管 Go 服务：账号、团队、增量同步、图片通道，全部有测试覆盖。

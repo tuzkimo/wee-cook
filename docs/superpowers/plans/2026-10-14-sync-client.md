@@ -1,5 +1,7 @@
 # 同步与团队 · 客户端实施计划
 
+> ⚠️ **部分作废**：Task 4（团队）与 Task 5 里的「菜谱本切换」已被 `2026-10-15-community-design.md` 取代并从代码里删除；其余任务继续有效。本文件保留为执行记录。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让 WeeCook 在不登录时行为完全不变，登录后私人菜谱跨设备同步（含封面/步骤图），并能创建/加入家庭共用菜谱，且只有创建者能改删。
