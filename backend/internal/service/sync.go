@@ -310,7 +310,13 @@ func (s *SyncService) pull(ctx context.Context, q dbQuerier, userID string, sinc
 			return nil, fmt.Errorf("getRemoteChanges (generation rollback): %w", err)
 		}
 	}
-	return &model.SyncResponse{ServerSeq: cursor, RemoteChanges: remote}, nil
+	// 收藏集合只在这之后取一次：正常增量与回退重读两条路径都带得上同一份收藏集合。
+	// 它与增量走同一个只读快照。
+	favoriteIDs, err := s.favoriteRecipeIDs(ctx, q, userID)
+	if err != nil {
+		return nil, fmt.Errorf("read favorite recipe ids: %w", err)
+	}
+	return &model.SyncResponse{ServerSeq: cursor, RemoteChanges: remote, FavoriteRecipeIDs: favoriteIDs}, nil
 }
 
 func maxServerSeq(ctx context.Context, q dbQuerier) (int64, error) {
@@ -319,6 +325,19 @@ func maxServerSeq(ctx context.Context, q dbQuerier) (int64, error) {
 		return 0, err
 	}
 	return cursor, nil
+}
+
+// favoriteRecipeIDs 是「我当前有效的收藏」：JOIN recipes 筛掉作者已取消公开或已软删的（spec §7.3）。
+// 返回空切片而不是 nil：客户端拿它整表替换本地收藏，JSON 里的 [] 与 null 含义不同（是「一条都不剩了」）。
+func (s *SyncService) favoriteRecipeIDs(ctx context.Context, q dbQuerier, userID string) ([]string, error) {
+	return queryList(ctx, q,
+		`SELECT f.recipe_id FROM favorites f JOIN recipes r ON r.id = f.recipe_id
+		 WHERE f.user_id = $1 AND r.is_public = 1 AND r.deleted_at IS NULL`,
+		[]any{userID}, func(rows pgx.Rows) (string, error) {
+			var id string
+			err := rows.Scan(&id)
+			return id, err
+		})
 }
 
 // applyLocalChanges 在一个写事务里落地客户端改动（spec §7.2）。
@@ -421,19 +440,23 @@ func (s *SyncService) getRemoteChanges(ctx context.Context, q dbQuerier, userID 
 	return payload, nil
 }
 
-// recipesVisibleScope 是菜谱增量的可见范围，写进 SQL 而不是发完再筛：只有作者本人看得到自己的菜谱。$2 = 我。
-const recipesVisibleScope = `owner_id = $2`
+// recipesVisibleScope 是菜谱增量的可见范围，写进 SQL 而不是发完再筛：我的 ∪ 我收藏的（spec §7.3）。$2 = 我。
+// 收藏分支必须同筛 is_public 与 deleted_at：收藏行在作者取消公开后仍保留，不筛就会继续下发私有正文（隐私泄漏）。
+// 外层 `r.id` 必须带前缀：queryRecipes 的 LEFT JOIN users 也有一列 id，裸写 id 会 42702（owner_id 两表都无，可裸写）。
+const recipesVisibleScope = "(owner_id = $2) OR r.id IN (SELECT f.recipe_id FROM favorites f JOIN recipes r2 ON r2.id = f.recipe_id WHERE f.user_id = $2 AND r2.is_public = 1 AND r2.deleted_at IS NULL)"
 
 func queryRecipes(ctx context.Context, q dbQuerier, userID string, sinceSeq int64) ([]model.Recipe, error) {
 	// 菜谱行必须先读完并关掉再查子表：读阶段整个跑在同一个只读事务里，共享一条连接。
+	// LEFT JOIN users 只为取作者昵称，不改变行数（users.id 是主键）。
 	recipes, err := queryList(ctx, q,
-		`SELECT id, owner_id, is_public, name, cover_path, category_id, created_at, updated_at, deleted_at
-		 FROM recipes WHERE server_seq > $1 AND (`+recipesVisibleScope+`)`,
+		`SELECT r.id, r.owner_id, r.is_public, r.name, r.cover_path, r.category_id, r.created_at, r.updated_at, r.deleted_at, u.nickname
+		 FROM recipes r LEFT JOIN users u ON u.id = r.owner_id
+		 WHERE r.server_seq > $1 AND (`+recipesVisibleScope+`)`,
 		[]any{sinceSeq, userID},
 		func(rows pgx.Rows) (model.Recipe, error) {
 			var r model.Recipe
 			err := rows.Scan(&r.ID, &r.OwnerID, &r.IsPublic, &r.Name, &r.CoverPath, &r.CategoryID,
-				&r.CreatedAt, &r.UpdatedAt, &r.DeletedAt)
+				&r.CreatedAt, &r.UpdatedAt, &r.DeletedAt, &r.OwnerNickname)
 			// 子集合给空切片：JSON 里的空数组才表达得出「清空」（model.Recipe 的契约）。
 			r.Steps, r.Ingredients, r.LabelIDs = []model.RecipeStep{}, []model.RecipeIngredient{}, []string{}
 			return r, err

@@ -194,8 +194,9 @@ func execCount(q *pullQuerier, sub string) int {
 	return n
 }
 
-// 可见范围必须写进 SQL：只有作者本人看得到自己的菜谱（本 Task 退回到「只有我自己」）。
-// 少了 owner_id 这一半，别人的菜谱会被我一并拉走；$2 必须绑当前用户，不能写死。
+// 可见范围必须写进 SQL：我的 ∪ 我收藏的公开菜谱（spec §7.3）。
+// 少了 owner_id 这一半，别人的菜谱会被我一并拉走；少了收藏分支，收藏的公开菜拉不下来；
+// $2 必须绑当前用户，不能写死。
 func TestRemoteRecipesFilteredToMyVisibleScope(t *testing.T) {
 	ctx := context.Background()
 
@@ -208,8 +209,8 @@ func TestRemoteRecipesFilteredToMyVisibleScope(t *testing.T) {
 			}
 
 			rq := queryLike(t, q, "FROM recipes")
-			if !strings.Contains(rq.sql, "owner_id = $2") {
-				t.Errorf("菜谱增量查询必须带可见范围 %q，got %s", "owner_id = $2", rq.sql)
+			if !strings.Contains(rq.sql, recipesVisibleScope) {
+				t.Errorf("菜谱增量查询必须带可见范围 %q，got %s", recipesVisibleScope, rq.sql)
 			}
 			if strings.Contains(rq.sql, "team_id") {
 				t.Errorf("团队已删除，可见范围不该再出现 team_id：%s", rq.sql)
@@ -263,7 +264,7 @@ func TestBackfillAddsReferencedDictRows(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	q := &pullQuerier{rows: map[string][][]any{
-		"FROM recipes WHERE server_seq":       {{"r-1", "me", int16(0), "红烧肉", nil, "cat-1", now, now, nil}},
+		"FROM recipes r":                      {{"r-1", "me", int16(0), "红烧肉", nil, "cat-1", now, now, nil, "测试"}},
 		"FROM recipe_steps":                   {{"r-1", "s-1", 1, "切肉", nil}},
 		"FROM recipe_ingredients":             {{"r-1", "ri-1", "ing-1", 200.0, "unit-1", 1}},
 		"FROM recipe_labels":                  {{"r-1", "lab-1"}},
@@ -284,6 +285,9 @@ func TestBackfillAddsReferencedDictRows(t *testing.T) {
 	r := payload.Recipes[0]
 	if len(r.Steps) != 1 || len(r.Ingredients) != 1 || len(r.LabelIDs) != 1 {
 		t.Fatalf("子行要按 recipe_id 组装进父菜谱，got %+v", r)
+	}
+	if r.OwnerNickname != "测试" {
+		t.Errorf("作者昵称要随 JOIN users 下发（客户端离线显示靠它），got %q", r.OwnerNickname)
 	}
 
 	// 四条引用逐个补齐；已随增量下发的 lab-1 不该被重复补拉。
@@ -333,9 +337,9 @@ func TestFilesListedOnlyForReturnedRecipes(t *testing.T) {
 
 	q := &pullQuerier{
 		rows: map[string][][]any{
-			"FROM recipes WHERE server_seq": {
-				{"r-1", "me", int16(0), "红烧肉", "a.jpg", "cat-1", now, now, nil},
-				{"r-2", "me", int16(0), "糖醋排骨", "a.jpg", "cat-1", now, now, nil}, // 与 r-1 同一张封面：去重
+			"FROM recipes r": {
+				{"r-1", "me", int16(0), "红烧肉", "a.jpg", "cat-1", now, now, nil, "测试"},
+				{"r-2", "me", int16(0), "糖醋排骨", "a.jpg", "cat-1", now, now, nil, "测试"}, // 与 r-1 同一张封面：去重
 			},
 			"FROM recipe_steps": {
 				{"r-1", "s-1", 1, "切肉", "b.jpg"},
@@ -390,8 +394,8 @@ func TestCursorIsSnapshotMax(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	q := &pullQuerier{rows: map[string][][]any{
-		"FROM recipes WHERE server_seq": {{"r-1", "me", int16(0), "红烧肉", nil, "cat-1", now, now, nil}},
-		"MAX(s)":                        {{int64(431)}},
+		"FROM recipes r": {{"r-1", "me", int16(0), "红烧肉", nil, "cat-1", now, now, nil, "测试"}},
+		"MAX(s)":         {{int64(431)}},
 	}}
 
 	resp, err := NewSyncService(nil).pull(ctx, q, "me", 100)
@@ -414,7 +418,7 @@ func TestCursorIsSnapshotMax(t *testing.T) {
 	if strings.Contains(cq.sql, "LIMIT") || strings.Contains(cq.sql, "ORDER BY") {
 		t.Errorf("游标是聚合值，不该退化成「按 seq 排序取一条」：%s", cq.sql)
 	}
-	if ci, ri := queryIndex(q, "MAX(s)"), queryIndex(q, "FROM recipes WHERE server_seq"); ci < ri {
+	if ci, ri := queryIndex(q, "MAX(s)"), queryIndex(q, "FROM recipes r"); ci < ri {
 		t.Errorf("必须先读增量再取游标（游标查询在第 %d 条、菜谱增量在第 %d 条）", ci, ri)
 	}
 }

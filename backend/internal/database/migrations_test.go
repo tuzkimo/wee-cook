@@ -71,6 +71,7 @@ func TestMigrationsCreateAllTables(t *testing.T) {
 	for _, table := range []string{
 		"users", "recipes", "recipe_steps",
 		"recipe_ingredients", "recipe_labels", "ingredients", "units", "labels", "files",
+		"favorites", "follows",
 	} {
 		var exists bool
 		if err := pool.QueryRow(context.Background(),
@@ -111,6 +112,20 @@ func TestMigrationsCreateAllTables(t *testing.T) {
 		}
 		if exists {
 			t.Errorf("%s 不应有 deleted_at 列", table)
+		}
+	}
+
+	// favorites / follows 是「一方的订阅关系」，按规格不带 id / updated_at / deleted_at（AGENTS.md 的确认例外）
+	for _, table := range []string{"favorites", "follows"} {
+		for _, column := range []string{"id", "updated_at", "deleted_at"} {
+			var exists bool
+			if err := pool.QueryRow(context.Background(),
+				"SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name=$1 AND column_name=$2)", table, column).Scan(&exists); err != nil {
+				t.Fatal(err)
+			}
+			if exists {
+				t.Errorf("%s 不应有 %s 列", table, column)
+			}
 		}
 	}
 }

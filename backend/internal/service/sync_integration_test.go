@@ -370,6 +370,139 @@ func TestPrivateRecipesInvisibleToOthers(t *testing.T) {
 	}
 }
 
+// addFavorite 直接往库里插一条收藏：Task 2 只做表与同步载荷，写收藏的 REST 接口本 Task 还没有。
+func addFavorite(t *testing.T, pool *pgxpool.Pool, userID, recipeID string) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO favorites (user_id, recipe_id) VALUES ($1, $2)`, userID, recipeID); err != nil {
+		t.Fatalf("插入收藏失败: %v", err)
+	}
+}
+
+// 我收藏的公开菜谱要进我的可见范围（spec §7.3）：收藏之前看不到，收藏之后增量里带完整正文与子行。
+func TestFavoritedPublicRecipeIsPulled(t *testing.T) {
+	pool := filesTestDB(t)
+	svc := NewSyncService(pool)
+
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+	now := time.Now().UTC()
+	recipeID := "r-" + uuid.NewString()
+
+	recipe := syncRecipe(recipeID, "A的公开菜", now.Add(-time.Hour), 1)
+	recipe.Steps = []model.RecipeStep{{ID: "st-fav", SortOrder: 0, Text: "A的步骤"}}
+	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{recipe}})
+
+	// 收藏之前：公开菜谱对 B 不可见（只有作者本人）
+	if got := findRecipe(mustPull(t, svc, b, 0).RemoteChanges.Recipes, recipeID); got != nil {
+		t.Fatalf("收藏之前 B 不该看到公开菜谱，实际: %+v", got)
+	}
+
+	// A 收藏自己的、B 收藏 A 的：两人的可见范围都要含这条
+	addFavorite(t, pool, a, recipeID)
+	addFavorite(t, pool, b, recipeID)
+
+	got := findRecipe(mustPull(t, svc, b, 0).RemoteChanges.Recipes, recipeID)
+	if got == nil {
+		t.Fatalf("B 收藏后，增量里应拉到 %s", recipeID)
+	}
+	if got.OwnerID != a {
+		t.Errorf("拉回来的 owner_id = %s, want A(%s)", got.OwnerID, a)
+	}
+	if len(got.Steps) != 1 || got.Steps[0].ID != "st-fav" {
+		t.Errorf("收藏拉回来的菜谱要带完整正文，got %+v", got.Steps)
+	}
+}
+
+// 隐私回归网（spec §7.3）：作者取消公开后，收藏行还在，但正文与子行都不能再下发给收藏者。
+// 断言必须落到 RemoteChanges.Recipes 找不到该 id，不能只看 FavoriteRecipeIDs。
+func TestUnpublishedRecipeBodyIsNotPulled(t *testing.T) {
+	pool := filesTestDB(t)
+	svc := NewSyncService(pool)
+
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+	now := time.Now().UTC()
+	recipeID := "r-" + uuid.NewString()
+	const stepID = "st-unpub"
+
+	published := syncRecipe(recipeID, "A的公开菜", now.Add(-time.Hour), 1)
+	published.Steps = []model.RecipeStep{{ID: stepID, SortOrder: 0, Text: "A的步骤"}}
+	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{published}})
+	addFavorite(t, pool, b, recipeID)
+
+	// 取消公开前：收藏者看得到正文与子行
+	before := mustPull(t, svc, b, 0)
+	if findRecipe(before.RemoteChanges.Recipes, recipeID) == nil {
+		t.Fatalf("取消公开前，收藏者应能看到 %s", recipeID)
+	}
+
+	// A 取消公开。子行原样带着，方便断言「子行没下发」而不是「子行被清空了」。
+	unpublished := syncRecipe(recipeID, "A的公开菜", now, 0)
+	unpublished.Steps = []model.RecipeStep{{ID: stepID, SortOrder: 0, Text: "A的步骤"}}
+	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{unpublished}})
+
+	after := mustPull(t, svc, b, before.ServerSeq)
+	if got := findRecipe(after.RemoteChanges.Recipes, recipeID); got != nil {
+		t.Errorf("取消公开后，收藏者的增量里不该再有这条菜谱：%+v", got)
+	}
+	for _, r := range after.RemoteChanges.Recipes {
+		for _, st := range r.Steps {
+			if st.ID == stepID {
+				t.Errorf("取消公开后不该下发它的子行 %s（隐私泄漏）", stepID)
+			}
+		}
+	}
+}
+
+// `favorite_recipe_ids` 是客户端「整表替换本地收藏」的唯一依据，所以它必须与正文可见范围同口径：
+// 作者取消公开就不再算有效收藏，重新公开又回来。
+func TestFavoriteRecipeIDsExcludeUnpublished(t *testing.T) {
+	pool := filesTestDB(t)
+	svc := NewSyncService(pool)
+
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+	c := seedUser(t, pool)
+	now := time.Now().UTC()
+	recipeID := "r-" + uuid.NewString()
+
+	published := syncRecipe(recipeID, "A的公开菜", now.Add(-time.Hour), 1)
+	published.Steps = []model.RecipeStep{{ID: "st-" + uuid.NewString(), SortOrder: 0, Text: "A的步骤"}}
+	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{published}})
+	addFavorite(t, pool, b, recipeID)
+
+	// 没有收藏的人拿到空切片而不是 nil
+	if got := mustPull(t, svc, c, 0).FavoriteRecipeIDs; got == nil {
+		t.Error("没有收藏时 FavoriteRecipeIDs 应是空切片而不是 nil")
+	}
+
+	first := mustPull(t, svc, b, 0)
+	if !slices.Contains(first.FavoriteRecipeIDs, recipeID) {
+		t.Fatalf("公开时收藏集合应含 %s，got %v", recipeID, first.FavoriteRecipeIDs)
+	}
+
+	// 作者取消公开：收藏行还在，但这条不再算「有效收藏」
+	unpublished := syncRecipe(recipeID, "A的公开菜", now, 0)
+	unpublished.Steps = published.Steps
+	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{unpublished}})
+
+	second := mustPull(t, svc, b, first.ServerSeq)
+	if slices.Contains(second.FavoriteRecipeIDs, recipeID) {
+		t.Errorf("取消公开后收藏集合不该含 %s，got %v", recipeID, second.FavoriteRecipeIDs)
+	}
+
+	// 重新公开：收藏关系没被删，它自动回到收藏集合，正文也自动回到客户端
+	republished := syncRecipe(recipeID, "A的公开菜", now.Add(time.Minute), 1)
+	republished.Steps = published.Steps
+	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{republished}})
+
+	third := mustPull(t, svc, b, second.ServerSeq)
+	if !slices.Contains(third.FavoriteRecipeIDs, recipeID) {
+		t.Errorf("重新公开后收藏集合应又含 %s，got %v", recipeID, third.FavoriteRecipeIDs)
+	}
+}
+
 // --- 控制者额外要求：读事务隔离级别 ---
 
 // sqlRecorder 是 pgx 的 QueryTracer，记录连接池实际发给 Postgres 的每一条 SQL 文本。

@@ -1,5 +1,7 @@
 -- 回滚 001_init：按依赖倒序删表。
 -- 不删 uuid-ossp 扩展：它可能被同一库里的其它 schema 共用，删它超出本次迁移的范围。
+DROP TABLE IF EXISTS favorites;
+DROP TABLE IF EXISTS follows;
 DROP TABLE IF EXISTS files;
 DROP TABLE IF EXISTS labels;
 DROP TABLE IF EXISTS units;

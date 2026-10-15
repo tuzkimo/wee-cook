@@ -81,6 +81,21 @@ CREATE TABLE labels (
     server_seq BIGINT NOT NULL DEFAULT nextval('global_server_seq')
 );
 
+-- 收藏与关注：只由本人改写的订阅关系，不是业务实体，所以不带 id / updated_at / deleted_at
+-- （AGENTS.md 已记录的确认例外）。取消订阅就是删行，全量下发 + 整表替换，软删与 LWW 都用不上。
+CREATE TABLE favorites (
+    user_id    UUID NOT NULL REFERENCES users(id),
+    recipe_id  TEXT NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, recipe_id)
+);
+CREATE TABLE follows (
+    follower_id UUID NOT NULL REFERENCES users(id),
+    followee_id UUID NOT NULL REFERENCES users(id),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (follower_id, followee_id)
+);
+
 -- files 不参与鉴权：读权限看「有没有一条我可见的菜谱引用了它」（§8.1）
 CREATE TABLE files (
     name TEXT PRIMARY KEY,                     -- "<uuid>.jpg"，客户端生成，全局唯一
@@ -92,6 +107,8 @@ CREATE TABLE files (
 CREATE INDEX idx_recipes_owner ON recipes(owner_id);
 CREATE INDEX idx_recipes_server_seq ON recipes(server_seq);
 CREATE INDEX idx_recipes_cover_path ON recipes(cover_path);
+-- favorites 按 user_id 的查询已被主键覆盖；反过来按菜谱反查（图片读权限、取消公开的排查）需要这条
+CREATE INDEX idx_favorites_recipe ON favorites(recipe_id);
 CREATE INDEX idx_recipe_steps_recipe ON recipe_steps(recipe_id);
 CREATE INDEX idx_recipe_steps_image_path ON recipe_steps(image_path);
 CREATE INDEX idx_recipe_ingredients_recipe ON recipe_ingredients(recipe_id);

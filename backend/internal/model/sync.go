@@ -16,9 +16,11 @@ type SyncPayload struct {
 }
 
 // SyncResponse 是一次同步的响应：新游标（客户端下次带回）与本次增量。
+// FavoriteRecipeIDs 是「我当前有效的收藏」（作者仍公开、未删除的），客户端拿它整表替换本地收藏。
 type SyncResponse struct {
-	ServerSeq     int64       `json:"server_seq"`
-	RemoteChanges SyncPayload `json:"remote_changes"`
+	ServerSeq         int64       `json:"server_seq"`
+	RemoteChanges     SyncPayload `json:"remote_changes"`
+	FavoriteRecipeIDs []string    `json:"favorite_recipe_ids"`
 }
 
 // FileRef 是图片引用：字节走 /files 独立通道，同步体里只带文件名与大小。
