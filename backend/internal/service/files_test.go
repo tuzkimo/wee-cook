@@ -94,6 +94,17 @@ func seedRecipe(t *testing.T, pool *pgxpool.Pool, ownerID string, coverPath *str
 	return id
 }
 
+// seedPublicRecipe 在 seedRecipe 之上把 is_public 置 1。不改 seedRecipe 签名：它有十几个调用点，
+// 大部分在清单外的文件里，加参数会牵动它们。
+func seedPublicRecipe(t *testing.T, pool *pgxpool.Pool, ownerID string, coverPath *string, deleted bool) string {
+	t.Helper()
+	id := seedRecipe(t, pool, ownerID, coverPath, deleted)
+	if _, err := pool.Exec(context.Background(), `UPDATE recipes SET is_public = 1 WHERE id = $1`, id); err != nil {
+		t.Fatalf("置为公开失败: %v", err)
+	}
+	return id
+}
+
 func seedStepImage(t *testing.T, pool *pgxpool.Pool, recipeID, imagePath string) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(),
@@ -160,6 +171,41 @@ func TestCanReadSoftDeletedRecipeFile(t *testing.T) {
 	seedRecipe(t, pool, a, &file, true)
 
 	assertCanRead(t, svc, a, file, true)
+}
+
+// 公开菜谱是共享给「同一个服务器上的所有登录用户」的，图片必须跟着菜谱走（spec §5 / §8）。
+func TestCanReadPublicRecipeImageByStranger(t *testing.T) {
+	svc, pool := newFileService(t)
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+	file := newFileName()
+	seedPublicRecipe(t, pool, a, &file, false)
+
+	assertCanRead(t, svc, a, file, true)
+	assertCanRead(t, svc, b, file, true)
+}
+
+func TestCanReadPrivateRecipeImageByStrangerIsFalse(t *testing.T) {
+	svc, pool := newFileService(t)
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+	file := newFileName()
+	// 走步骤图引用，把公开条件也钉在 recipe_steps 那条分支上
+	seedStepImage(t, pool, seedRecipe(t, pool, a, nil, false), file)
+
+	assertCanRead(t, svc, b, file, false)
+}
+
+// deleted_at 只筛公开那条分支：公开菜谱删了，陌生人读不到；作者仍读得到。
+func TestCanReadDeletedPublicRecipeImageByStrangerIsFalse(t *testing.T) {
+	svc, pool := newFileService(t)
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+	file := newFileName()
+	seedPublicRecipe(t, pool, a, &file, true)
+
+	assertCanRead(t, svc, a, file, true)
+	assertCanRead(t, svc, b, file, false)
 }
 
 func TestCanReadUnknownFileIsFalse(t *testing.T) {

@@ -46,8 +46,9 @@ func (s *FileService) MaxBytes() int64 { return s.maxBytes }
 func (s *FileService) path(name string) string { return filepath.Join(s.filesDir, name) }
 
 // CanRead 的可见性来自「引用它的菜谱」反查（spec §8.1 的 SQL 原文）：files 表不参与鉴权，
-// 只看有没有一条「我的」菜谱引用了它。不筛 deleted_at：
-// 菜谱删了图也不至于取不回。名称形状不对直接 false——没有任何菜谱能引用这种名字，
+// 只看有没有一条「我的」菜谱引用了它，或那条菜谱是公开且未删除的（公开 = 共享给同服务器
+// 所有登录用户，spec §5）。deleted_at 只筛公开那条分支：自己的菜谱删了图也不至于取不回。
+// 名称形状不对直接 false——没有任何菜谱能引用这种名字，
 // 回 false 让 handler 统一走 404，也不暴露路径规则。
 func (s *FileService) CanRead(ctx context.Context, userID, name string) (bool, error) {
 	if !validFileName(name) {
@@ -59,7 +60,8 @@ func (s *FileService) CanRead(ctx context.Context, userID, name string) (bool, e
 			SELECT 1 FROM recipes r
 			WHERE (r.cover_path = $1
 			       OR EXISTS (SELECT 1 FROM recipe_steps s WHERE s.recipe_id = r.id AND s.image_path = $1))
-			  AND r.owner_id = $2)
+			  AND (  r.owner_id = $2
+			      OR (r.is_public = 1 AND r.deleted_at IS NULL)))
 	`, name, userID).Scan(&ok)
 	if err != nil {
 		return false, fmt.Errorf("check file readability: %w", err)
