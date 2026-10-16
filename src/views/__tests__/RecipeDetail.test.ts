@@ -552,6 +552,8 @@ describe("RecipeDetail", () => {
     expect(mocks.profile).toHaveBeenCalledWith("u2");
     expect(wrapper.get('[data-test="recipe-author-count"]').text()).toContain("12");
     expect(wrapper.get('[data-test="recipe-author-follow"]').attributes("aria-label")).toBe("关注");
+    // 图标是这次改动的可见内容：没它按钮就只是个空圈
+    expect(wrapper.get('[data-test="recipe-author-follow"]').find("svg").exists()).toBe(true);
   });
 
   it("已关注的作者显示「取消关注」", async () => {
@@ -564,6 +566,7 @@ describe("RecipeDetail", () => {
 
     expect(wrapper.get('[data-test="recipe-author-count"]').text()).toContain("3");
     expect(wrapper.get('[data-test="recipe-author-follow"]').attributes("aria-label")).toBe("取消关注");
+    expect(wrapper.get('[data-test="recipe-author-follow"]').find("svg").exists()).toBe(true);
   });
 
   it("点关注按钮只关注作者，不跳用户页", async () => {
