@@ -3,6 +3,7 @@ import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { clearTokens } from "@/services/api";
 import { writeRefreshToken } from "@/services/tokenStorage";
+import { useAuthStore } from "@/stores/auth";
 import MePage from "@/views/MePage.vue";
 
 // 用**真** store（而不是 mock）：本条覆盖的是 restoreSession 与 MePage 的三态联动，
@@ -105,5 +106,94 @@ describe("MePage 多设备同步入口", () => {
     expect(wrapper.get('[data-test="server-state"]').text()).toBe("已开启");
     expect(wrapper.get('[data-test="nickname"]').text()).toBe("阿丽");
     expect(wrapper.get('[data-test="last-sync"]').text()).toBe("还没同步过");
+  });
+});
+
+describe("MePage 用户卡", () => {
+  it("未配置服务器：显示「未登录」，点击进登录页", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const wrapper = await page();
+
+    expect(wrapper.get('[data-test="me-user-name"]').text()).toBe("未登录");
+    await wrapper.get('[data-test="me-user-card"]').trigger("click");
+    expect(mocks.push).toHaveBeenCalledWith("/me/login");
+  });
+
+  it("离线但有存档昵称：显示存档昵称与头像，副标题写明离线", async () => {
+    seedSetting("server_url", "https://srv");
+    seedSetting("server_user_id", "u1");
+    seedSetting("server_nickname", "阿丽");
+    seedSetting("server_avatar_url", "🐱");
+    await writeRefreshToken("u1", "refresh-1");
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("network down"))));
+
+    const wrapper = await page();
+
+    expect(wrapper.get('[data-test="me-user-name"]').text()).toBe("阿丽");
+    expect(wrapper.get('[data-test="me-user-card"]').text()).toContain("🐱");
+    expect(wrapper.get('[data-test="me-user-status"]').text()).toBe("离线使用中，连上网络后自动恢复");
+  });
+
+  it("已登录：显示昵称，点击进资料页", async () => {
+    // 已登录的 seed 照本文件第三条用例
+    seedSetting("server_url", "https://srv");
+    seedSetting("server_user_id", "u1");
+    await writeRefreshToken("u1", "refresh-1");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          response(200, {
+            user: {
+              id: "u1",
+              username: "alice",
+              nickname: "阿丽",
+              avatar_url: null,
+              created_at: NOW,
+              updated_at: NOW,
+            },
+            access_token: "access-new",
+            refresh_token: "refresh-new",
+          }),
+        ),
+      ),
+    );
+
+    const wrapper = await page();
+
+    expect(wrapper.get('[data-test="me-user-name"]').text()).toBe("阿丽");
+    await wrapper.get('[data-test="me-user-card"]').trigger("click");
+    expect(mocks.push).toHaveBeenCalledWith("/me/profile");
+  });
+
+  it("退登后用户卡回到「未登录」，不再显示存档昵称", async () => {
+    // 已登录 + 点 me-user-card 之外的方式触发退登：seed 之后手动 await useAuthStore().logout() 再挂载
+    seedSetting("server_url", "https://srv");
+    seedSetting("server_user_id", "u1");
+    await writeRefreshToken("u1", "refresh-1");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          response(200, {
+            user: {
+              id: "u1",
+              username: "alice",
+              nickname: "阿丽",
+              avatar_url: null,
+              created_at: NOW,
+              updated_at: NOW,
+            },
+            access_token: "access-new",
+            refresh_token: "refresh-new",
+          }),
+        ),
+      ),
+    );
+    await useAuthStore().logout();
+
+    const wrapper = await page();
+
+    expect(wrapper.get('[data-test="me-user-name"]').text()).toBe("未登录");
   });
 });
