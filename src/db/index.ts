@@ -18,7 +18,7 @@ export function getDb(): Db {
   return db;
 }
 
-// 规格 §4 DDL：十张表 + 七个索引。逐字照抄，不在这里拼字符串。
+// 规格 §4 DDL：十二张表 + 八个索引。逐字照抄，不在这里拼字符串。
 const DDL = [
   `CREATE TABLE IF NOT EXISTS recipes (
     id           TEXT PRIMARY KEY,
@@ -96,6 +96,26 @@ const DDL = [
   `CREATE INDEX IF NOT EXISTS idx_recipe_ingredients_ing   ON recipe_ingredients(ingredient_id)`,
   `CREATE INDEX IF NOT EXISTS idx_recipe_ingredients_unit  ON recipe_ingredients(unit_id)`,
   `CREATE INDEX IF NOT EXISTS idx_recipe_labels_label      ON recipe_labels(label_id)`,
+  // AI 会话与消息永不参与同步（规格 §4.5）：对话含用户的厨房情况与截图，没有理由送上服务器。
+  // 带 id/updated_at/deleted_at 是按 AGENTS.md 的业务表规则；同步载荷逐表列举，不会带上它们。
+  `CREATE TABLE IF NOT EXISTS ai_sessions (
+    id          TEXT PRIMARY KEY,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    deleted_at  TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS ai_messages (
+    id              TEXT PRIMARY KEY,
+    session_id      TEXT NOT NULL REFERENCES ai_sessions(id),
+    role            TEXT NOT NULL,
+    content         TEXT NOT NULL,
+    payload         TEXT,
+    prompt_version  TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    deleted_at      TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_ai_messages_session ON ai_messages(session_id)`,
 ];
 
 /** 真 DDL 的唯一来源，测试直接调它。 */

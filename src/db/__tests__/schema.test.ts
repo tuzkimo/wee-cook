@@ -70,3 +70,35 @@ describe("数据库表结构", () => {
     await expect(initTables(db)).resolves.toBeUndefined();
   });
 });
+
+const AI_TABLES = ["ai_sessions", "ai_messages"];
+
+describe("AI 会话与消息表", () => {
+  it("AI 会话与消息两张表都建出来了", async () => {
+    const { db } = await freshTestDb();
+    const rows = await db.select<{ name: string }[]>(
+      "SELECT name FROM sqlite_master WHERE type = 'table'",
+    );
+    const names = rows.map((row) => row.name);
+    for (const table of AI_TABLES) expect(names, table).toContain(table);
+  });
+
+  it("AI 两张表按业务表规则带 id/updated_at/deleted_at", async () => {
+    const { db } = await freshTestDb();
+    for (const table of AI_TABLES) {
+      const columns = await db.select<{ name: string }[]>(`PRAGMA table_info(${table})`);
+      const names = columns.map((column) => column.name);
+      expect(names, table).toContain("id");
+      expect(names, table).toContain("updated_at");
+      expect(names, table).toContain("deleted_at");
+    }
+  });
+
+  it("ai_messages 按 session_id 查的索引建出来了", async () => {
+    const { db } = await freshTestDb();
+    const rows = await db.select<{ name: string }[]>(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_ai_messages_session'",
+    );
+    expect(rows.map((row) => row.name)).toEqual(["idx_ai_messages_session"]);
+  });
+});
