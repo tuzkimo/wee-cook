@@ -266,8 +266,6 @@ const useAuthStoreBase = defineStore("auth", () => {
     goGuest();
     nickname.value = null;
     avatarUrl.value = null;
-    await deleteSetting(KEY_NICKNAME, LOG_SAVE);
-    await deleteSetting(KEY_AVATAR, LOG_SAVE);
     api.clearTokens();
     // spec §9.5：登出只停定时器，各 uid 的积压队列保留。
     // 动态 import 避免 auth→sync→auth 的静态环。
@@ -275,6 +273,9 @@ const useAuthStoreBase = defineStore("auth", () => {
     resetSyncTimers();
     // 兜底：api.clearTokens 按 currentUserId 删，这里再按已知的服务端 user id 删一次
     if (persistedUserId) await deleteRefreshToken(persistedUserId);
+    // 设置清理放在凭据之后：deleteSetting 失败会 reject，不能让它挡住退登的凭据清理
+    await deleteSetting(KEY_NICKNAME, LOG_SAVE);
+    await deleteSetting(KEY_AVATAR, LOG_SAVE);
     // 刻意不动 settings 里的 server_url 与账号信息：下次登录不用重填地址
   }
 
