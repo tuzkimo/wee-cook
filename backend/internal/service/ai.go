@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"wee-cook/backend/internal/config"
+	mw "wee-cook/backend/internal/middleware"
 )
 
 // 哨兵错误：handler（Task 3）据此映射客户端状态码。上游原始错误体一律不下发——
@@ -156,6 +157,7 @@ func (s *AIService) Host() string {
 }
 
 func (s *AIService) Chat(ctx context.Context, req AIChatRequest) (*AIChatResponse, error) {
+	userID := mw.GetUserID(ctx)
 	body, err := json.Marshal(upstreamRequest{
 		Model:     s.model,
 		Messages:  upstreamMessages(req.Messages),
@@ -174,15 +176,15 @@ func (s *AIService) Chat(ctx context.Context, req AIChatRequest) (*AIChatRespons
 	httpReq.Header.Set("Authorization", "Bearer "+s.apiKey)
 
 	start := time.Now()
-	// 日志只记 user_id（由调用方补）、耗时、用量、finish_reason、状态码，不记 messages 与工具结果。
+	// 日志只记 user_id、耗时、用量、finish_reason、状态码，不记 messages 与工具结果。
 	resp, err := s.client.Do(httpReq)
 	if err != nil {
 		// Client.Timeout 触发时错误是 *url.Error，用 os.IsTimeout 兜住；显式 deadline 用 errors.Is。
 		if errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
-			log.Printf("AI 上游超时：host=%s 耗时=%s", s.Host(), since(start))
+			log.Printf("AI 上游超时：user_id=%s host=%s 耗时=%s", userID, s.Host(), since(start))
 			return nil, ErrAIUpstreamTimeout
 		}
-		log.Printf("AI 上游不可达：host=%s 耗时=%s", s.Host(), since(start))
+		log.Printf("AI 上游不可达：user_id=%s host=%s 耗时=%s", userID, s.Host(), since(start))
 		return nil, ErrAIUnreachable
 	}
 	defer resp.Body.Close()
@@ -190,17 +192,17 @@ func (s *AIService) Chat(ctx context.Context, req AIChatRequest) (*AIChatRespons
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// 错误体读了就丢：可能含 key 片段，绝不转发给客户端。
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		log.Printf("AI 上游返回非 2xx：host=%s status=%d 耗时=%s", s.Host(), resp.StatusCode, since(start))
+		log.Printf("AI 上游返回非 2xx：user_id=%s host=%s status=%d 耗时=%s", userID, s.Host(), resp.StatusCode, since(start))
 		return nil, mapUpstreamStatus(resp.StatusCode)
 	}
 
 	var raw upstreamResponse
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		log.Printf("AI 上游响应解析失败：host=%s status=%d 耗时=%s", s.Host(), resp.StatusCode, since(start))
+		log.Printf("AI 上游响应解析失败：user_id=%s host=%s status=%d 耗时=%s", userID, s.Host(), resp.StatusCode, since(start))
 		return nil, ErrAIUpstreamError
 	}
 	if len(raw.Choices) == 0 {
-		log.Printf("AI 上游响应没有 choices：host=%s status=%d 耗时=%s", s.Host(), resp.StatusCode, since(start))
+		log.Printf("AI 上游响应没有 choices：user_id=%s host=%s status=%d 耗时=%s", userID, s.Host(), resp.StatusCode, since(start))
 		return nil, ErrAIUpstreamError
 	}
 
@@ -221,8 +223,8 @@ func (s *AIService) Chat(ctx context.Context, req AIChatRequest) (*AIChatRespons
 		out.ToolCalls = append(out.ToolCalls, AIToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
 	}
 
-	log.Printf("AI 调用完成：host=%s status=%d 耗时=%s prompt_tokens=%d completion_tokens=%d finish_reason=%s",
-		s.Host(), resp.StatusCode, since(start), out.Usage.PromptTokens, out.Usage.CompletionTokens, out.FinishReason)
+	log.Printf("AI 调用完成：user_id=%s host=%s status=%d 耗时=%s prompt_tokens=%d completion_tokens=%d finish_reason=%s",
+		userID, s.Host(), resp.StatusCode, since(start), out.Usage.PromptTokens, out.Usage.CompletionTokens, out.FinishReason)
 	return out, nil
 }
 
