@@ -292,7 +292,7 @@ export async function getMe(): Promise<User> {
 
 export interface UpdateProfileRequest {
   nickname?: string
-  avatar_url?: string | null
+  avatar_url?: string
 }
 
 export async function updateProfile(data: UpdateProfileRequest): Promise<User> {

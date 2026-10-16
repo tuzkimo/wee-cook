@@ -9,7 +9,7 @@ import { createPinia, defineStore, getActivePinia } from "pinia";
 import { computed, ref } from "vue";
 import * as api from "@/services/api";
 import { deleteRefreshToken, readRefreshToken } from "@/services/tokenStorage";
-import { readSetting, writeSetting, type SettingLogContext } from "@/services/settingsFile";
+import { deleteSetting, readSetting, writeSetting, type SettingLogContext } from "@/services/settingsFile";
 
 export type AuthMode = "guest" | "online";
 
@@ -17,6 +17,7 @@ const KEY_URL = "server_url";
 const KEY_USER_ID = "server_user_id";
 const KEY_USERNAME = "server_username";
 const KEY_NICKNAME = "server_nickname";
+const KEY_AVATAR = "server_avatar_url";
 
 const LOG_SAVE: SettingLogContext = { tag: "auth", label: "同步设置", action: "保存" };
 
@@ -44,6 +45,11 @@ async function readStringSetting(key: string): Promise<string | null> {
   return read.kind === "found" ? read.value : null;
 }
 
+/** 内存里的头像只允许「可用的字符串」或 `null`：服务端清头像返回空串，与未设置同义。 */
+function normalizeAvatar(value: string | null): string | null {
+  return value ? value : null;
+}
+
 /**
  * 服务端答了话的错误（api.ts 的 AuthError 带 status）；网络层失败（超时 / 断网）
  * 没有任何状态码。两者的处理方向完全相反，必须分开。
@@ -69,6 +75,7 @@ const useAuthStoreBase = defineStore("auth", () => {
   const serverUser = ref<api.User | null>(null);
   const baseUrl = ref<string | null>(null);
   const nickname = ref<string | null>(null);
+  const avatarUrl = ref<string | null>(null);
   const lastSyncFailed = ref(false);
   const lastSyncedTime = ref<string | null>(null);
   // 同步完成后刷新 UI 的版本号；notifySyncComplete() 递增，列表据此重拉。
@@ -93,6 +100,7 @@ const useAuthStoreBase = defineStore("auth", () => {
     baseUrl.value = url;
     serverUser.value = user;
     nickname.value = user.nickname;
+    avatarUrl.value = normalizeAvatar(user.avatar_url);
     mode.value = "online";
   }
 
@@ -101,6 +109,8 @@ const useAuthStoreBase = defineStore("auth", () => {
     await writeSetting(KEY_USER_ID, user.id, LOG_SAVE);
     await writeSetting(KEY_USERNAME, user.username, LOG_SAVE);
     await writeSetting(KEY_NICKNAME, user.nickname, LOG_SAVE);
+    // 落盘写服务端原值：空串由 readStringSetting/parseString 按未设置读回
+    await writeSetting(KEY_AVATAR, user.avatar_url, LOG_SAVE);
   }
 
   function normalizeUrl(url: string): string {
@@ -154,10 +164,11 @@ const useAuthStoreBase = defineStore("auth", () => {
     // 之后才被看见，中间这段窗口里旧会话会被当成当前会话写回。
     const epoch = sessionEpoch;
 
-    const [url, userId, savedNickname] = await Promise.all([
+    const [url, userId, savedNickname, savedAvatarUrl] = await Promise.all([
       readStringSetting(KEY_URL),
       readStringSetting(KEY_USER_ID),
       readStringSetting(KEY_NICKNAME),
+      readStringSetting(KEY_AVATAR),
     ]);
     // 没配地址 → 一次网络都不发，保持 guest（App 行为与没开同步时完全一致）
     if (!url) {
@@ -174,8 +185,9 @@ const useAuthStoreBase = defineStore("auth", () => {
       return;
     }
 
-    // 恢复失败时 MePage 仍能显示上次的昵称
+    // 恢复失败时 MePage 仍能显示上次的昵称与头像
     if (savedNickname) nickname.value = savedNickname;
+    if (savedAvatarUrl) avatarUrl.value = savedAvatarUrl;
 
     const stored = await readRefreshToken(userId);
     if (!stored) {
@@ -206,6 +218,7 @@ const useAuthStoreBase = defineStore("auth", () => {
       }
       serverUser.value = resp.user;
       nickname.value = resp.user.nickname;
+      avatarUrl.value = normalizeAvatar(resp.user.avatar_url);
       mode.value = "online";
       await persistSession(resp.user, url);
       // 冷启动恢复会话成功同样算「会话变在线」（spec §9.5）
@@ -234,6 +247,14 @@ const useAuthStoreBase = defineStore("auth", () => {
     return pendingRestore;
   }
 
+  async function updateProfile(input: { nickname: string; avatar_url: string }): Promise<void> {
+    const updated = await api.updateProfile(input);
+    serverUser.value = updated;
+    nickname.value = updated.nickname;
+    avatarUrl.value = normalizeAvatar(updated.avatar_url);
+    await persistSession(updated, baseUrl.value ?? "");
+  }
+
   async function logout(): Promise<void> {
     sessionEpoch++;
     const userId = serverUser.value?.id;
@@ -243,6 +264,10 @@ const useAuthStoreBase = defineStore("auth", () => {
     lastSyncFailed.value = false;
     lastSyncedTime.value = null;
     goGuest();
+    nickname.value = null;
+    avatarUrl.value = null;
+    await deleteSetting(KEY_NICKNAME, LOG_SAVE);
+    await deleteSetting(KEY_AVATAR, LOG_SAVE);
     api.clearTokens();
     // spec §9.5：登出只停定时器，各 uid 的积压队列保留。
     // 动态 import 避免 auth→sync→auth 的静态环。
@@ -265,6 +290,7 @@ const useAuthStoreBase = defineStore("auth", () => {
     serverUser,
     serverUserId,
     nickname,
+    avatarUrl,
     baseUrl,
     lastSyncFailed,
     lastSyncedTime,
@@ -272,6 +298,7 @@ const useAuthStoreBase = defineStore("auth", () => {
     restoreSession,
     login,
     register,
+    updateProfile,
     logout,
     notifySyncComplete,
   };

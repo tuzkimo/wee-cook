@@ -63,7 +63,9 @@ function res(status: number, payload: unknown): Response {
   } as unknown as Response;
 }
 
-function stubFetch(handler: (url: string, init?: RequestInit) => Response): ReturnType<typeof vi.fn> {
+function stubFetch(
+  handler: (url: string, init?: RequestInit) => Response | Promise<Response>,
+): ReturnType<typeof vi.fn> {
   const mock = vi.fn((url: string, init?: RequestInit) => Promise.resolve(handler(url, init)));
   vi.stubGlobal("fetch", mock);
   return mock;
@@ -447,5 +449,81 @@ describe("authStore", () => {
     await store.logout();
 
     expect(resetSyncTimersMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("登录成功后 avatarUrl 跟着会话走", async () => {
+    stubFetch(() => res(200, authBody(user("u1", { avatar_url: "🐱" }), "access-1", "refresh-1")));
+    const store = useAuthStore();
+
+    await store.login("https://srv", "alice", "pw");
+
+    expect(store.avatarUrl).toBe("🐱");
+  });
+
+  it("updateProfile 更新内存与 settings（含 server_avatar_url）", async () => {
+    stubFetch((url) =>
+      url.includes("/auth/profile")
+        ? res(200, user("u1", { username: "alice", nickname: "阿丽", avatar_url: "data:image/jpeg;base64,AAA" }))
+        : res(200, authBody(user("u1", { username: "alice" }), "access-1", "refresh-1")),
+    );
+    const store = useAuthStore();
+    await store.login("https://srv", "alice", "pw");
+
+    await store.updateProfile({ nickname: "阿丽", avatar_url: "data:image/jpeg;base64,AAA" });
+
+    expect(store.nickname).toBe("阿丽");
+    expect(store.avatarUrl).toBe("data:image/jpeg;base64,AAA");
+    expect(storedSetting("server_nickname")).toBe("阿丽");
+    expect(storedSetting("server_avatar_url")).toBe("data:image/jpeg;base64,AAA");
+  });
+
+  it("清头像（空串）在 store 里就是「没设过」", async () => {
+    stubFetch((url) =>
+      url.includes("/auth/profile")
+        ? res(200, user("u1", { username: "alice", nickname: "阿丽", avatar_url: "" }))
+        : res(200, authBody(user("u1", { username: "alice", avatar_url: "🐱" }), "access-1", "refresh-1")),
+    );
+    const store = useAuthStore();
+    await store.login("https://srv", "alice", "pw");
+
+    await store.updateProfile({ nickname: "阿丽", avatar_url: "" });
+
+    expect(store.avatarUrl).toBeNull();
+  });
+
+  it("断网冷启动：昵称与头像从存档读回，且不切在线", async () => {
+    seedSetting("server_url", "https://srv");
+    seedSetting("server_user_id", "u1");
+    seedSetting("server_nickname", "阿丽");
+    seedSetting("server_avatar_url", "🐱");
+    await writeRefreshToken("u1", "refresh-1");
+    stubFetch(() => Promise.reject(new Error("network down")));
+
+    const store = useAuthStore();
+    await store.restoreSession();
+
+    expect(store.isOnline).toBe(false);
+    expect(store.nickname).toBe("阿丽");
+    expect(store.avatarUrl).toBe("🐱");
+  });
+
+  it("退登清掉存档昵称与头像，保留地址与用户名", async () => {
+    stubFetch((url) =>
+      url.includes("/auth/profile")
+        ? res(200, user("u1", { username: "alice", nickname: "阿丽" }))
+        : res(200, authBody(user("u1", { username: "alice", nickname: "阿丽", avatar_url: "🐱" }), "access-1", "refresh-1")),
+    );
+    const store = useAuthStore();
+    await store.login("https://srv", "alice", "pw");
+    expect(storedSetting("server_avatar_url")).toBe("🐱");
+
+    await store.logout();
+
+    expect(store.nickname).toBeNull();
+    expect(store.avatarUrl).toBeNull();
+    expect(storedSetting("server_nickname")).toBeUndefined();
+    expect(storedSetting("server_avatar_url")).toBeUndefined();
+    expect(storedSetting("server_url")).toBe("https://srv");
+    expect(storedSetting("server_username")).toBe("alice");
   });
 });
