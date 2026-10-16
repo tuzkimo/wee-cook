@@ -7,7 +7,9 @@ import { useRoute, useRouter } from "vue-router";
 import { Pencil, Trash2 } from "lucide-vue-next";
 import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
+import UserAvatar from "@/components/UserAvatar.vue";
 import { imageSrc } from "@/services/imageStore";
+import type { UserProfile } from "@/services/community";
 import { ensureLocalImages } from "@/services/syncFiles";
 import { useAuthStore } from "@/stores/auth";
 import { useCommunityStore } from "@/stores/community";
@@ -35,6 +37,10 @@ const favorited = ref(false);
 const favoriteError = ref("");
 const favoriting = ref(false);
 const toggling = ref(false);
+// 作者卡片（spec §7）：昵称与头像用本地那份立刻画，联网再补「公开 N 道」与关注按钮
+const authorProfile = ref<UserProfile | null>(null);
+const following = ref(false);
+const followError = ref("");
 
 // store 已经按 sort_order 查出来，这里再排一次是为了「页面自己保证顺序」这件事可被断言
 const steps = computed(() =>
@@ -57,8 +63,44 @@ onMounted(async () => {
   // 先读本地收藏再等图：读本地 SQL 是毫秒级，图片下载要串行跑完，反过来的话慢网下
   // 按钮会在图下完之前一直显示错的「收藏」态
   favorited.value = await communityStore.isFavorited(id).catch(() => false);
+  // 不 await：作者资料是补料，慢网下不该拖住步骤图下载
+  void loadAuthorProfile();
   localImages.value = await ensureLocalImages(steps.value.map((step) => step.image_path));
 });
+
+/** 拉作者资料补「公开 N 道」与关注态。失败静默 —— 卡片其余部分照常，不阻塞只读页。 */
+async function loadAuthorProfile(): Promise<void> {
+  const current = detail.value;
+  // 自己的菜谱不画作者卡片（canEdit 为真），也就不必请自己的资料
+  if (!current || !current.recipe.owner_id || canEdit(current.recipe) || !auth.isOnline) return;
+  try {
+    authorProfile.value = await communityStore.profile(current.recipe.owner_id);
+  } catch {
+    // 拿不到就少画数字与关注按钮，不写错误提示（spec §4.6）
+  }
+}
+
+/** 关注按钮：乐观翻转，服务端拒绝就翻回去并提示（与用户页同一套）。 */
+async function toggleFollow(): Promise<void> {
+  const ownerId = detail.value?.recipe.owner_id;
+  const current = authorProfile.value;
+  if (!ownerId || !current || following.value) return;
+  const next = !current.followed;
+  followError.value = "";
+  current.followed = next;
+  following.value = true;
+  try {
+    await (next ? communityStore.follow(ownerId) : communityStore.unfollow(ownerId));
+  } catch (followFailure: unknown) {
+    current.followed = !next;
+    followError.value =
+      followFailure instanceof Error && followFailure.message
+        ? followFailure.message
+        : "操作失败，请重试";
+  } finally {
+    following.value = false;
+  }
+}
 
 /** 乐观翻转：先让按钮变，服务端拒绝就翻回去并说明原因，不静默。 */
 async function toggleFavorite(): Promise<void> {
@@ -203,35 +245,75 @@ async function confirmDelete(): Promise<void> {
           {{ favoriteError }}
         </p>
 
-        <!-- 别人的菜谱：只读，能给的是「知道是谁的」与「收藏」（spec §9.3） -->
-        <div
-          v-if="!canEdit(detail.recipe)"
-          class="mb-4 flex items-center justify-between gap-3"
+        <p
+          v-if="followError"
+          data-test="author-follow-error"
+          class="mb-2 rounded-xl bg-danger/10 px-4 py-3 text-sm text-danger"
         >
-          <button
-            v-if="detail.recipe.owner_id"
-            type="button"
-            data-test="recipe-author"
-            class="min-w-0 truncate text-sm text-primary"
+          {{ followError }}
+        </p>
+
+        <!-- 别人的菜谱：只读，能给的是「知道是谁的」「关注 ta」与「收藏」（spec §7 / §9.3） -->
+        <div v-if="!canEdit(detail.recipe)" class="mb-4 flex flex-col gap-3">
+          <div
+            role="button"
+            tabindex="0"
+            class="flex w-full items-center gap-3 rounded-xl bg-surface px-3 py-3 text-left"
             @click="openAuthor"
+            @keydown.enter="openAuthor"
           >
-            {{ detail.recipe.owner_nickname }}
-          </button>
-          <span v-else class="min-w-0"></span>
-          <button
-            type="button"
-            data-test="recipe-favorite"
-            class="shrink-0 rounded-lg border px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50"
-            :class="
-              favorited
-                ? 'border-gray-300 text-text-secondary hover:bg-gray-50'
-                : 'border-primary text-primary hover:bg-primary/10'
-            "
-            :disabled="!auth.isOnline || favoriting"
-            @click="toggleFavorite"
-          >
-            {{ favorited ? "已收藏" : "收藏" }}
-          </button>
+            <UserAvatar
+              data-test="recipe-author-avatar"
+              :url="detail.recipe.owner_avatar_url"
+              :name="detail.recipe.owner_nickname ?? ''"
+              class="h-16 w-16 shrink-0 rounded-full"
+              text-class="text-2xl"
+            />
+            <div class="min-w-0 flex-1">
+              <p data-test="recipe-author" class="truncate text-base font-medium text-text">
+                {{ detail.recipe.owner_nickname }}
+              </p>
+              <p
+                v-if="authorProfile"
+                data-test="recipe-author-count"
+                class="text-xs text-text-secondary"
+              >
+                公开 {{ authorProfile.public_count }} 道
+              </p>
+            </div>
+            <button
+              v-if="authorProfile"
+              type="button"
+              data-test="recipe-author-follow"
+              class="shrink-0 rounded-lg border px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50"
+              :class="
+                authorProfile.followed
+                  ? 'border-gray-300 text-text-secondary hover:bg-gray-50'
+                  : 'border-primary text-primary hover:bg-primary/10'
+              "
+              :disabled="!auth.isOnline || following"
+              @click.stop="toggleFollow"
+            >
+              {{ authorProfile.followed ? "取消关注" : "关注" }}
+            </button>
+          </div>
+
+          <div class="flex justify-end">
+            <button
+              type="button"
+              data-test="recipe-favorite"
+              class="shrink-0 rounded-lg border px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50"
+              :class="
+                favorited
+                  ? 'border-gray-300 text-text-secondary hover:bg-gray-50'
+                  : 'border-primary text-primary hover:bg-primary/10'
+              "
+              :disabled="!auth.isOnline || favoriting"
+              @click="toggleFavorite"
+            >
+              {{ favorited ? "已收藏" : "收藏" }}
+            </button>
+          </div>
         </div>
 
         <label

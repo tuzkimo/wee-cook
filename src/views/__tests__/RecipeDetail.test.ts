@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { DOMWrapper, flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { useAuthStore } from "@/stores/auth";
+import type { UserProfile } from "@/services/community";
 import type {
   Label,
   LabelKind,
@@ -25,6 +26,9 @@ const mocks = vi.hoisted(() => ({
   isFavorited: vi.fn(),
   favorite: vi.fn(),
   unfavorite: vi.fn(),
+  profile: vi.fn(),
+  follow: vi.fn(),
+  unfollow: vi.fn(),
   fetchWithAuth: vi.fn(),
   authReady: { value: true },
 }));
@@ -59,6 +63,9 @@ vi.mock("@/stores/community", () => ({
     isFavorited: mocks.isFavorited,
     favorite: mocks.favorite,
     unfavorite: mocks.unfavorite,
+    profile: mocks.profile,
+    follow: mocks.follow,
+    unfollow: mocks.unfollow,
   }),
 }));
 
@@ -169,6 +176,11 @@ function others(): RecipeDetailData {
   };
 }
 
+/** 作者资料：联网时补「公开 N 道」与关注态。 */
+function authorProfile(count = 12, followed = false): UserProfile {
+  return { id: "u2", nickname: "老王", avatar_url: null, followed, public_count: count };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.routeParams = { id: "r1" };
@@ -178,6 +190,9 @@ beforeEach(() => {
   mocks.isFavorited.mockResolvedValue(false);
   mocks.favorite.mockResolvedValue(undefined);
   mocks.unfavorite.mockResolvedValue(undefined);
+  mocks.profile.mockResolvedValue(authorProfile());
+  mocks.follow.mockResolvedValue(undefined);
+  mocks.unfollow.mockResolvedValue(undefined);
   mocks.authReady.value = true;
 });
 
@@ -504,6 +519,95 @@ describe("RecipeDetail", () => {
     expect(wrapper.find('[data-test="recipe-favorite"]').exists()).toBe(true);
     await author.trigger("click");
     expect(mocks.push).toHaveBeenCalledWith("/user/u2");
+  });
+
+  it("作者卡片第一眼就有头像与昵称，断网不补数字、不发资料请求", async () => {
+    const data = others();
+    data.recipe.owner_avatar_url = "https://e.com/u2.png";
+    mocks.getDetail.mockResolvedValue(data);
+
+    const wrapper = await page();
+
+    // 本地那份（昵称 + 头像）先画出来：昵称就在可点的卡片里
+    expect(wrapper.get('[data-test="recipe-author"]').text()).toBe("老王");
+    expect(wrapper.get('[data-test="recipe-author-avatar"] img').attributes("src")).toBe(
+      "https://e.com/u2.png",
+    );
+    // 离线（guest）：一个资料请求都不发，数字与关注按钮都不出现
+    expect(mocks.profile).not.toHaveBeenCalled();
+    expect(wrapper.find('[data-test="recipe-author-count"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="recipe-author-follow"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="recipe-favorite"]').exists()).toBe(true);
+  });
+
+  it("联网时补出公开菜谱数与关注按钮", async () => {
+    setActivePinia(createPinia());
+    useAuthStore().mode = "online";
+    mocks.getDetail.mockResolvedValue(others());
+
+    const wrapper = await page();
+
+    expect(mocks.profile).toHaveBeenCalledWith("u2");
+    expect(wrapper.get('[data-test="recipe-author-count"]').text()).toContain("12");
+    expect(wrapper.get('[data-test="recipe-author-follow"]').text()).toBe("关注");
+  });
+
+  it("已关注的作者显示「取消关注」", async () => {
+    setActivePinia(createPinia());
+    useAuthStore().mode = "online";
+    mocks.getDetail.mockResolvedValue(others());
+    mocks.profile.mockResolvedValue(authorProfile(3, true));
+
+    const wrapper = await page();
+
+    expect(wrapper.get('[data-test="recipe-author-count"]').text()).toContain("3");
+    expect(wrapper.get('[data-test="recipe-author-follow"]').text()).toBe("取消关注");
+  });
+
+  it("点关注按钮只关注作者，不跳用户页", async () => {
+    setActivePinia(createPinia());
+    useAuthStore().mode = "online";
+    mocks.getDetail.mockResolvedValue(others());
+
+    const wrapper = await page();
+
+    await wrapper.get('[data-test="recipe-author-follow"]').trigger("click");
+    await flushPromises();
+
+    expect(mocks.follow).toHaveBeenCalledWith("u2");
+    expect(mocks.unfollow).not.toHaveBeenCalled();
+    // @click.stop：关注按钮的点击不许冒到卡片上跳用户页
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it("关注失败时按钮翻回原状并提示，不静默", async () => {
+    setActivePinia(createPinia());
+    useAuthStore().mode = "online";
+    mocks.getDetail.mockResolvedValue(others());
+    mocks.follow.mockRejectedValue(new Error("网络不可用"));
+
+    const wrapper = await page();
+
+    await wrapper.get('[data-test="recipe-author-follow"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="author-follow-error"]').text()).toContain("网络不可用");
+    expect(wrapper.get('[data-test="recipe-author-follow"]').text()).toBe("关注");
+  });
+
+  it("作者资料请求失败时完全静默：卡片照常，不报错也不画数字与关注按钮", async () => {
+    setActivePinia(createPinia());
+    useAuthStore().mode = "online";
+    mocks.getDetail.mockResolvedValue(others());
+    mocks.profile.mockRejectedValue(new Error("网络不可用"));
+
+    const wrapper = await page();
+
+    expect(wrapper.get('[data-test="recipe-author"]').text()).toBe("老王");
+    expect(wrapper.find('[data-test="recipe-author-count"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="recipe-author-follow"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="author-follow-error"]').exists()).toBe(false);
+    expect(wrapper.get('[data-test="detail-name"]').text()).toBe("红烧肉");
   });
 
   it("离线时收藏按钮不可用（disabled，且视觉上也灰着）", async () => {
