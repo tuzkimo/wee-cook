@@ -507,7 +507,7 @@ onBeforeRouteLeave(() => {
       :store="categoryRefStore"
       mode="single"
       :selected-ids="form.category_id ? [form.category_id] : []"
-      empty-hint="还没有分类，点下面新建一个"
+      empty-hint="还没有分类，输入名称即可新建"
       @close="showCategorySheet = false"
       @select="selectCategory"
     />
@@ -517,7 +517,7 @@ onBeforeRouteLeave(() => {
       :store="tagRefStore"
       mode="multiple"
       :selected-ids="form.tag_ids"
-      empty-hint="还没有标签，点下面新建一个"
+      empty-hint="还没有标签，输入名称即可新建"
       @close="showTagSheet = false"
       @select="selectTags"
     />

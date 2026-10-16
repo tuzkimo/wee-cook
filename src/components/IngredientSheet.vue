@@ -168,7 +168,7 @@ function confirm(): void {
     :store="ingredientStore"
     mode="single"
     :selected-ids="[]"
-    empty-hint="还没有食材，点下面新建一个"
+    empty-hint="还没有食材，输入名称即可新建"
     @close="emit('close')"
     @select="pickIngredient"
   />
@@ -180,7 +180,7 @@ function confirm(): void {
     :store="unitStore"
     mode="single"
     :selected-ids="unitId ? [unitId] : []"
-    empty-hint="还没有单位，点下面新建一个"
+    empty-hint="还没有单位，输入名称即可新建"
     @close="showUnitSheet = false"
     @select="pickUnit"
   />

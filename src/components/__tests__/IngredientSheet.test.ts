@@ -231,9 +231,8 @@ describe("IngredientSheet", () => {
     openSheet();
     await flushPromises();
 
-    await el('[data-test="ref-new"]').trigger("click");
-    await el('[data-test="ref-form-name"]').setValue("酱油");
-    await el('[data-test="ref-form-save"]').trigger("click");
+    await el('[data-test="ref-filter"]').setValue("酱油");
+    await el('[data-test="ref-create"]').trigger("click");
     await flushPromises();
 
     // RefSheet 单选模式建完即发 select，这一层据此直接进第二步
