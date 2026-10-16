@@ -280,6 +280,50 @@ describe("authStore", () => {
     expect(syncMock).not.toHaveBeenCalled();
   });
 
+  it("restoreSession 服务端答 401 时不留存档昵称与头像（会话已死，不是离线）", async () => {
+    seedSetting("server_url", "https://srv");
+    seedSetting("server_user_id", "u1");
+    seedSetting("server_nickname", "阿丽");
+    seedSetting("server_avatar_url", "🐱");
+    await writeRefreshToken("u1", "refresh-dead");
+    stubFetch(() => res(401, { error: "invalid or expired refresh token" }));
+
+    const store = useAuthStore();
+    await store.restoreSession();
+
+    expect(store.mode).toBe("guest");
+    // 会话已被判死：留着存档会让 MePage 把「未登录」显示成「离线使用中，连上网络后自动恢复」
+    expect(store.nickname).toBeNull();
+    expect(store.avatarUrl).toBeNull();
+    expect(storedSetting("server_nickname")).toBeUndefined();
+    expect(storedSetting("server_avatar_url")).toBeUndefined();
+    // 地址留着，下次登录不用重填
+    expect(storedSetting("server_url")).toBe("https://srv");
+  });
+
+  it("restoreSession 断网时保留存档昵称与头像（离线态要用）", async () => {
+    seedSetting("server_url", "https://srv");
+    seedSetting("server_user_id", "u1");
+    seedSetting("server_nickname", "阿丽");
+    seedSetting("server_avatar_url", "🐱");
+    await writeRefreshToken("u1", "refresh-1");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("请求超时");
+      }),
+    );
+
+    const store = useAuthStore();
+    await store.restoreSession();
+
+    expect(store.mode).toBe("guest");
+    expect(store.nickname).toBe("阿丽");
+    expect(store.avatarUrl).toBe("🐱");
+    expect(storedSetting("server_nickname")).toBe("阿丽");
+    expect(storedSetting("server_avatar_url")).toBe("🐱");
+  });
+
   it("logout 清掉凭据但保留 server_url（下次登录不用重填）", async () => {
     stubFetch(() => res(200, authBody(user("u1", { username: "alice" }), "access-1", "refresh-1")));
     const store = useAuthStore();

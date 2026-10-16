@@ -96,6 +96,17 @@ const useAuthStoreBase = defineStore("auth", () => {
     serverUser.value = null;
   }
 
+  /**
+   * 会话确定已死（退登 / 凭据失效 / 串号）：清掉内存与磁盘上的存档昵称与头像。
+   * 断网与超时**不走**这里 —— 那时存档正是离线态要显示的东西（spec §6.2）。
+   */
+  async function clearArchivedProfile(): Promise<void> {
+    nickname.value = null;
+    avatarUrl.value = null;
+    await deleteSetting(KEY_NICKNAME, LOG_SAVE);
+    await deleteSetting(KEY_AVATAR, LOG_SAVE);
+  }
+
   function adoptSession(user: api.User, url: string): void {
     baseUrl.value = url;
     serverUser.value = user;
@@ -191,7 +202,9 @@ const useAuthStoreBase = defineStore("auth", () => {
 
     const stored = await readRefreshToken(userId);
     if (!stored) {
+      // 本地根本没有 refresh token：恢复已无可能，存档昵称不再是「上次会话」的凭据
       goGuest();
+      await clearArchivedProfile();
       return;
     }
     // 读设置 / 读 token 期间用户可能已退登或换号：再调 api.refreshSession 的话，
@@ -214,6 +227,7 @@ const useAuthStoreBase = defineStore("auth", () => {
         api.clearTokens();
         await deleteRefreshToken(userId);
         goGuest();
+        await clearArchivedProfile();
         return;
       }
       serverUser.value = resp.user;
@@ -229,6 +243,11 @@ const useAuthStoreBase = defineStore("auth", () => {
       if (isHttpError(err) && (err.status === 401 || err.status === 403)) {
         api.clearTokens();
         await deleteRefreshToken(userId);
+        // 服务端已判死这本会话：存档昵称留着会让 MePage 显示「离线使用中，连上网络后自动恢复」，
+        // 那是句假话（网络不是问题）。与退登同等清理，回到「未登录」。
+        goGuest();
+        await clearArchivedProfile();
+        return;
       }
       goGuest();
     }
@@ -264,8 +283,6 @@ const useAuthStoreBase = defineStore("auth", () => {
     lastSyncFailed.value = false;
     lastSyncedTime.value = null;
     goGuest();
-    nickname.value = null;
-    avatarUrl.value = null;
     api.clearTokens();
     // spec §9.5：登出只停定时器，各 uid 的积压队列保留。
     // 动态 import 避免 auth→sync→auth 的静态环。
@@ -274,8 +291,7 @@ const useAuthStoreBase = defineStore("auth", () => {
     // 兜底：api.clearTokens 按 currentUserId 删，这里再按已知的服务端 user id 删一次
     if (persistedUserId) await deleteRefreshToken(persistedUserId);
     // 设置清理放在凭据之后：deleteSetting 失败会 reject，不能让它挡住退登的凭据清理
-    await deleteSetting(KEY_NICKNAME, LOG_SAVE);
-    await deleteSetting(KEY_AVATAR, LOG_SAVE);
+    await clearArchivedProfile();
     // 刻意不动 settings 里的 server_url 与账号信息：下次登录不用重填地址
   }
 
