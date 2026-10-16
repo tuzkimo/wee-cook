@@ -25,6 +25,7 @@ function recipe(over: Partial<RecipePayload> & { id: string }): RecipePayload {
     category_id: "c1",
     is_public: 0,
     owner_nickname: null,
+    owner_avatar_url: null,
     created_at: T0,
     updated_at: T0,
     deleted_at: null,
@@ -215,6 +216,93 @@ describe("applyRemoteChanges", () => {
     expect(
       await db.select("SELECT is_public, owner_nickname FROM recipes WHERE id = 'r1'"),
     ).toEqual([{ is_public: 0, owner_nickname: null }]);
+  });
+
+  it("新菜谱落库带上作者头像", async () => {
+    const { db } = await freshTestDb();
+    await db.execute(
+      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('c1','家常','category',?,?,NULL)",
+      [T0, T0],
+    );
+
+    await applyRemoteChanges(
+      remote({
+        recipes: [
+          recipe({
+            id: "r1",
+            is_public: 1,
+            owner_nickname: "小明",
+            owner_avatar_url: "data:image/jpeg;base64,AV",
+          }),
+        ],
+      }),
+      db,
+    );
+
+    expect(
+      await db.select("SELECT owner_nickname, owner_avatar_url FROM recipes WHERE id = 'r1'"),
+    ).toEqual([{ owner_nickname: "小明", owner_avatar_url: "data:image/jpeg;base64,AV" }]);
+  });
+
+  it("远端更旧时菜谱本体不过 LWW，但作者两列仍被刷新", async () => {
+    const { db } = await freshTestDb();
+    await db.execute(
+      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('c1','家常','category',?,?,NULL)",
+      [T0, T0],
+    );
+    // 本地行比远端新：菜名是本地改过的，作者头像尚未拿到
+    await db.execute(
+      `INSERT INTO recipes (id,name,cover_path,category_id,is_public,owner_nickname,owner_avatar_url,created_at,updated_at,deleted_at,owner_id)
+       VALUES ('r1','本地改过的名字',NULL,'c1',1,NULL,NULL,?,?,NULL,NULL)`,
+      [T0, T1],
+    );
+
+    await applyRemoteChanges(
+      remote({
+        recipes: [
+          recipe({
+            id: "r1",
+            name: "服务端的名字",
+            owner_nickname: "小明",
+            owner_avatar_url: "data:image/jpeg;base64,AV",
+          }),
+        ],
+      }),
+      db,
+    );
+
+    expect(
+      await db.select("SELECT name, owner_nickname, owner_avatar_url FROM recipes WHERE id = 'r1'"),
+    ).toEqual([
+      {
+        name: "本地改过的名字",
+        owner_nickname: "小明",
+        owner_avatar_url: "data:image/jpeg;base64,AV",
+      },
+    ]);
+  });
+
+  it("载荷里没有 owner_avatar_url 这个键时不动本地的值", async () => {
+    const { db } = await freshTestDb();
+    await db.execute(
+      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('c1','家常','category',?,?,NULL)",
+      [T0, T0],
+    );
+    await db.execute(
+      `INSERT INTO recipes (id,name,cover_path,category_id,is_public,owner_nickname,owner_avatar_url,created_at,updated_at,deleted_at,owner_id)
+       VALUES ('r1','红烧肉',NULL,'c1',1,'小明','🐱',?,?,NULL,NULL)`,
+      [T0, T1],
+    );
+
+    // 旧版服务端的载荷里没有这个键（JSON.parse 之后 `in` 为 false）
+    const oldServerRecipe = recipe({ id: "r1", owner_nickname: "小明" });
+    delete (oldServerRecipe as Partial<RecipePayload>).owner_avatar_url;
+
+    await applyRemoteChanges(remote({ recipes: [oldServerRecipe] }), db);
+
+    expect(await db.select("SELECT owner_avatar_url FROM recipes WHERE id = 'r1'")).toEqual([
+      { owner_avatar_url: "🐱" },
+    ]);
   });
 
   it("菜谱的子行整组替换：远端步骤里没有的旧步骤本地必须消失", async () => {

@@ -9,6 +9,8 @@ export interface Recipe {
   is_public: number;
   /** 作者昵称的本地副本，供离线显示（spec §11.12）；本机自建 / 未认领时为 NULL。 */
   owner_nickname: string | null;
+  /** 作者头像的本地副本（别人发的菜谱才有）；本机自建 / 未认领为 NULL。 */
+  owner_avatar_url: string | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;

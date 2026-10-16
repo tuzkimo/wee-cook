@@ -78,6 +78,7 @@ function communityDetail(id: string, owner: string): SyncPayload {
         category_id: `cat-${id}`,
         is_public: 1,
         owner_nickname: "老王",
+        owner_avatar_url: null,
         created_at: NOW,
         updated_at: NOW,
         deleted_at: null,

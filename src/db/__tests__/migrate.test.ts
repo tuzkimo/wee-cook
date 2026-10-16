@@ -38,6 +38,7 @@ describe("数据库迁移", () => {
     );
     expect(names).toContain("is_public");
     expect(names).toContain("owner_nickname");
+    expect(names).toContain("owner_avatar_url");
   });
 
   it("旧库升级后 team_id 列被删掉", async () => {

@@ -299,17 +299,29 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
       [r.id],
     );
     const isNew = local.length === 0;
-    if (!isNew && compareTimestamp(r.updated_at, local[0].updated_at) <= 0) continue;
+    if (!isNew && compareTimestamp(r.updated_at, local[0].updated_at) <= 0) {
+      // 作者两列是服务端从 users 表派生的展示数据，本地从不改写：菜谱本体不过 LWW，
+      // 这两列也要刷新（否则新加的 owner_avatar_url 对存量行永远是 NULL）。
+      // 载荷里没有这个键说明是旧版服务端，保持本地值不动（别把好头像抹成 NULL）。
+      if ("owner_avatar_url" in r) {
+        await db.execute(
+          "UPDATE recipes SET owner_nickname = ?, owner_avatar_url = ? WHERE id = ?",
+          [r.owner_nickname ?? null, r.owner_avatar_url ?? null, r.id],
+        );
+      }
+      continue;
+    }
 
     const updatedAt = toIsoTimestamp(r.updated_at);
     const deletedAt = normDeleted(r.deleted_at);
     // 旧版本服务端的载荷可能没有这两列：缺失时按「私有、无昵称」兜底。
     const isPublic = r.is_public ?? 0;
     const ownerNickname = r.owner_nickname ?? null;
+    const ownerAvatar = r.owner_avatar_url ?? null;
     if (isNew) {
       await db.execute(
-        `INSERT INTO recipes (id,name,cover_path,category_id,is_public,owner_nickname,created_at,updated_at,deleted_at,owner_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO recipes (id,name,cover_path,category_id,is_public,owner_nickname,owner_avatar_url,created_at,updated_at,deleted_at,owner_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
         [
           r.id,
           r.name,
@@ -317,6 +329,7 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
           r.category_id,
           isPublic,
           ownerNickname,
+          ownerAvatar,
           toIsoTimestamp(r.created_at),
           updatedAt,
           deletedAt,
@@ -325,7 +338,7 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
       );
     } else {
       await db.execute(
-        `UPDATE recipes SET name=?, cover_path=?, category_id=?, is_public=?, owner_nickname=?, updated_at=?, deleted_at=?, owner_id=?
+        `UPDATE recipes SET name=?, cover_path=?, category_id=?, is_public=?, owner_nickname=?, owner_avatar_url=?, updated_at=?, deleted_at=?, owner_id=?
          WHERE id=?`,
         [
           r.name,
@@ -333,6 +346,7 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
           r.category_id,
           isPublic,
           ownerNickname,
+          ownerAvatar,
           updatedAt,
           deletedAt,
           r.owner_id ?? null,
@@ -798,6 +812,7 @@ async function buildRecipePayload(db: Db, row: Recipe): Promise<RecipePayload> {
     category_id: row.category_id,
     is_public: row.is_public,
     owner_nickname: row.owner_nickname,
+    owner_avatar_url: row.owner_avatar_url,
     created_at: toIsoTimestamp(row.created_at),
     updated_at: toIsoTimestamp(row.updated_at),
     deleted_at: normDeleted(row.deleted_at),

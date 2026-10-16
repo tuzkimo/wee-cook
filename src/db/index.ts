@@ -27,6 +27,7 @@ const DDL = [
     category_id  TEXT NOT NULL REFERENCES labels(id),
     is_public    INTEGER NOT NULL DEFAULT 0,
     owner_nickname TEXT,
+    owner_avatar_url TEXT,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL,
     deleted_at   TEXT
@@ -112,6 +113,8 @@ async function migrateTables(db: Db): Promise<void> {
     await db.execute("ALTER TABLE recipes ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0");
   if (!names.has("owner_nickname"))
     await db.execute("ALTER TABLE recipes ADD COLUMN owner_nickname TEXT");
+  if (!names.has("owner_avatar_url"))
+    await db.execute("ALTER TABLE recipes ADD COLUMN owner_avatar_url TEXT");
   // 旧库（未发布的团队版）留下的列：SQLite 3.35+ 支持 DROP COLUMN，两个运行时都够新
   if (names.has("team_id")) await db.execute("ALTER TABLE recipes DROP COLUMN team_id");
 }

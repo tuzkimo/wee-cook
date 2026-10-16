@@ -80,6 +80,7 @@ function detailPayload(): SyncPayload {
         category_id: "cat",
         is_public: 1,
         owner_nickname: "老王",
+        owner_avatar_url: null,
         created_at: NOW,
         updated_at: NOW,
         deleted_at: null,

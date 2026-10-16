@@ -27,6 +27,7 @@ function row(
     category_id: `cat-${category}`,
     is_public: 0,
     owner_nickname: null,
+    owner_avatar_url: null,
     created_at: NOW,
     updated_at: NOW,
     deleted_at: null,
