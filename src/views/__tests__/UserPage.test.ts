@@ -71,6 +71,8 @@ function recipe(id: string, name: string, cover: string | null = null): Communit
     author_id: "u2",
     author_nickname: "老王",
     author_avatar_url: null,
+    category_name: null,
+    tags: [],
     updated_at: NOW,
     favorited: false,
   };

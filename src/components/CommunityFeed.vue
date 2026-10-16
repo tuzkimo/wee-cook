@@ -3,7 +3,7 @@ import { onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { Star } from "lucide-vue-next";
 import { useCommunityStore } from "@/stores/community";
-import UserAvatar from "@/components/UserAvatar.vue";
+import RecipeCard from "@/components/RecipeCard.vue";
 import { imageSrc } from "@/services/imageStore";
 import { ensureLocalImages } from "@/services/syncFiles";
 
@@ -69,47 +69,23 @@ async function open(id: string): Promise<void> {
     </p>
 
     <ul v-else class="flex flex-col gap-2.5">
-      <li v-for="item in store.items" :key="item.id">
-        <button
-          type="button"
-          data-test="community-card"
-          class="flex w-full items-center gap-3 rounded-xl bg-surface px-3 py-3 text-left transition-colors hover:bg-gray-50"
+      <li v-for="item in store.items" :key="item.id" class="relative">
+        <RecipeCard
+          :name="item.name"
+          :cover-src="item.cover_path && localCovers.has(item.cover_path) ? imageSrc(item.cover_path) : null"
+          :category="item.category_name"
+          :tags="item.tags"
+          :author-name="item.author_nickname"
+          :author-avatar-url="item.author_avatar_url"
+          test-prefix="community"
           @click="open(item.id)"
-        >
-          <img
-            v-if="item.cover_path && localCovers.has(item.cover_path)"
-            data-test="community-cover"
-            :src="imageSrc(item.cover_path)"
-            :alt="item.name"
-            loading="lazy"
-            class="h-11 w-11 shrink-0 rounded-lg object-cover"
-          />
-          <div
-            v-else
-            data-test="community-cover-fallback"
-            class="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-lg font-semibold text-text-secondary"
-          >
-            {{ item.name.charAt(0) }}
-          </div>
-          <div class="min-w-0 flex-1">
-            <h3 data-test="community-name" class="line-clamp-2 text-sm font-medium text-text">
-              {{ item.name }}
-            </h3>
-            <div class="mt-0.5 flex items-center gap-1.5">
-              <UserAvatar
-                data-test="community-author-avatar"
-                :url="item.author_avatar_url"
-                :name="item.author_nickname"
-                class="h-8 w-8 shrink-0 rounded-full"
-                text-class="text-xs"
-              />
-              <p data-test="community-author" class="text-xs text-text-secondary">
-                {{ item.author_nickname }}
-              </p>
-            </div>
-          </div>
-          <Star v-if="item.favorited" data-test="community-favorited" :size="16" class="shrink-0 text-primary" />
-        </button>
+        />
+        <Star
+          v-if="item.favorited"
+          data-test="community-favorited"
+          :size="16"
+          class="absolute right-3 top-3 text-primary"
+        />
       </li>
     </ul>
 

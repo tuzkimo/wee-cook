@@ -13,6 +13,8 @@ export interface CommunityRecipe {
   author_id: string;
   author_nickname: string;
   author_avatar_url: string | null;
+  category_name: string | null;
+  tags: string[];
   updated_at: string;
   favorited: boolean;
 }

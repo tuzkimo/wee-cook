@@ -58,6 +58,8 @@ function recipe(id: string, favorited = false): CommunityRecipe {
     author_id: "author",
     author_nickname: "老王",
     author_avatar_url: null,
+    category_name: null,
+    tags: [],
     updated_at: NOW,
     favorited,
   };

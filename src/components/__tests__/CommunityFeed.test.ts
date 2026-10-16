@@ -62,6 +62,8 @@ function recipe(id: string, overrides: Partial<CommunityRecipe> = {}): Community
     author_id: "a1",
     author_nickname: "老王",
     author_avatar_url: null,
+    category_name: null,
+    tags: [],
     updated_at: NOW,
     favorited: false,
     ...overrides,
@@ -195,6 +197,22 @@ describe("CommunityFeed", () => {
     const wrapper = mountFeed();
 
     expect(wrapper.get('[data-test="community-author-avatar"]').text()).toBe("老");
+  });
+
+  it("第二行显示分类与标签", () => {
+    mocks.community!.items = [recipe("1", { category_name: "家常菜", tags: ["下饭", "快手"] })];
+    const wrapper = mountFeed();
+
+    expect(wrapper.get('[data-test="community-category"]').text()).toBe("家常菜");
+    expect(wrapper.findAll('[data-test="community-tag"]').map((t) => t.text())).toEqual(["下饭", "快手"]);
+  });
+
+  it("没有分类时只画标签", () => {
+    mocks.community!.items = [recipe("1", { category_name: null, tags: ["下饭"] })];
+    const wrapper = mountFeed();
+
+    expect(wrapper.find('[data-test="community-category"]').exists()).toBe(false);
+    expect(wrapper.get('[data-test="community-tag"]').text()).toBe("下饭");
   });
 
   it("封面图下载失败时不渲染 <img>，出字母兜底（I1 回归）", async () => {

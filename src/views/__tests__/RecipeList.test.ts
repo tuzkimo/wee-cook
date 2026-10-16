@@ -176,6 +176,8 @@ function communityRecipe(id: string, name: string): CommunityRecipe {
     author_id: "a1",
     author_nickname: "老王",
     author_avatar_url: null,
+    category_name: null,
+    tags: [],
     updated_at: NOW,
     favorited: false,
   };
