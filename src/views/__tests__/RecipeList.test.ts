@@ -174,6 +174,7 @@ function communityRecipe(id: string, name: string): CommunityRecipe {
     cover_path: null,
     author_id: "a1",
     author_nickname: "老王",
+    author_avatar_url: null,
     updated_at: NOW,
     favorited: false,
   };

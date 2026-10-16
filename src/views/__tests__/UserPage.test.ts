@@ -70,6 +70,7 @@ function recipe(id: string, name: string, cover: string | null = null): Communit
     cover_path: cover,
     author_id: "u2",
     author_nickname: "老王",
+    author_avatar_url: null,
     updated_at: NOW,
     favorited: false,
   };
@@ -137,6 +138,13 @@ describe("UserPage", () => {
     expect(wrapper.get('[data-test="user-nickname"]').text()).toBe("老王");
     expect(wrapper.get('[data-test="user-public-count"]').text()).toContain("3");
     expect(wrapper.get('[data-test="user-recipe"]').text()).toContain("社区红烧肉");
+  });
+
+  it("资料区显示头像", async () => {
+    mocks.profile.mockResolvedValue(profile({ avatar_url: "🐱" }));
+    const wrapper = await page();
+
+    expect(wrapper.get('[data-test="user-avatar"]').text()).toBe("🐱");
   });
 
   it("点 ta 的公开菜谱：先落库再跳详情", async () => {

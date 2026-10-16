@@ -57,6 +57,7 @@ function recipe(id: string, favorited = false): CommunityRecipe {
     cover_path: null,
     author_id: "author",
     author_nickname: "老王",
+    author_avatar_url: null,
     updated_at: NOW,
     favorited,
   };

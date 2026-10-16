@@ -3,6 +3,7 @@ import { onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { Star } from "lucide-vue-next";
 import { useCommunityStore } from "@/stores/community";
+import UserAvatar from "@/components/UserAvatar.vue";
 import { imageSrc } from "@/services/imageStore";
 import { ensureLocalImages } from "@/services/syncFiles";
 
@@ -94,9 +95,18 @@ async function open(id: string): Promise<void> {
             <h3 data-test="community-name" class="line-clamp-2 text-sm font-medium text-text">
               {{ item.name }}
             </h3>
-            <p data-test="community-author" class="text-xs text-text-secondary">
-              {{ item.author_nickname }}
-            </p>
+            <div class="mt-0.5 flex items-center gap-1.5">
+              <UserAvatar
+                data-test="community-author-avatar"
+                :url="item.author_avatar_url"
+                :name="item.author_nickname"
+                class="h-4 w-4 shrink-0 rounded-full"
+                text-class="text-[9px]"
+              />
+              <p data-test="community-author" class="text-xs text-text-secondary">
+                {{ item.author_nickname }}
+              </p>
+            </div>
           </div>
           <Star v-if="item.favorited" data-test="community-favorited" :size="16" class="shrink-0 text-primary" />
         </button>

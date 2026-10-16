@@ -4,6 +4,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import AppHeader from "@/components/AppHeader.vue";
+import UserAvatar from "@/components/UserAvatar.vue";
 import { imageSrc } from "@/services/imageStore";
 import { ensureLocalImages } from "@/services/syncFiles";
 import {
@@ -134,6 +135,13 @@ async function open(id: string): Promise<void> {
 
       <template v-else-if="profile">
         <div class="mb-3 flex items-center justify-between gap-3 rounded-xl border border-gray-200 px-3 py-3">
+          <UserAvatar
+            data-test="user-avatar"
+            :url="profile.avatar_url ?? null"
+            :name="profile.nickname ?? ''"
+            class="h-16 w-16 shrink-0 rounded-full"
+            text-class="text-2xl"
+          />
           <div class="min-w-0">
             <h1 data-test="user-nickname" class="truncate text-base font-semibold text-text">
               {{ profile.nickname }}

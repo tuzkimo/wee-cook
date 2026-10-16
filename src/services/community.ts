@@ -12,6 +12,7 @@ export interface CommunityRecipe {
   cover_path: string | null;
   author_id: string;
   author_nickname: string;
+  author_avatar_url: string | null;
   updated_at: string;
   favorited: boolean;
 }

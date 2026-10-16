@@ -61,6 +61,7 @@ function recipe(id: string, overrides: Partial<CommunityRecipe> = {}): Community
     cover_path: null,
     author_id: "a1",
     author_nickname: "老王",
+    author_avatar_url: null,
     updated_at: NOW,
     favorited: false,
     ...overrides,
@@ -180,6 +181,20 @@ describe("CommunityFeed", () => {
       "asset://localhost/images/cover.jpg",
     );
     expect(wrapper.find('[data-test="community-cover-fallback"]').exists()).toBe(false);
+  });
+
+  it("卡片显示作者头像", () => {
+    store().items = [recipe("1", { author_avatar_url: "🐱" })];
+    const wrapper = mountFeed();
+
+    expect(wrapper.get('[data-test="community-author-avatar"]').text()).toBe("🐱");
+  });
+
+  it("作者没设头像 → 退回作者昵称首字", () => {
+    store().items = [recipe("1", { author_avatar_url: null, author_nickname: "老王" })];
+    const wrapper = mountFeed();
+
+    expect(wrapper.get('[data-test="community-author-avatar"]').text()).toBe("老");
   });
 
   it("封面图下载失败时不渲染 <img>，出字母兜底（I1 回归）", async () => {
