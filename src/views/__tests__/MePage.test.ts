@@ -168,6 +168,15 @@ describe("MePage 同步卡", () => {
     expect(wrapper.get('[data-test="me-sync-card"]').attributes("disabled")).toBeDefined();
   });
 
+  it("同步失败且不在途时显示「上次同步没成功」，不显示「同步中」（F5）", async () => {
+    const wrapper = await loggedInPage();
+    useAuthStore().lastSyncFailed = true;
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="sync-failed"]').text()).toContain("上次同步没成功");
+    expect(wrapper.find('[data-test="syncing"]').exists()).toBe(false);
+  });
+
   it("已登录时有「服务器设置」入口", async () => {
     const wrapper = await loggedInPage();
 

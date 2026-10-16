@@ -215,6 +215,27 @@ describe("CommunityFeed", () => {
     expect(wrapper.get('[data-test="community-tag"]').text()).toBe("下饭");
   });
 
+  it("旧服务端不带 tags 字段：卡片仍然渲染出菜名（F2 回归）", () => {
+    store().items = [recipe("1", { tags: undefined as unknown as string[] })];
+    const wrapper = mountFeed();
+
+    expect(wrapper.find('[data-test="community-card"]').exists()).toBe(true);
+    expect(wrapper.get('[data-test="community-name"]').text()).toContain("菜 1");
+  });
+
+  it("已收藏的星标不吃点击（pointer-events-none），未收藏不画星标（F4 回归）", () => {
+    store().items = [recipe("1", { favorited: true })];
+    const wrapper = mountFeed();
+
+    expect(wrapper.get('[data-test="community-favorited"]').classes()).toContain(
+      "pointer-events-none",
+    );
+
+    store().items = [recipe("2", { favorited: false })];
+    const wrapper2 = mountFeed();
+    expect(wrapper2.find('[data-test="community-favorited"]').exists()).toBe(false);
+  });
+
   it("封面图下载失败时不渲染 <img>，出字母兜底（I1 回归）", async () => {
     const io = fakeIo();
     setFileSyncDeps(io.deps);

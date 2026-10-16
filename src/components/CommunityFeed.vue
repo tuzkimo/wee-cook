@@ -74,7 +74,7 @@ async function open(id: string): Promise<void> {
           :name="item.name"
           :cover-src="item.cover_path && localCovers.has(item.cover_path) ? imageSrc(item.cover_path) : null"
           :category="item.category_name"
-          :tags="item.tags"
+          :tags="item.tags ?? []"
           :author-name="item.author_nickname"
           :author-avatar-url="item.author_avatar_url"
           test-prefix="community"
@@ -84,7 +84,7 @@ async function open(id: string): Promise<void> {
           v-if="item.favorited"
           data-test="community-favorited"
           :size="16"
-          class="absolute right-3 top-3 text-primary"
+          class="absolute right-3 top-3 text-primary pointer-events-none"
         />
       </li>
     </ul>
