@@ -21,6 +21,8 @@ type CommunityRecipe struct {
 	AuthorID        string    `json:"author_id"`
 	AuthorNickname  string    `json:"author_nickname"`
 	AuthorAvatarURL *string   `json:"author_avatar_url"`
+	CategoryName    *string   `json:"category_name"` // 没分类时为 null
+	Tags            []string  `json:"tags"`          // 没标签时是 []，不是 null
 	UpdatedAt       time.Time `json:"updated_at"`
 	Favorited       bool      `json:"favorited"`
 }

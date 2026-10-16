@@ -781,3 +781,63 @@ func TestListReturnsAuthorAvatar(t *testing.T) {
 		t.Errorf("没设头像的作者应为 nil，实得 %v", *without.AuthorAvatarURL)
 	}
 }
+
+// 列表要带分类与标签：客户端列表卡的第二行靠它们（spec §6）。
+func TestListReturnsCategoryAndTags(t *testing.T) {
+	pool := filesTestDB(t)
+	community := NewCommunityService(pool)
+	ctx := context.Background()
+
+	author := seedUser(t, pool)
+	now := time.Now().UTC()
+	withTags := seedCommunityRecipe(t, pool, author, "有标签的菜", 1, now, false)
+	seedCommunityRecipe(t, pool, author, "没分类的菜", 1, now.Add(-time.Minute), false)
+
+	catID := "cat-" + uuid.NewString()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO labels (id, name, kind, created_at, updated_at, deleted_at) VALUES ($1,'家常菜','category',$2,$2,NULL)`,
+		catID, now); err != nil {
+		t.Fatalf("插分类失败: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE recipes SET category_id = $1 WHERE id = $2`, catID, withTags); err != nil {
+		t.Fatalf("设分类失败: %v", err)
+	}
+	for _, name := range []string{"下饭", "快手"} {
+		labID := "lab-" + uuid.NewString()
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO labels (id, name, kind, created_at, updated_at, deleted_at) VALUES ($1,$2,'tag',$3,$3,NULL)`,
+			labID, name, now); err != nil {
+			t.Fatalf("插标签失败: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO recipe_labels (recipe_id, label_id) VALUES ($1,$2)`, withTags, labID); err != nil {
+			t.Fatalf("挂标签失败: %v", err)
+		}
+	}
+
+	got, _, err := community.ListPublicRecipes(ctx, seedUser(t, pool), model.CommunityListOptions{})
+	if err != nil {
+		t.Fatalf("列表失败: %v", err)
+	}
+
+	with := findCommunityRecipeByName(got, "有标签的菜")
+	if with == nil || with.CategoryName == nil || *with.CategoryName != "家常菜" {
+		t.Errorf("应带出分类名，实得 %+v", with)
+	}
+	// 判据是「两个标签都到了」，不比顺序：顺序由 DB collation 决定。
+	gotTags := append([]string(nil), with.Tags...)
+	slices.Sort(gotTags)
+	wantTags := slices.Sorted(slices.Values([]string{"下饭", "快手"}))
+	if !slices.Equal(gotTags, wantTags) {
+		t.Errorf("标签应全部带出（顺序不依赖 DB collation），实得 %v", with.Tags)
+	}
+	without := findCommunityRecipeByName(got, "没分类的菜")
+	if without == nil {
+		t.Fatalf("列表应包含「没分类的菜」")
+	}
+	if without.CategoryName != nil {
+		t.Errorf("没分类应为 nil（客户端第二行只画标签），实得 %v", *without.CategoryName)
+	}
+	if without.Tags == nil || len(without.Tags) != 0 {
+		t.Errorf("没标签应是空数组而不是 null，实得 %#v", without.Tags)
+	}
+}
