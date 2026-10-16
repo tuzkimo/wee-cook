@@ -19,6 +19,15 @@ type CommunityMock = {
   openRecipe: ReturnType<typeof vi.fn>;
 };
 
+/** 登录态替身：第三行的作者判定要读 nickname / avatarUrl / serverUserId */
+type AuthMock = {
+  isOnline: boolean;
+  syncVersion: number;
+  nickname: string | null;
+  avatarUrl: string | null;
+  serverUserId: string | null;
+};
+
 // 页面只测「拿到 store 的数据怎么画、点了往哪跳」；真 store 的查询已由 Task 4 覆盖，
 // 跳转用 mock 的 router 断言（真路由是 Task 9 的事）。
 const mocks = vi.hoisted(() => ({
@@ -31,7 +40,7 @@ const mocks = vi.hoisted(() => ({
   apply: vi.fn(),
   clear: vi.fn(),
   community: null as CommunityMock | null,
-  auth: null as { isOnline: boolean; syncVersion: number } | null,
+  auth: null as AuthMock | null,
   enqueueSync: vi.fn(),
   // 已配地址但未登录的场景：hasBaseUrl 为真、凭据为假
   authReady: { value: false },
@@ -65,7 +74,13 @@ vi.mock("@/services/imageStore", () => ({ imageSrc: mocks.imageSrc }));
 // syncVersion 必须 reactive：组件 watch 它来重拉列表。
 vi.mock("@/stores/auth", async () => {
   const { reactive } = await import("vue");
-  mocks.auth = reactive({ isOnline: true, syncVersion: 0 });
+  mocks.auth = reactive({
+    isOnline: true,
+    syncVersion: 0,
+    nickname: null as string | null,
+    avatarUrl: null as string | null,
+    serverUserId: null as string | null,
+  });
   return { useAuthStore: () => mocks.auth };
 });
 // 收藏 tab 会催一次同步；这里只关心「有没有催」，真调度由 sync 自己的测试覆盖。
@@ -144,7 +159,7 @@ function communityStore(): CommunityMock {
   return mocks.community!;
 }
 
-function auth(): { isOnline: boolean; syncVersion: number } {
+function auth(): AuthMock {
   return mocks.auth!;
 }
 
@@ -196,6 +211,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   auth().isOnline = true;
   auth().syncVersion = 0;
+  auth().nickname = null;
+  auth().avatarUrl = null;
+  auth().serverUserId = null;
   mocks.authReady.value = false;
   resetFilter();
   // recipes 由 mountList 重置；favorites 得自己清，否则上一条用例的收藏会漏进下一条
@@ -578,5 +596,60 @@ describe("RecipeList", () => {
     expect(wrapper.get('[data-test="filter-bar"]').element.previousElementSibling?.tagName).toBe(
       "HEADER",
     );
+  });
+
+  it("我的菜谱第三行是自己的昵称与头像", async () => {
+    auth().nickname = "阿丽";
+    auth().avatarUrl = "🐱";
+    auth().serverUserId = "u1";
+    const wrapper = mountList([item("r1", "红烧肉")]);
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="recipe-author"]').text()).toBe("阿丽");
+    expect(wrapper.get('[data-test="recipe-author-avatar"]').text()).toBe("🐱");
+  });
+
+  it("未登录时我的菜谱不显示第三行", async () => {
+    const wrapper = mountList([item("r1", "红烧肉")]);
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="recipe-author"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="recipe-author-avatar"]').exists()).toBe(false);
+  });
+
+  it("收藏的别人菜谱第三行是作者，用本地落库的昵称与头像", async () => {
+    auth().nickname = "阿丽";
+    auth().avatarUrl = "🐱";
+    auth().serverUserId = "u1";
+    const fav = item("r2", "收藏的红烧肉");
+    fav.recipe.owner_id = "u2";
+    fav.recipe.owner_nickname = "老王";
+    fav.recipe.owner_avatar_url = "🐷";
+    mocks.favorites.splice(0, mocks.favorites.length, fav);
+    const wrapper = mountList([]);
+
+    await wrapper.get('[data-test="tab-fav"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="recipe-author"]').text()).toBe("老王");
+    expect(wrapper.get('[data-test="recipe-author-avatar"]').text()).toBe("🐷");
+  });
+
+  it("该菜谱的 owner 是我自己时，收藏 tab 里也用我的头像", async () => {
+    auth().nickname = "阿丽";
+    auth().avatarUrl = "🐱";
+    auth().serverUserId = "u1";
+    const fav = item("r2", "我公开出去又被收藏的菜");
+    fav.recipe.owner_id = "u1";
+    fav.recipe.owner_nickname = "旧昵称";
+    fav.recipe.owner_avatar_url = "🐷";
+    mocks.favorites.splice(0, mocks.favorites.length, fav);
+    const wrapper = mountList([]);
+
+    await wrapper.get('[data-test="tab-fav"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="recipe-author"]').text()).toBe("阿丽");
+    expect(wrapper.get('[data-test="recipe-author-avatar"]').text()).toBe("🐱");
   });
 });

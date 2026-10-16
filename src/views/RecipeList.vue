@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 import { Filter, Plus } from "lucide-vue-next";
 import AppHeader from "@/components/AppHeader.vue";
 import CommunityFeed from "@/components/CommunityFeed.vue";
+import RecipeCard from "@/components/RecipeCard.vue";
 import { useRecipeStore } from "@/stores/recipe";
 import { useCommunityStore } from "@/stores/community";
 import { useAuthStore } from "@/stores/auth";
@@ -12,6 +13,7 @@ import { imageSrc } from "@/services/imageStore";
 import { ensureLocalImages } from "@/services/syncFiles";
 import { enqueueSync } from "@/services/sync";
 import { filterRecipes, filterSummary, isFilterActive } from "@/utils/recipeFilter";
+import type { RecipeListItem } from "@/types";
 
 const TABS = [
   { value: "all", label: "全部" },
@@ -46,6 +48,13 @@ const showCommunity = computed(() => tab.value === "all" || tab.value === "follo
 const mineList = computed(() =>
   tab.value === "fav" ? filterRecipes(store.favorites, filterStore.filter) : visible.value,
 );
+
+/** 第三行的作者：自己的菜谱（或未认领）用内存里的我；别人的用本地落库的两列。 */
+function authorOf(item: RecipeListItem): { name: string | null; avatarUrl: string | null } {
+  const mine = item.recipe.owner_id === null || item.recipe.owner_id === auth.serverUserId;
+  if (mine) return { name: auth.nickname, avatarUrl: auth.avatarUrl };
+  return { name: item.recipe.owner_nickname, avatarUrl: item.recipe.owner_avatar_url };
+}
 
 // 收藏与其他 tab 的空态口径不同：收藏 tab 要区分「一条都没收藏」与「收藏被现有筛选筛空」
 const emptyMessage = computed(() => {
@@ -195,46 +204,20 @@ onMounted(async () => {
         </p>
         <ul v-else class="flex flex-col gap-2.5">
           <li v-for="item in mineList" :key="item.recipe.id">
-            <button
-              type="button"
-              data-test="recipe-card"
-              class="flex w-full items-center gap-3 rounded-xl bg-surface px-3 py-3 text-left transition-colors hover:bg-gray-50"
+            <RecipeCard
+              :name="item.recipe.name"
+              :cover-src="
+                item.recipe.cover_path && localImages.has(item.recipe.cover_path)
+                  ? imageSrc(item.recipe.cover_path)
+                  : null
+              "
+              :category="item.category.name || null"
+              :tags="item.tags.map((tag) => tag.name)"
+              :author-name="authorOf(item).name"
+              :author-avatar-url="authorOf(item).avatarUrl"
+              test-prefix="recipe"
               @click="router.push(`/recipe/${item.recipe.id}`)"
-            >
-              <img
-                v-if="item.recipe.cover_path && localImages.has(item.recipe.cover_path)"
-                data-test="recipe-cover"
-                :src="imageSrc(item.recipe.cover_path)"
-                :alt="item.recipe.name"
-                loading="lazy"
-                class="h-11 w-11 shrink-0 rounded-lg object-cover"
-              />
-              <div
-                v-else
-                data-test="recipe-cover-fallback"
-                class="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-lg font-semibold text-text-secondary"
-              >
-                {{ item.recipe.name.charAt(0) }}
-              </div>
-              <div class="min-w-0 flex-1">
-                <h2 data-test="recipe-name" class="line-clamp-2 text-sm font-medium text-text">
-                  {{ item.recipe.name }}
-                </h2>
-                <p data-test="recipe-category" class="text-xs text-text-secondary">
-                  {{ item.category.name }}
-                </p>
-                <div v-if="item.tags.length > 0" class="mt-1 flex flex-wrap gap-1">
-                  <span
-                    v-for="tag in item.tags"
-                    :key="tag.id"
-                    data-test="recipe-tag"
-                    class="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-text-secondary"
-                  >
-                    {{ tag.name }}
-                  </span>
-                </div>
-              </div>
-            </button>
+            />
           </li>
         </ul>
       </section>
