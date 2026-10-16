@@ -42,6 +42,16 @@ describe("UserAvatar", () => {
     expect(wrapper.text()).toBe("");
   });
 
+  it("url 运行时不存在的键（undefined）→ 不抛错，降级成昵称首字", () => {
+    // JSON 缺这个键时就是这个值：props 类型说是 string | null，网络这条信任边界上不是
+    const wrapper = mount(UserAvatar, {
+      props: { url: undefined as unknown as string | null, name: "阿花" },
+    });
+
+    expect(wrapper.find("img").exists()).toBe(false);
+    expect(wrapper.text()).toBe("阿");
+  });
+
   it("昵称也为空 → 问号", () => {
     const wrapper = mount(UserAvatar, { props: { url: null, name: "" } });
     expect(wrapper.text()).toBe("?");

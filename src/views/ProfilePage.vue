@@ -69,6 +69,13 @@ function onNicknameInput(e: Event): void {
   nickname.value = Array.from((e.target as HTMLInputElement).value).slice(0, 50).join("");
 }
 
+/** 服务端答了话（错误上有状态码）才有服务端文案；断网 / 超时拿不到响应，只能给通用兜底 */
+function saveErrorMessage(err: unknown): string {
+  return err instanceof Error && typeof (err as { status?: unknown }).status === "number"
+    ? err.message
+    : "保存失败，检查网络后重试";
+}
+
 async function save(): Promise<void> {
   const trimmed = nickname.value.trim();
   if (!trimmed) {
@@ -81,7 +88,7 @@ async function save(): Promise<void> {
     // 清头像必须发空串：服务端的 avatar_url 是 *string，发 null 那段 UPDATE 根本不执行
     await auth.updateProfile({ nickname: trimmed, avatar_url: selectedAvatar.value ?? "" });
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : "保存失败，检查网络后重试";
+    error.value = saveErrorMessage(e);
     return;
   } finally {
     saving.value = false;

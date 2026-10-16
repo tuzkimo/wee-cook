@@ -100,8 +100,8 @@ async function open(id: string): Promise<void> {
                 data-test="community-author-avatar"
                 :url="item.author_avatar_url"
                 :name="item.author_nickname"
-                class="h-4 w-4 shrink-0 rounded-full"
-                text-class="text-[9px]"
+                class="h-8 w-8 shrink-0 rounded-full"
+                text-class="text-xs"
               />
               <p data-test="community-author" class="text-xs text-text-secondary">
                 {{ item.author_nickname }}

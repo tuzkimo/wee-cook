@@ -300,6 +300,7 @@ export async function updateProfile(data: UpdateProfileRequest): Promise<User> {
     method: "PUT",
     body: JSON.stringify(data),
   })
-  if (!res.ok) throw new Error(res.error)
+  // 带 status：调用方要区分「服务端拒了」（用服务端文案）与「拿不到响应」（走通用文案）
+  if (!res.ok) throw new AuthError(res.status, res.error)
   return res.data
 }

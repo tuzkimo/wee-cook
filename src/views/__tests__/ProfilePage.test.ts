@@ -38,14 +38,19 @@ function response(status: number, payload: unknown): Response {
   } as unknown as Response;
 }
 
-/** 服务端替身：/auth/profile 回完整 User 并记下请求 body，其余（/auth/refresh）回 AuthResponse。 */
-function stubProfileFetch(returns: Partial<User> = {}): { body: () => unknown } {
+/** 服务端替身：/auth/profile 回完整 User 并记下请求 body，其余（/auth/refresh）回 AuthResponse。
+ * 传 `profileResponse` 可让 /auth/profile 这一路单独失败（400 / 拒绝），refresh 仍然成功。 */
+function stubProfileFetch(
+  returns: Partial<User> = {},
+  profileResponse?: () => Promise<Response>,
+): { body: () => unknown } {
   let profileBody: unknown = null;
   vi.stubGlobal(
     "fetch",
     vi.fn((url: string, init?: RequestInit) => {
       if (url.includes("/auth/profile")) {
         profileBody = JSON.parse(String(init?.body));
+        if (profileResponse) return profileResponse();
         return Promise.resolve(
           response(200, {
             id: "u1",
@@ -158,6 +163,30 @@ describe("ProfilePage 资料编辑", () => {
     await flushPromises();
 
     expect(stub.body()).toEqual({ nickname: "阿丽", avatar_url: "" });
+  });
+
+  it("保存时拿不到响应（断网）→ 显示通用文案，不弹回上一页", async () => {
+    stubProfileFetch({}, () => Promise.reject(new Error("Failed to fetch")));
+    const wrapper = await onlinePage();
+
+    await wrapper.get('[data-test="me-nickname"]').setValue("阿丽丽");
+    await wrapper.get('[data-test="me-save"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="me-error"]').text()).toBe("保存失败，检查网络后重试");
+    expect(mocks.back).not.toHaveBeenCalled();
+  });
+
+  it("保存时服务端答 400 → 显示服务端文案", async () => {
+    stubProfileFetch({}, () => Promise.resolve(response(400, { error: "昵称太长" })));
+    const wrapper = await onlinePage();
+
+    await wrapper.get('[data-test="me-nickname"]').setValue("阿丽丽");
+    await wrapper.get('[data-test="me-save"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="me-error"]').text()).toBe("昵称太长");
+    expect(mocks.back).not.toHaveBeenCalled();
   });
 
   it("没有改动时保存按钮 disabled", async () => {

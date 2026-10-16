@@ -7,9 +7,10 @@ const props = withDefaults(defineProps<{ url: string | null; name: string; textC
   textClass: "text-sm",
 });
 
-/** data: / http / / 开头才算图；坏掉的 data URL 也交给 <img>（浏览器出破图），不静默换成首字 */
+/** data: / http / / 开头才算图；坏掉的 data URL 也交给 <img>（浏览器出破图），不静默换成首字。
+ * 先判 typeof：服务端 JSON 可能整个缺这个键，运行时是 undefined，`!== null` 挡不住 */
 function isImageUrl(url: string | null): boolean {
-  return url !== null && (url.startsWith("data:") || url.startsWith("http") || url.startsWith("/"));
+  return typeof url === "string" && (url.startsWith("data:") || url.startsWith("http") || url.startsWith("/"));
 }
 
 /** 用 Array.from 按码点切，charAt(0) 会把 emoji 切成半个代理对 */
@@ -24,7 +25,8 @@ const text = computed(() => (props.url ? props.url : firstChar(props.name)));
 
 <template>
   <div class="flex items-center justify-center overflow-hidden bg-gray-100 text-text-secondary">
-    <img v-if="isImage" class="h-full w-full object-cover" :src="url!" />
+    <!-- alt 留空：data URL 被读屏整串朗读毫无意义，四处调用点旁边都有昵称文字 -->
+    <img v-if="isImage" class="h-full w-full object-cover" alt="" :src="url!" />
     <span v-else :class="['flex h-full w-full items-center justify-center', textClass]">{{ text }}</span>
   </div>
 </template>
