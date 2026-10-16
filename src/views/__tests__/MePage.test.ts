@@ -9,8 +9,19 @@ import MePage from "@/views/MePage.vue";
 // 用**真** store（而不是 mock）：本条覆盖的是 restoreSession 与 MePage 的三态联动，
 // 把 store mock 掉就测不到「只配了地址 → baseUrl 就绪」这条关键回归。
 const mocks = vi.hoisted(() => ({ push: vi.fn(), back: vi.fn() }));
+const syncMock = vi.hoisted(() => ({ requestSyncNow: vi.fn() }));
 
 vi.mock("vue-router", () => ({ useRouter: () => ({ push: mocks.push, back: mocks.back }) }));
+
+// 只把手动同步入口换成 spy，其余用真身；syncInFlight 换成测试自有的 ref，
+// 这样「在途置灰」不依赖真同步逻辑的时序。
+vi.mock("@/services/sync", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/services/sync")>();
+  const { ref } = await import("vue");
+  return { ...actual, requestSyncNow: syncMock.requestSyncNow, syncInFlight: ref(false) };
+});
+
+import { syncInFlight } from "@/services/sync";
 
 const NOW = "2026-10-14T10:00:00.000Z";
 
@@ -32,6 +43,7 @@ function response(status: number, payload: unknown): Response {
 beforeEach(async () => {
   setActivePinia(createPinia());
   vi.clearAllMocks();
+  syncInFlight.value = false;
   clearTokens();
   // clearTokens 的「删落盘 refresh token」是 fire-and-forget，等它落定再清 localStorage
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -103,9 +115,65 @@ describe("MePage 多设备同步入口", () => {
 
     const wrapper = await page();
 
+    expect(wrapper.find('[data-test="me-sync-card"]').exists()).toBe(true);
     expect(wrapper.get('[data-test="server-state"]').text()).toBe("已开启");
     expect(wrapper.get('[data-test="nickname"]').text()).toBe("阿丽");
     expect(wrapper.get('[data-test="last-sync"]').text()).toBe("还没同步过");
+  });
+});
+
+describe("MePage 同步卡", () => {
+  async function loggedInPage(): Promise<VueWrapper> {
+    seedSetting("server_url", "https://srv");
+    seedSetting("server_user_id", "u1");
+    await writeRefreshToken("u1", "refresh-1");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          response(200, {
+            user: {
+              id: "u1",
+              username: "alice",
+              nickname: "阿丽",
+              avatar_url: null,
+              created_at: NOW,
+              updated_at: NOW,
+            },
+            access_token: "access-new",
+            refresh_token: "refresh-new",
+          }),
+        ),
+      ),
+    );
+    return page();
+  }
+
+  it("点同步卡触发一次手动同步", async () => {
+    const wrapper = await loggedInPage();
+
+    await wrapper.get('[data-test="me-sync-card"]').trigger("click");
+
+    expect(syncMock.requestSyncNow).toHaveBeenCalledTimes(1);
+  });
+
+  it("同步在途时显示「同步中…」且整块 disabled", async () => {
+    const wrapper = await loggedInPage();
+    expect(wrapper.find('[data-test="syncing"]').exists()).toBe(false);
+
+    syncInFlight.value = true;
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="syncing"]').text()).toContain("同步中");
+    expect(wrapper.get('[data-test="me-sync-card"]').attributes("disabled")).toBeDefined();
+  });
+
+  it("已登录时有「服务器设置」入口", async () => {
+    const wrapper = await loggedInPage();
+
+    await wrapper.get('[data-test="server-settings-row"]').trigger("click");
+
+    expect(mocks.push).toHaveBeenCalledWith("/me/server");
   });
 });
 

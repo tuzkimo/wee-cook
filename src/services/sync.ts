@@ -4,6 +4,7 @@
 // 服务器只做「收增量 / 发增量」，本地 SQLite 始终是唯一真相源（spec §4）。
 // 结构照抄姊妹项目 wee-count/src/services/sync.ts，按本项目规格去掉账本 / 交易 / 别名分支，
 // 保留：字典同名合并、子行整组替换、队列与游标按 uid 隔离。
+import { ref } from "vue";
 import { getDb, type Db } from "@/db";
 import { apiFetch, hasBaseUrl } from "./api";
 import { downloadPendingFiles, uploadPendingFiles, type FileRef } from "./syncFiles";
@@ -454,6 +455,9 @@ let retryAttempt = 0;
 let isSyncing = false;
 let syncQueued = false;
 
+/** 有 /sync 在途（界面据此显示「同步中…」并置灰按钮）。与 isSyncing 同进同出。 */
+export const syncInFlight = ref(false);
+
 // 待推送队列按 uid 隔离（Map key = 服务端 user id），并持久化到 localStorage。
 // 单例会让 A 的变更串到 B 账号；不持久化则 3s 防抖定时器没烧完就退出 App 会丢变更。
 const pendingByUid = new Map<string, SyncPayload>();
@@ -549,10 +553,23 @@ export function enqueueSync(changes: Partial<SyncPayload>): void {
   }, 3000);
 }
 
+/** 手动同步：立刻跑一次增量同步，不等 enqueueSync 的 3 秒防抖。
+ *  并发互斥与「在途时补跑一轮」已经在 performSync 里（syncQueued），这里不再重复实现。 */
+export function requestSyncNow(): void {
+  if (!hasBaseUrl() || !getCurrentServerUserId()) return;
+  if (syncTimer) {
+    clearTimeout(syncTimer);
+    syncTimer = null;
+  }
+  void performSync().catch(() => {});
+}
+
 /** 停止同步调度（定时器 + 重试计数），但保留各 uid 的待推送队列。登出用。 */
 export function resetSyncTimers(): void {
   retryAttempt = 0;
   syncQueued = false;
+  // 登出不允许界面停在「同步中」（在途的那轮结束时会自己再置一次，幂等）
+  syncInFlight.value = false;
   if (syncTimer) {
     clearTimeout(syncTimer);
     syncTimer = null;
@@ -672,10 +689,12 @@ export async function performSync(): Promise<boolean> {
     return false;
   }
   isSyncing = true;
+  syncInFlight.value = true;
   try {
     return await doSync();
   } finally {
     isSyncing = false;
+    syncInFlight.value = false;
     if (syncQueued) {
       syncQueued = false;
       void performSync().catch(() => {});

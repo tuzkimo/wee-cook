@@ -48,8 +48,10 @@ import {
   enqueueSync,
   getLastSyncedAtFor,
   performSync,
+  requestSyncNow,
   resetSyncTimers,
   setLastSyncedAtFor,
+  syncInFlight,
 } from "@/services/sync";
 
 const hasBaseUrlMock = vi.mocked(hasBaseUrl);
@@ -278,6 +280,87 @@ describe("performSync", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("requestSyncNow", () => {
+  it("空闲时立刻跑一次，不等 3 秒防抖", async () => {
+    apiFetchMock.mockResolvedValue(okResponse(1));
+
+    vi.useFakeTimers();
+    try {
+      requestSyncNow();
+      // 只冲微任务、不推进 3 秒：走防抖的话这里必然是 0 次
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(apiFetchMock).toHaveBeenCalledTimes(1);
+      expect(apiFetchMock.mock.calls[0][0]).toBe("/api/v1/sync");
+      await vi.runAllTimersAsync();
+    } finally {
+      vi.useRealTimers();
+    }
+    // 等这轮同步真正结束，不把 isSyncing 漏给下一条用例
+    await vi.waitFor(() => expect(syncInFlight.value).toBe(false));
+  });
+
+  it("在途时再调只安排一轮补跑，总请求数 2 而不是 3", async () => {
+    let resolveFirst!: (value: OkResult) => void;
+    apiFetchMock
+      .mockImplementationOnce(() => new Promise<OkResult>((resolve) => (resolveFirst = resolve)))
+      .mockResolvedValueOnce(okResponse(2));
+
+    requestSyncNow();
+    requestSyncNow();
+    requestSyncNow();
+
+    await vi.waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(1));
+
+    resolveFirst(okResponse(1));
+    await vi.waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(syncInFlight.value).toBe(false));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(apiFetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("没地址或没登录时不发请求", async () => {
+    authState.serverUserId = null;
+    requestSyncNow();
+    expect(apiFetchMock).not.toHaveBeenCalled();
+
+    authState.serverUserId = "u1";
+    hasBaseUrlMock.mockReturnValue(false);
+    requestSyncNow();
+    expect(apiFetchMock).not.toHaveBeenCalled();
+  });
+
+  it("syncInFlight 在跑与不跑之间正确翻转", async () => {
+    let resolveFirst!: (value: OkResult) => void;
+    apiFetchMock.mockImplementationOnce(() => new Promise<OkResult>((resolve) => (resolveFirst = resolve)));
+
+    expect(syncInFlight.value).toBe(false);
+
+    const running = performSync();
+    expect(syncInFlight.value).toBe(true);
+    await vi.waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(1));
+
+    resolveFirst(okResponse(1));
+    await expect(running).resolves.toBe(true);
+    expect(syncInFlight.value).toBe(false);
+  });
+
+  it("resetSyncTimers（登出）把在途标志复位", async () => {
+    let resolveFirst!: (value: OkResult) => void;
+    apiFetchMock.mockImplementationOnce(() => new Promise<OkResult>((resolve) => (resolveFirst = resolve)));
+
+    const running = performSync();
+    expect(syncInFlight.value).toBe(true);
+    await vi.waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(1));
+
+    resetSyncTimers();
+    expect(syncInFlight.value).toBe(false);
+
+    resolveFirst(okResponse(1));
+    await running;
   });
 });
 
