@@ -1,0 +1,122 @@
+// AI 对话的网络层：客户端只跟自家后端说话（/api/v1/ai/status、/api/v1/ai/chat），
+// 不直连上游、不碰 API key。只做 HTTP 形状转换与错误码映射，不读 settings / DB。
+import { apiFetch, hasBaseUrl } from "@/services/api";
+import type { ApiResult } from "@/services/api";
+
+export interface AiToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+export interface AiMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  tool_call_id?: string;
+  tool_calls?: AiToolCall[];
+}
+
+export interface AiTool {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+export interface AiUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
+export interface AiChatResult {
+  text: string;
+  tool_calls: AiToolCall[];
+  usage: AiUsage;
+  finish_reason: string;
+}
+
+export interface AiStatus {
+  enabled: boolean;
+  model: string;
+  host: string;
+}
+
+export type AiErrorCode =
+  | "no_server"
+  | "unreachable"
+  | "ai_disabled"
+  | "ai_upstream_auth"
+  | "ai_rate_limited"
+  | "ai_quota_exceeded"
+  | "ai_upstream_timeout"
+  | "ai_unreachable"
+  | "ai_upstream_error"
+  | "bad_request";
+
+/** 服务端可能原样下发的码；表外的码按状态码分档（见 `toAiError`）。 */
+const KNOWN_CODES = new Set<string>([
+  "ai_disabled",
+  "ai_upstream_auth",
+  "ai_rate_limited",
+  "ai_quota_exceeded",
+  "ai_upstream_timeout",
+  "ai_unreachable",
+  "ai_upstream_error",
+  "bad_request",
+]);
+
+export class AiError extends Error {
+  readonly code: AiErrorCode;
+
+  constructor(code: AiErrorCode) {
+    super(code);
+    this.name = "AiError";
+    this.code = code;
+  }
+}
+
+/**
+ * 表外的码按状态码分档：4xx 是请求/凭据问题（含后台鉴权 401 的
+ * "missing or invalid Authorization header"），报成上游出错会误导用户；5xx 才归上游。
+ */
+function toAiError(status: number, code: string): AiError {
+  if (KNOWN_CODES.has(code)) return new AiError(code as AiErrorCode);
+  if (status >= 400 && status < 500) return new AiError("bad_request");
+  return new AiError("ai_upstream_error");
+}
+
+/** 未配地址时一个请求都不发；拿不到 HTTP 响应归 unreachable；服务端答了就按其错误码抛。 */
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  if (!hasBaseUrl()) throw new AiError("no_server");
+
+  let res: ApiResult<T>;
+  try {
+    res = await apiFetch<T>(path, init);
+  } catch {
+    throw new AiError("unreachable");
+  }
+
+  if (!res.ok) throw toAiError(res.status, res.error);
+  return res.data;
+}
+
+export async function fetchAiStatus(): Promise<AiStatus> {
+  return await request<AiStatus>("/api/v1/ai/status");
+}
+
+export async function callAiChat(messages: AiMessage[], tools: AiTool[]): Promise<AiChatResult> {
+  const data = await request<AiChatResult>("/api/v1/ai/chat", {
+    method: "POST",
+    body: JSON.stringify({ messages, tools }),
+  });
+  // 后端 Go 侧 tool_calls 为 nil 时下发 null，其余字段用零值兜底
+  return {
+    text: data.text ?? "",
+    tool_calls: data.tool_calls ?? [],
+    usage: data.usage,
+    finish_reason: data.finish_reason ?? "",
+  };
+}
