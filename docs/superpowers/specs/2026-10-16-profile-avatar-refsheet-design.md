@@ -319,7 +319,7 @@ async updateProfile(input: { nickname: string; avatar_url: string })   // 清头
 
 - 整页表单模式：`showForm`、`editingId` 的「新建」分支、底部「新建」按钮。
 - 每行的「编辑」「删除」文字按钮。
-- `data-test="ref-new"`、`ref-form-name`、`ref-form-save`、`ref-form-error`（`ref-edit`/`ref-delete` 保留，只是挪进管理模式）。
+- 只删 `data-test="ref-new"`；`ref-form-name` / `ref-form-save` / `ref-form-error` **保留**，供管理模式的内联改名使用（§8.5 要求：一个输入框 + 取消/保存 + 失败显示在输入框下方）。`ref-edit`/`ref-delete` 也保留，只是挪进管理模式。
 
 props / emits 签名**一个都不变**（`visible` / `title` / `store` / `mode` / `selectedIds` / `emptyHint`），所以三个调用点（`RecipeEdit.vue` ×2、`IngredientSheet.vue` ×2）不需要改结构，只改 `empty-hint` 文案。
 
@@ -335,8 +335,8 @@ props / emits 签名**一个都不变**（`visible` / `title` / `store` / `mode`
 
 | 文件 · 用例 | 冲突点 | 处理 |
 |---|---|---|
-| `RefSheet.test.ts` ·「点『新建』进表单模式…」 | `ref-new` 与 `ref-form-name` 不存在了 | 改写成：搜索框输入名称 → 点 `ref-create` → `store.add` 被调用、条目被选中 |
-| `RefSheet.test.ts` ·「点『编辑』进表单，改名保存…」 | 同上（`ref-edit` 现在要先点「管理」） | 改写成：点 `ref-manage` → 点 `ref-edit` → 保存 |
+| `RefSheet.test.ts` ·「点『新建』进表单模式…」 | `ref-new` 不存在了（改名走管理模式的内联改名，`ref-form-name` 保留） | 改写成：搜索框输入名称 → 点 `ref-create` → `store.add` 被调用、条目被选中 |
+| `RefSheet.test.ts` ·「点『编辑』进表单，改名保存…」 | `ref-edit` 现在要先点「管理」 | 改写成：点 `ref-manage` → 点 `ref-edit` → 保存 |
 | `RefSheet.test.ts` ·「保存时名称纯空格 → 显示错误」 | 校验从「保存按钮」移到创建行前（空搜索词不出创建行） | 改写成等价断言：纯空格搜索词 → 不出现 `ref-create` |
 | `RefSheet.test.ts` ·「`store.add` 抛同名 → 错误显示在表单里」 | 前端不出现创建行（同名），由 SQL 层兜 | 改写成：已有同名条目时 `ref-create` 不出现；`store.add` 的错误路径改由 `IngredientSheet`/store 测试覆盖 |
 | `RefSheet.test.ts` ·「点『删除』弹 ConfirmDialog…」 | 删除按钮移进管理模式 | 改写成：`ref-manage` → `ref-delete` → 确认 |
