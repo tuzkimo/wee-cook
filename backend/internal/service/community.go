@@ -170,7 +170,7 @@ func (s *CommunityService) ListPublicRecipes(ctx context.Context, viewerID strin
 	args = append(args, limit+1, offset)
 
 	recipes, err := queryList(ctx, s.pool, fmt.Sprintf(
-		`SELECT r.id, r.name, r.cover_path, r.owner_id, u.nickname, r.updated_at, (f.user_id IS NOT NULL)
+		`SELECT r.id, r.name, r.cover_path, r.owner_id, u.nickname, u.avatar_url, r.updated_at, (f.user_id IS NOT NULL)
 		 FROM recipes r
 		 LEFT JOIN users u ON u.id = r.owner_id
 		 LEFT JOIN favorites f ON f.recipe_id = r.id AND f.user_id = $1
@@ -180,7 +180,7 @@ func (s *CommunityService) ListPublicRecipes(ctx context.Context, viewerID strin
 		strings.Join(conds, " AND "), len(args)-1, len(args)), args,
 		func(rows pgx.Rows) (model.CommunityRecipe, error) {
 			var it model.CommunityRecipe
-			err := rows.Scan(&it.ID, &it.Name, &it.CoverPath, &it.AuthorID, &it.AuthorNickname, &it.UpdatedAt, &it.Favorited)
+			err := rows.Scan(&it.ID, &it.Name, &it.CoverPath, &it.AuthorID, &it.AuthorNickname, &it.AuthorAvatarURL, &it.UpdatedAt, &it.Favorited)
 			return it, err
 		})
 	if err != nil {

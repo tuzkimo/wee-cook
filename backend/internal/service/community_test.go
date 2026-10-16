@@ -407,6 +407,15 @@ func findCommunityRecipe(recipes []model.CommunityRecipe, id string) *model.Comm
 	return nil
 }
 
+func findCommunityRecipeByName(recipes []model.CommunityRecipe, name string) *model.CommunityRecipe {
+	for i := range recipes {
+		if recipes[i].Name == name {
+			return &recipes[i]
+		}
+	}
+	return nil
+}
+
 // 列表只列别人的公开菜谱：自己的公开菜谱不走社区列表（spec §8）。
 func TestListExcludesOwnPublicRecipes(t *testing.T) {
 	pool := filesTestDB(t)
@@ -728,5 +737,39 @@ func TestUnfollowIsIdempotent(t *testing.T) {
 	}
 	if p.Followed {
 		t.Errorf("取消关注后 Profile.Followed = true, want false")
+	}
+}
+
+// 列表要带作者头像：客户端靠它认出「哪几道菜是同一个人发的」。
+func TestListReturnsAuthorAvatar(t *testing.T) {
+	pool := filesTestDB(t)
+	community := NewCommunityService(pool)
+	ctx := context.Background()
+
+	withAvatar := seedUser(t, pool)
+	noAvatar := seedUser(t, pool)
+	if _, err := pool.Exec(ctx,
+		`UPDATE users SET avatar_url = 'data:image/jpeg;base64,AAA' WHERE id = $1`, withAvatar); err != nil {
+		t.Fatalf("设头像失败: %v", err)
+	}
+	now := time.Now().UTC()
+	seedCommunityRecipe(t, pool, withAvatar, "有头像的菜", 1, now, false)
+	seedCommunityRecipe(t, pool, noAvatar, "没头像的菜", 1, now.Add(-time.Minute), false)
+
+	got, _, err := community.ListPublicRecipes(ctx, seedUser(t, pool), model.CommunityListOptions{})
+	if err != nil {
+		t.Fatalf("列表失败: %v", err)
+	}
+
+	with := findCommunityRecipeByName(got, "有头像的菜")
+	if with == nil || with.AuthorAvatarURL == nil || *with.AuthorAvatarURL != "data:image/jpeg;base64,AAA" {
+		t.Errorf("有头像的作者应带出 data URL，实得 %+v", with)
+	}
+	without := findCommunityRecipeByName(got, "没头像的菜")
+	if without == nil {
+		t.Fatalf("列表应包含「没头像的菜」")
+	}
+	if without.AuthorAvatarURL != nil {
+		t.Errorf("没设头像的作者应为 nil，实得 %v", *without.AuthorAvatarURL)
 	}
 }
