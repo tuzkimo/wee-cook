@@ -30,4 +30,11 @@ describe("路由表", () => {
     expect(route?.meta.hideTab).toBe(true);
     expect(router.resolve("/recipe/filter").name).toBe("recipe-filter");
   });
+
+  it("/me/profile 隐藏 tab 栏", () => {
+    const route = router.getRoutes().find((r) => r.path === "/me/profile");
+
+    expect(route).toBeDefined();
+    expect(route?.meta.hideTab).toBe(true);
+  });
 });
