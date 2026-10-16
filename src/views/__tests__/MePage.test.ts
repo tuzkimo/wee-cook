@@ -174,6 +174,8 @@ describe("MePage 同步卡", () => {
     await flushPromises();
 
     expect(wrapper.get('[data-test="sync-failed"]').text()).toContain("上次同步没成功");
+    // 失败态本身也是「点一下重试」的可点提示（同步卡唯一的可点入口）
+    expect(wrapper.get('[data-test="sync-failed"]').text()).toContain("点一下重试");
     expect(wrapper.find('[data-test="syncing"]').exists()).toBe(false);
   });
 

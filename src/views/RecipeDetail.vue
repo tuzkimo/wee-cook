@@ -273,30 +273,30 @@ async function confirmDelete(): Promise<void> {
         <div v-if="!canEdit(detail.recipe)" class="mb-4 flex items-center gap-3">
           <button
             v-if="detail.recipe.owner_id"
-              type="button"
-              class="flex min-w-0 flex-1 items-center gap-3 rounded-xl bg-surface px-3 py-3 text-left transition-colors hover:bg-gray-50"
-              @click="openAuthor"
-            >
-              <UserAvatar
-                data-test="recipe-author-avatar"
-                :url="detail.recipe.owner_avatar_url"
-                :name="detail.recipe.owner_nickname ?? ''"
-                class="h-16 w-16 shrink-0 rounded-full"
-                text-class="text-2xl"
-              />
-              <div class="min-w-0 flex-1">
-                <p data-test="recipe-author" class="truncate text-base font-medium text-text">
-                  {{ detail.recipe.owner_nickname }}
-                </p>
-                <p
-                  v-if="authorProfile"
-                  data-test="recipe-author-count"
-                  class="text-xs text-text-secondary"
-                >
-                  公开 {{ authorProfile.public_count }} 道
-                </p>
-              </div>
-            </button>
+            type="button"
+            class="flex min-w-0 flex-1 items-center gap-3 rounded-xl bg-surface px-3 py-3 text-left transition-colors hover:bg-gray-50"
+            @click="openAuthor"
+          >
+            <UserAvatar
+              data-test="recipe-author-avatar"
+              :url="detail.recipe.owner_avatar_url"
+              :name="detail.recipe.owner_nickname ?? ''"
+              class="h-16 w-16 shrink-0 rounded-full"
+              text-class="text-2xl"
+            />
+            <div class="min-w-0 flex-1">
+              <p data-test="recipe-author" class="truncate text-base font-medium text-text">
+                {{ detail.recipe.owner_nickname }}
+              </p>
+              <p
+                v-if="authorProfile"
+                data-test="recipe-author-count"
+                class="text-xs text-text-secondary"
+              >
+                公开 {{ authorProfile.public_count }} 道
+              </p>
+            </div>
+          </button>
           <button
             v-if="authorProfile"
             type="button"

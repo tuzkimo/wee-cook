@@ -109,6 +109,7 @@ async function logout(): Promise<void> {
                 <!-- 图标是「这里能点」的可见提示（在途时转起来） -->
                 <RefreshCw
                   :size="14"
+                  aria-hidden="true"
                   :class="syncing ? 'animate-spin text-primary' : 'text-text-secondary'"
                 />
               </span>
@@ -129,7 +130,7 @@ async function logout(): Promise<void> {
               data-test="sync-failed"
               class="block text-xs text-danger"
             >
-              上次同步没成功
+              上次同步没成功，点一下重试
             </span>
             <span v-else data-test="sync-hint" class="block text-xs text-primary">
               点一下立刻同步
