@@ -22,6 +22,7 @@ type handlers struct {
 	sync      *handler.SyncHandler
 	file      *handler.FileHandler
 	community *handler.CommunityHandler
+	ai        *handler.AIHandler
 }
 
 // newRouter 构造完整路由。**从 main 抽出来是为了让测试能直接断言中间件顺序**：
@@ -86,10 +87,41 @@ func newRouter(cfg *config.Config, h handlers) http.Handler {
 			// 图片走独立通道：body 是裸二进制，文件名由客户端给（spec §8.1）
 			r.Post("/files", h.file.Upload)
 			r.Get("/files/{name}", h.file.Download)
+
+			// AI（规格 §6.3）：两条限流都必须在 AuthMiddleware 之后，否则 GetUserID 为空、所有人共用一个桶。
+			// 顺序：分钟级在外、日配额在内 —— httprate 只在自己放行时计数，
+			// 日配额在外会被「已被分钟级拒掉」的请求提前吃掉。
+			// 分钟级限流器只建一个实例、两端点共用 —— 各建一个会让 /ai/* 每分钟总量静默翻倍。
+			minuteKey := func(r *http.Request) (string, error) { return mw.GetUserID(r.Context()), nil }
+			minuteLimit := httprate.LimitBy(cfg.AIRateLimit, time.Minute, minuteKey,
+				httprate.WithLimitHandler(aiLimitHandler("ai_rate_limited")))
+			dailyLimit := httprate.LimitBy(cfg.AIDailyLimit, 24*time.Hour, minuteKey,
+				httprate.WithLimitHandler(aiLimitHandler("ai_quota_exceeded")))
+
+			r.Group(func(r chi.Router) {
+				r.Use(minuteLimit)
+				// status 不吃日配额：客户端要拿它决定是否展示隐私说明卡，
+				// 让它吃配额等于一次状态轮询就能在零 AI 调用下耗尽用户的日额度。
+				r.Get("/ai/status", h.ai.Status)
+				r.Group(func(r chi.Router) {
+					r.Use(dailyLimit)
+					r.Post("/ai/chat", h.ai.Chat)
+				})
+			})
 		})
 	})
 
 	return r
+}
+
+// aiLimitHandler 让两条 AI 限流返回 JSON：httprate 默认写纯文本 "Too Many Requests"，
+// 客户端统一按 {"error": ...} 解析错误。
+func aiLimitHandler(code string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"` + code + `"}`))
+	}
 }
 
 // clientIPKey 从 r.RemoteAddr 提取限流 key。未启用 TRUST_PROXY 时，r.RemoteAddr 是

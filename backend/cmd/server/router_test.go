@@ -127,6 +127,146 @@ func TestFileRoutesRequireAuth(t *testing.T) {
 	}
 }
 
+// fakeAIService 永远返回成功：AI 路由用例只验路由与限流，不碰上游。
+type fakeAIService struct{}
+
+func (fakeAIService) Enabled() bool { return true }
+func (fakeAIService) Model() string { return "test-model" }
+func (fakeAIService) Host() string  { return "test-host" }
+
+func (fakeAIService) Chat(context.Context, service.AIChatRequest) (*service.AIChatResponse, error) {
+	return &service.AIChatResponse{Text: "ok"}, nil
+}
+
+// newAIRouter 用真实 newRouter 挂上 AI 路由。限流值由用例显式给出：
+// 分钟级与日配额要分别验证，且不能依赖 config.Load 的默认值。
+func newAIRouter(rateLimit, dailyLimit int) http.Handler {
+	cfg := &config.Config{
+		JWTSecret:    testJWTSecret,
+		AIRateLimit:  rateLimit,
+		AIDailyLimit: dailyLimit,
+	}
+	return newRouter(cfg, handlers{ai: handler.NewAIHandler(fakeAIService{})})
+}
+
+func doAIChat(t *testing.T, r http.Handler, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/api/v1/ai/chat", bytes.NewBufferString(`{"messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	return rec
+}
+
+func doAIStatus(t *testing.T, r http.Handler, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("GET", "/api/v1/ai/status", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	return rec
+}
+
+// 两条 AI 路由都必须在受保护组内：无 token 时 401 且 401 来自 AuthMiddleware。
+// 只断状态码不够 —— 路由没挂是 404，挪出受保护组会变成 handler 自己的响应。
+func TestAIRoutesRequireAuth(t *testing.T) {
+	r := newAIRouter(10, 10)
+
+	for _, rt := range []struct{ method, path string }{
+		{"GET", "/api/v1/ai/status"},
+		{"POST", "/api/v1/ai/chat"},
+	} {
+		req := httptest.NewRequest(rt.method, rt.path, bytes.NewBufferString(`{}`))
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s: got %d, want 401", rt.method, rt.path, rec.Code)
+			continue
+		}
+		if !bytes.Contains(rec.Body.Bytes(), []byte("missing or invalid Authorization header")) {
+			t.Errorf("%s %s: 401 应来自 AuthMiddleware；实际: %s", rt.method, rt.path, rec.Body.String())
+		}
+	}
+}
+
+// 分钟级必须在外层、日配额在内层。两层限流器都设成 1，同一分钟内第二次请求由谁拒
+// 决定了嵌套顺序：httprate 的 Retry-After 是窗口长度本身，60 = 分钟级先响，
+// 86400 = 日配额先响（说明顺序反了，日配额会被分钟级拒掉的请求吃掉）。
+func TestAIChatMinuteLimiterFiresBeforeDailyQuota(t *testing.T) {
+	r := newAIRouter(1, 1)
+	token := mintTestToken(t, "access")
+
+	rec := doAIChat(t, r, token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("第一次应放行，got %d", rec.Code)
+	}
+	rec2 := doAIChat(t, r, token)
+	if rec2.Code != http.StatusTooManyRequests {
+		t.Fatalf("got %d, want 429", rec2.Code)
+	}
+	if got := rec2.Header().Get("Retry-After"); got != "60" {
+		t.Errorf("Retry-After 应是分钟窗口长度 60（证明分钟级在外层），实际 %q", got)
+	}
+	if !bytes.Contains(rec2.Body.Bytes(), []byte("ai_rate_limited")) {
+		t.Errorf("429 响应体应是 JSON ai_rate_limited；实际: %s", rec2.Body.String())
+	}
+}
+
+// /ai/status 不吃日配额：客户端要拿它决定是否展示隐私说明卡，
+// 让它吃配额等于一次状态轮询就能在零 AI 调用下耗尽用户的日额度。
+func TestAIStatusDoesNotConsumeDailyQuota(t *testing.T) {
+	r := newAIRouter(10, 1)
+	token := mintTestToken(t, "access")
+
+	for i := 0; i < 3; i++ {
+		if rec := doAIStatus(t, r, token); rec.Code != http.StatusOK {
+			t.Fatalf("第 %d 次 /ai/status 应 200，got %d", i+1, rec.Code)
+		}
+	}
+	if rec := doAIChat(t, r, token); rec.Code != http.StatusOK {
+		t.Fatalf("/ai/chat 的日配额应仍是完整的 1 次，got %d", rec.Code)
+	}
+}
+
+// 分钟级限流器只建一个实例、两端点共用：各建一个会让 /ai/* 每分钟总量静默翻倍。
+func TestAIStatusAndChatShareOneMinuteLimiter(t *testing.T) {
+	r := newAIRouter(1, 10)
+	token := mintTestToken(t, "access")
+
+	if rec := doAIStatus(t, r, token); rec.Code != http.StatusOK {
+		t.Fatalf("/ai/status 第一次应 200，got %d", rec.Code)
+	}
+	rec := doAIChat(t, r, token)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("/ai/status 用掉分钟额度后 /ai/chat 应 429，got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "60" {
+		t.Errorf("Retry-After 应是分钟窗口长度 60，实际 %q", got)
+	}
+}
+
+// 日配额的 429 必须用日配额自己的 handler（带 quota_exceeded 文案）：
+// 两个 WithLimitHandler 接反时，客户端会把额度耗尽可能当成分钟级限流去盲目重试。
+func TestAIChatDailyQuotaUsesQuotaHandler(t *testing.T) {
+	r := newAIRouter(100, 1)
+	token := mintTestToken(t, "access")
+
+	if rec := doAIChat(t, r, token); rec.Code != http.StatusOK {
+		t.Fatalf("第一次应放行，got %d", rec.Code)
+	}
+	rec := doAIChat(t, r, token)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("got %d, want 429", rec.Code)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("ai_quota_exceeded")) {
+		t.Errorf("日配额 429 响应体应是 ai_quota_exceeded；实际: %s", rec.Body.String())
+	}
+	if got := rec.Header().Get("Retry-After"); got != "86400" {
+		t.Errorf("Retry-After 应是日窗口长度 86400，实际 %q", got)
+	}
+}
+
 // 七条社区路由全部必须在受保护组内：无 token 时 401，且 401 来自 AuthMiddleware。
 // 漏挂一条会变成 404（路由不存在），挪出受保护组会走到 handler 自己的 401，
 // 后者没有 AuthMiddleware 的响应体，本用例靠 body 区分两者。

@@ -46,6 +46,7 @@ func main() {
 	}
 	fileSvc := service.NewFileService(pool, cfg.FilesDir, cfg.MaxFileBytes)
 	communitySvc := service.NewCommunityService(pool)
+	aiSvc := service.NewAIService(cfg)
 
 	srv := &http.Server{
 		Addr: ":" + cfg.Port,
@@ -54,6 +55,7 @@ func main() {
 			sync:      handler.NewSyncHandler(syncSvc),
 			file:      handler.NewFileHandler(fileSvc),
 			community: handler.NewCommunityHandler(communitySvc),
+			ai:        handler.NewAIHandler(aiSvc),
 		}),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 60 * time.Second, // 图片下载的写超时放宽
