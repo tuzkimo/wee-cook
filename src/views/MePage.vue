@@ -1,18 +1,23 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ChevronRight, RefreshCw } from "lucide-vue-next";
 import AppHeader from "@/components/AppHeader.vue";
 import UserAvatar from "@/components/UserAvatar.vue";
 import { requestSyncNow, syncInFlight } from "@/services/sync";
+import { useAiSettingsStore } from "@/stores/aiSettings";
 import { useAuthStore } from "@/stores/auth";
 
 const router = useRouter();
 const auth = useAuthStore();
+const ai = useAiSettingsStore();
+const aiError = ref("");
 
-// 冷启动后恢复会话；未配置地址时 store 内部直接返回，不发任何请求
-onMounted(() => {
-  void auth.restoreSession();
+// 冷启动后恢复会话；未配置地址时 store 内部直接返回，不发任何请求。
+// 会话恢复完再探一次 AI 状态（拿不到 host 就不能让用户同意）；未登录时服务端只会回 401，不白探。
+onMounted(async () => {
+  await auth.restoreSession();
+  if (auth.isOnline) await ai.load();
 });
 
 const configured = computed(() => auth.baseUrl !== null);
@@ -49,6 +54,15 @@ const syncDotClass = computed(() => {
 
 async function logout(): Promise<void> {
   await auth.logout();
+}
+
+async function toggleAiSending(): Promise<void> {
+  aiError.value = "";
+  try {
+    await ai.setSendingEnabled(!ai.sendingEnabled);
+  } catch {
+    aiError.value = "开关没保存成功，再试一次";
+  }
 }
 </script>
 
@@ -136,6 +150,41 @@ async function logout(): Promise<void> {
             :class="syncing ? 'animate-spin text-primary' : 'text-primary'"
           />
         </button>
+
+        <!-- AI 隐私开关：拿不到 host 就不能让用户同意（说明卡必须讲清数据发给谁） -->
+        <div data-test="ai-privacy-card" class="rounded-xl bg-surface px-4 py-3.5 text-sm">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <p class="text-text">AI 菜谱助手</p>
+              <p
+                v-if="ai.canShowPrivacyCard"
+                data-test="ai-privacy-desc"
+                class="mt-1 text-xs text-text-secondary"
+              >
+                开启后，你的提问与菜谱名称、食材会发送到 {{ ai.status?.host }}。可随时在这里关闭。
+              </p>
+              <p v-else data-test="ai-privacy-hint" class="mt-1 text-xs text-text-secondary">
+                {{ ai.sendingEnabled ? "连不上服务器，暂时改不了开关" : "先连接服务器，才能开启 AI 助手" }}
+              </p>
+            </div>
+            <!-- 拿不到 host 只禁「开启」；已开着时始终允许关掉（否则断网会把用户锁在同意里） -->
+            <button
+              type="button"
+              role="switch"
+              data-test="ai-sending-toggle"
+              :aria-checked="ai.sendingEnabled"
+              :disabled="!ai.canShowPrivacyCard && !ai.sendingEnabled"
+              class="shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:opacity-50"
+              :class="ai.sendingEnabled ? 'bg-primary text-white' : 'bg-gray-100 text-text-secondary'"
+              @click="toggleAiSending"
+            >
+              {{ ai.sendingEnabled ? "已开启" : "未开启" }}
+            </button>
+          </div>
+          <p v-if="aiError" data-test="ai-privacy-error" class="mt-1 text-xs text-danger">
+            {{ aiError }}
+          </p>
+        </div>
 
         <button
           type="button"
