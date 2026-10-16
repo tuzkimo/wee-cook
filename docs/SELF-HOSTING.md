@@ -104,7 +104,7 @@ docker compose up -d --build
 |------|------|------|------|
 | `REDIS_PASSWORD` | 是 | — | Redis 密码 |
 | `JWT_SECRET` | 是 | — | JWT 签名密钥，随机长字符串 |
-| `POSTGRES_PASSWORD` | 否 | `wee` | PostgreSQL 密码，建议改掉 |
+| `POSTGRES_PASSWORD` | 否 | `wee`（不填时 compose 的回退值；`.env.example` 模板给的是 `change-me`） | PostgreSQL 密码，建议改掉。**只在首次 `docker compose up`、数据卷为空时生效**；之后改这个值不会生效（报 `password authentication failed for user "wee"`）——要么 `docker compose down -v` 删卷重建，要么把值改回旧的 |
 | `POSTGRES_USER` | 否 | `wee` | PostgreSQL 用户 |
 | `POSTGRES_DB` | 否 | `wee-cook` | 数据库名 |
 | `CORS_ALLOWED_ORIGINS` | 否 | `http://tauri.localhost` | 允许的来源，逗号分隔，需含 scheme |
@@ -167,7 +167,18 @@ git pull
 docker compose up -d --build
 ```
 
-数据库迁移随新版本启动自动执行。
+数据库迁移随新版本启动自动执行——**但只执行「版本号还没跑过」的那些**。
+
+> ⚠️ 从团队版（2026-10-14 那版）升级到社区版要特别当心：本版把 `001_init` 的迁移内容**原地改写**了（删掉 `teams` / `team_members`，`recipes.team_id` 换成 `is_public`，新增 `favorites` / `follows`），而**版本号仍是 1**。`golang-migrate` 因此认为它已经应用过、不会重跑，升级后服务启动会报 `column "is_public" does not exist`。
+>
+> 这种升级必须重建数据库（**先按下一节备份**）：
+>
+> ```bash
+> docker compose down -v   # ⚠️ 会连 pgdata 与 files 两个卷一起删掉，菜谱与图片都没了
+> docker compose up -d --build
+> ```
+>
+> 改写过迁移内容的版本之间不做原地升级兼容。
 
 ## 备份
 
