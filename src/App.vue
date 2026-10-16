@@ -1,21 +1,29 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onMounted } from "vue";
 import { RouterView, useRoute } from "vue-router";
 import { BookOpen, Sparkles, User } from "lucide-vue-next";
+import { useAiSettingsStore } from "@/stores/aiSettings";
 
 const route = useRoute();
+const aiSettings = useAiSettingsStore();
 
-const TABS = [
+// AI 项按 aiSettings.tabVisible 过滤（opt-in + 后端状态的三态），菜谱 / 我的两项不动。
+const TABS = computed(() => [
   { path: "/", label: "菜谱", icon: BookOpen },
-  { path: "/ai", label: "AI", icon: Sparkles },
+  ...(aiSettings.tabVisible ? [{ path: "/ai", label: "AI", icon: Sparkles }] : []),
   { path: "/me", label: "我的", icon: User },
-];
+]);
 
 const showTab = computed(() => !route.meta.hideTab);
 
 function isActive(path: string): boolean {
   return route.path === path;
 }
+
+// 读本地 opt-in 开关 + 探一次 /ai/status（永不 reject；探不到保持未知态、不隐藏入口）。
+onMounted(() => {
+  void aiSettings.load();
+});
 </script>
 
 <template>
