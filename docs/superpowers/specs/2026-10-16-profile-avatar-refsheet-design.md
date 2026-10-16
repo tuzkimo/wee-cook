@@ -146,7 +146,7 @@ props：`url: string | null`、`name: string`。外层是 `<div>`，宽高与圆
 |---|---|---|
 | 「我的」页用户卡 | 48px 圆 | `auth.avatarUrl`，昵称 `auth.nickname ?? username` |
 | 资料编辑页预览 | 96px 圆 + 相机角标 | 本地暂存态（`selectedAvatar`） |
-| 社区列表卡片 | 32px 圆 | `item.author_avatar_url`，昵称 `item.author_nickname` |
+| 社区列表卡片 | 20px 圆 | 见 `2026-10-16-recipe-card-author-sync-design.md` §5.3（现行尺寸表，取代本行原先的 32px） |
 | 用户页资料区 | 64px 圆 | `profile.avatar_url`，昵称 `profile.nickname` |
 
 社区列表与用户页的头像是**服务端原样返回的字符串**，没有本地文件、没有缓存、没有异步加载，所以不存在「先闪首字母再换头像」——要么 imgsrc 直接可用，要么就没有。
