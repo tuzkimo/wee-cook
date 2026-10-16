@@ -490,6 +490,29 @@ export function setLastSyncedAtFor(uid: string | null, seq: string): void {
   localStorage.setItem(cursorKeyFor(uid), seq);
 }
 
+/** 一次性迁移：本轮新增的 owner_avatar_url 只有「被重新下发的行」才会补上，
+ *  而游标是全局 MAX，升级前已收藏/已缓存的菜谱不会再下发。清一次游标让它们全量重来一遍：
+ *  重新下发的行走 applyRemoteChanges 的 LWW 跳过分支，那里只刷作者两列，不动本地编辑。 */
+const BACKFILL_FLAG = "author_avatar_backfill_v1";
+
+export function resetSyncCursorsOnce(): void {
+  if (localStorage.getItem(BACKFILL_FLAG) !== null) return;
+  const cursors: string[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key !== null && (key === "last_server_seq" || key.startsWith("last_server_seq:"))) {
+      cursors.push(key);
+    }
+  }
+  for (const key of cursors) localStorage.removeItem(key);
+  // 写标记失败（配额/被禁）只意味着下次同步会再清一次，不能让异常打断本轮同步
+  try {
+    localStorage.setItem(BACKFILL_FLAG, "1");
+  } catch {
+    // 忽略：重复清游标是幂等的
+  }
+}
+
 /** 取当前 uid 的队列；未登录（uid=null）返回一次性空队列，不入 Map、不持久化。 */
 function pendingFor(uid: string | null): SyncPayload {
   if (!uid) return emptyPayload();
@@ -706,6 +729,7 @@ async function doSync(): Promise<boolean> {
   const uid = getCurrentServerUserId();
   // 未登录 / 未配地址：一次网络都不发（spec §9.5）
   if (!uid || !hasBaseUrl()) return false;
+  resetSyncCursorsOnce();
   const db = getDb();
 
   // 全扫推送（spec §9.3）：不论首次还是增量，都推「我名下的全部菜谱（含墓碑）+ 全部字典行」，

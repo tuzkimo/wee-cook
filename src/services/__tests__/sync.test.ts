@@ -49,6 +49,7 @@ import {
   getLastSyncedAtFor,
   performSync,
   requestSyncNow,
+  resetSyncCursorsOnce,
   resetSyncTimers,
   setLastSyncedAtFor,
   syncInFlight,
@@ -153,6 +154,21 @@ describe("游标", () => {
     expect(getLastSyncedAtFor("u1")).toBe("7");
     expect(getLastSyncedAtFor("u2")).toBeNull();
   });
+
+  it("一次性重置：第一次清掉所有账号的游标并写标记，第二次不再清（F1 回归）", () => {
+    setLastSyncedAtFor("u1", "9");
+    setLastSyncedAtFor("u2", "5");
+
+    resetSyncCursorsOnce();
+    expect(localStorage.getItem("last_server_seq:u1")).toBeNull();
+    expect(localStorage.getItem("last_server_seq:u2")).toBeNull();
+    expect(localStorage.getItem("author_avatar_backfill_v1")).toBe("1");
+
+    // 第二次跑：标记已在，新写下的游标必须留着
+    setLastSyncedAtFor("u1", "11");
+    resetSyncCursorsOnce();
+    expect(localStorage.getItem("last_server_seq:u1")).toBe("11");
+  });
 });
 
 describe("performSync", () => {
@@ -205,6 +221,31 @@ describe("performSync", () => {
     resolveFirst(okResponse(1));
     await expect(first).resolves.toBe(true);
     await vi.waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(2));
+  });
+
+  it("升级后第一次同步清空游标、从 0 全量重拉（F1 回归）", async () => {
+    setLastSyncedAtFor("u1", "9");
+    setLastSyncedAtFor("u2", "5");
+    apiFetchMock.mockRejectedValue(new Error("断网"));
+
+    await expect(performSync()).resolves.toBe(false);
+
+    const [, init] = apiFetchMock.mock.calls[0];
+    expect(JSON.parse(String(init?.body)).last_server_seq).toBe(0);
+    expect(getLastSyncedAtFor("u1")).toBeNull();
+    expect(getLastSyncedAtFor("u2")).toBeNull();
+  });
+
+  it("升级后第二次同步不再清游标，从上次的位置增量拉（F1 回归）", async () => {
+    apiFetchMock.mockRejectedValue(new Error("断网"));
+    await expect(performSync()).resolves.toBe(false);
+    setLastSyncedAtFor("u1", "9");
+
+    await expect(performSync()).resolves.toBe(false);
+
+    const [, init] = apiFetchMock.mock.calls[1];
+    expect(JSON.parse(String(init?.body)).last_server_seq).toBe(9);
+    expect(getLastSyncedAtFor("u1")).toBe("9");
   });
 
   it("未登录时 performSync 不发请求", async () => {
