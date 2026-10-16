@@ -60,6 +60,44 @@ jobs:
 
       # 桌面 cargo check 看不到 #[cfg(target_os = "android")] 的代码，那部分只在
       # `tauri android build`（release 工作流里，约 7 分钟后）才现形 ⇒ 前移到每次 CI。
+      #
+      # 但交叉编译 android target 需要 NDK：`tauri-plugin-sql` → sqlx → `libsqlite3-sys` 的
+      # build.rs 会用 cc-rs 编译**自带的 SQLite C 源码**，而 cc-rs 是按 `<triple>-clang` 找编译器的，
+      # 只 `rustup target add` 不够（v0.4.0 起这一步一直红：failed to find tool
+      # "aarch64-linux-android-clang"）。NDK r30 又只提供带 API 级别的 wrapper
+      # （`aarch64-linux-android24-clang`）⇒ 必须显式指给 cc-rs。
+      # 版本与 release-android.yml 的 NDK_VERSION 手动保持一致：两处不一致时会出现
+      # 「CI 绿、发版红」，最坑。
+      - name: 准备 Android NDK 的 C 工具链
+        env:
+          NDK_VERSION: "30.0.14904198"
+        run: |
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          NDK="$SDK/ndk/${NDK_VERSION}"
+          if [ ! -d "$NDK" ]; then
+            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+            "$SDK/cmdline-tools/latest/bin/sdkmanager" --install "ndk;${NDK_VERSION}" > /dev/null
+          fi
+          if [ ! -d "$NDK" ]; then
+            echo "::error::NDK ${NDK_VERSION} 不可用，$SDK/ndk 下现有："
+            ls -1 "$SDK/ndk" 2>/dev/null || true
+            exit 1
+          fi
+          BIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          API=24  # = src-tauri/gen/android/app/build.gradle.kts 的 minSdk
+          # cc-rs 同时认 `<var>_<target>` 与 `<var>_<target_with_underscores>`，用后者（可安全写进 GITHUB_ENV）。
+          # 若将来有别的 crate 只认 PATH 上的 `<triple>-clang`，再把 "$BIN" 加进 "$GITHUB_PATH"。
+          {
+            echo "CC_aarch64_linux_android=$BIN/aarch64-linux-android${API}-clang"
+            echo "CXX_aarch64_linux_android=$BIN/aarch64-linux-android${API}-clang++"
+            echo "AR_aarch64_linux_android=$BIN/llvm-ar"
+            echo "RANLIB_aarch64_linux_android=$BIN/llvm-ranlib"
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$BIN/aarch64-linux-android${API}-clang"
+            echo "NDK_HOME=$NDK"
+            echo "ANDROID_NDK_HOME=$NDK"
+          } >> "$GITHUB_ENV"
+          "$BIN/aarch64-linux-android${API}-clang" --version | head -1
+
       - name: 安装 Android target
         run: rustup target add aarch64-linux-android
 
