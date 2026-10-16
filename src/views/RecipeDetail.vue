@@ -8,6 +8,7 @@ import { Pencil, Trash2 } from "lucide-vue-next";
 import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import { imageSrc } from "@/services/imageStore";
+import { ensureLocalImages } from "@/services/syncFiles";
 import { useAuthStore } from "@/stores/auth";
 import { useCommunityStore } from "@/stores/community";
 import { canEdit, useRecipeStore } from "@/stores/recipe";
@@ -22,6 +23,9 @@ const auth = useAuthStore();
 
 const recipeId = computed(() => (typeof route.params.id === "string" ? route.params.id : ""));
 const detail = ref<RecipeDetail | null>(null);
+// 步骤图得走鉴权下载通道补下来；只把**已落盘**的名字交给模板，文件没到就不出 <img>，
+// 宁可不显示也不出破图（首次打开社区菜谱时图还在后台下载，spec §8.3）
+const localImages = ref<Set<string>>(new Set());
 const error = ref("");
 const showDeleteConfirm = ref(false);
 const deleteError = ref("");
@@ -49,6 +53,7 @@ onMounted(async () => {
     error.value = loadError instanceof Error ? loadError.message : "菜谱不存在";
     return;
   }
+  localImages.value = await ensureLocalImages(steps.value.map((step) => step.image_path));
   // 读不到（库未就绪）就当没收藏：一个按钮初值不值得挡住整页详情
   favorited.value = await communityStore.isFavorited(id).catch(() => false);
 });
@@ -81,7 +86,8 @@ function openAuthor(): void {
 }
 
 function edit(): void {
-  void router.push(`/recipe/${recipeId.value}/edit`);
+  // 带上来源标记：编辑页保存后才知道该 back()（弹掉自己）还是 replace()
+  void router.push({ path: `/recipe/${recipeId.value}/edit`, query: { from: "detail" } });
 }
 
 // 快捷公开开关：update 是「子行整组替换」，必须带上当前详情里的步骤/食材/标签/分类，
@@ -132,7 +138,8 @@ async function confirmDelete(): Promise<void> {
       removeError instanceof Error && removeError.message ? removeError.message : "删除失败，请重试";
     return;
   }
-  await router.push("/");
+  // replace：删除后历史里不能留下这张已删除菜谱的详情，否则返回键会回到「菜谱不存在」
+  await router.replace("/");
 }
 </script>
 
@@ -300,7 +307,7 @@ async function confirmDelete(): Promise<void> {
                   {{ step.text }}
                 </p>
                 <img
-                  v-if="step.image_path"
+                  v-if="step.image_path && localImages.has(step.image_path)"
                   data-test="step-image"
                   :src="imageSrc(step.image_path)"
                   :alt="`步骤 ${index + 1}`"

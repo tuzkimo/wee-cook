@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { Filter, Plus } from "lucide-vue-next";
 import AppHeader from "@/components/AppHeader.vue";
@@ -9,6 +9,8 @@ import { useCommunityStore } from "@/stores/community";
 import { useAuthStore } from "@/stores/auth";
 import { useRecipeFilterStore } from "@/stores/recipeFilter";
 import { imageSrc } from "@/services/imageStore";
+import { ensureLocalImages } from "@/services/syncFiles";
+import { enqueueSync } from "@/services/sync";
 import { filterRecipes, filterSummary, isFilterActive } from "@/utils/recipeFilter";
 
 const TABS = [
@@ -28,6 +30,9 @@ const filterStore = useRecipeFilterStore();
 
 const tab = ref<Tab>("all");
 const favoritesLoading = ref(false);
+// 封面得走鉴权下载通道补下来（收藏里的社区菜谱、别的设备同步来的自己菜谱都在内）；
+// 只把**已落盘**的名字交给模板，没到就出字母兜底，不出破图
+const localImages = ref<Set<string>>(new Set());
 
 const visible = computed(() => filterRecipes(store.recipes, filterStore.filter));
 const summary = computed(() => filterSummary(filterStore.filter, store.recipes));
@@ -50,21 +55,45 @@ const emptyMessage = computed(() => {
   return store.recipes.length === 0 ? "还没有菜谱，点右上角加号记一道" : "没有符合条件的菜谱";
 });
 
-async function loadFavorites(): Promise<void> {
+// 源数组只在 fetch 时换引用（不像 mineList 会跟着搜索每敲一个字重算），不会白跑 IO
+watch(
+  [() => store.recipes, () => store.favorites],
+  async () => {
+    localImages.value = await ensureLocalImages(
+      [...store.recipes, ...store.favorites].map((item) => item.recipe.cover_path),
+    );
+  },
+  { immediate: true },
+);
+
+async function loadFavorites(opts: { sync?: boolean } = {}): Promise<void> {
   favoritesLoading.value = true;
   try {
     await store.fetchFavorites();
   } finally {
     favoritesLoading.value = false;
   }
+  // 服务端最新收藏只能靠同步下来（作者取消公开后由对账整表替换），进收藏 tab 时催一次；
+  // 离线时本地收藏照常显示，一个请求都不发
+  if (opts.sync && auth.isOnline) enqueueSync({});
 }
 
 function select(next: Tab): void {
-  if (next === "fav") void loadFavorites();
+  if (next === "fav") void loadFavorites({ sync: true });
   // 离开「关注」要复位，否则回到「全部」时社区段还是关注口径
   communityStore.followedOnly = next === "follow";
   tab.value = next;
 }
+
+// 同步完成后重拉，让「A 取消公开」这类服务端变化反映到界面。
+// 这里**只许** fetchFavorites，不许再 enqueueSync —— 否则每次同步完成又催一次同步，变成死循环。
+watch(
+  () => auth.syncVersion,
+  async () => {
+    await store.fetchAll();
+    if (tab.value === "fav") await loadFavorites();
+  },
+);
 
 onMounted(async () => {
   await store.fetchAll();
@@ -173,7 +202,7 @@ onMounted(async () => {
               @click="router.push(`/recipe/${item.recipe.id}`)"
             >
               <img
-                v-if="item.recipe.cover_path"
+                v-if="item.recipe.cover_path && localImages.has(item.recipe.cover_path)"
                 data-test="recipe-cover"
                 :src="imageSrc(item.recipe.cover_path)"
                 :alt="item.recipe.name"

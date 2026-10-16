@@ -7,10 +7,12 @@ import { useRouter } from "vue-router";
 import AppHeader from "@/components/AppHeader.vue";
 import { fetchWithTimeout } from "@/services/api";
 import { readSetting, writeSetting } from "@/services/settingsFile";
+import { useAuthStore } from "@/stores/auth";
 
 const DEFAULT_URL = "https://";
 
 const router = useRouter();
+const auth = useAuthStore();
 const url = ref(DEFAULT_URL);
 const message = ref("");
 const failed = ref(false);
@@ -51,6 +53,10 @@ async function testConnection(): Promise<void> {
     url.value = normalized;
     failed.value = false;
     message.value = "连接成功，地址已保存";
+    // 保存后立刻交接：重新从 settings 派生 api 基址与 auth.baseUrl，MePage / 登录页才看得到新地址。
+    // replace 而不是 push：地址已保存且校验通过，回退栈里不该留着这一页。
+    await auth.restoreSession();
+    await router.replace("/me/login");
   } catch {
     failed.value = true;
     message.value = "连不上服务器，检查地址和网络";

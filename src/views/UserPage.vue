@@ -5,7 +5,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import AppHeader from "@/components/AppHeader.vue";
 import { imageSrc } from "@/services/imageStore";
-import { ensureLocalCovers } from "@/services/syncFiles";
+import { ensureLocalImages } from "@/services/syncFiles";
 import {
   listCommunityRecipes,
   type CommunityRecipe,
@@ -28,7 +28,7 @@ const localCovers = ref<Set<string>>(new Set());
 watch(
   () => recipes.value,
   async () => {
-    localCovers.value = await ensureLocalCovers(recipes.value.map((item) => item.cover_path));
+    localCovers.value = await ensureLocalImages(recipes.value.map((item) => item.cover_path));
   },
   { immediate: true },
 );

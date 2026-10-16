@@ -267,7 +267,10 @@ async function save(): Promise<void> {
   }
   // 已落库，表单不再是「有未保存改动」，否则离页守卫会把保存后的跳转拦下来
   initial.value = snapshot();
-  await router.push(`/recipe/${id}`);
+  // 保存后回到「来处」：从详情页进来的编辑用 back() 弹掉编辑页，否则历史会叠成
+  // 列表→详情→编辑→详情，返回键要按三次；新建用 replace()，免得退回一张空表单。
+  if (recipeId.value && route.query.from === "detail") await router.back();
+  else await router.replace(`/recipe/${id}`);
 }
 
 function goBack(): void {

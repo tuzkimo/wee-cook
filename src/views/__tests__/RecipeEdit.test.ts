@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   replace: vi.fn(),
   back: vi.fn(),
   routeParams: {} as Record<string, string>,
+  routeQuery: {} as Record<string, string>,
   leaveGuard: undefined as undefined | (() => boolean),
   getDetail: vi.fn(),
   create: vi.fn(),
@@ -34,7 +35,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("vue-router", () => ({
   useRouter: () => ({ push: mocks.push, replace: mocks.replace, back: mocks.back }),
-  useRoute: () => ({ params: mocks.routeParams }),
+  useRoute: () => ({ params: mocks.routeParams, query: mocks.routeQuery }),
   onBeforeRouteLeave: (callback: () => boolean) => {
     mocks.leaveGuard = callback;
   },
@@ -108,6 +109,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.leaveGuard = undefined;
   mocks.routeParams = {};
+  mocks.routeQuery = {};
   mocks.ingredientStore = fakeRefStore([row("i1", "鸡蛋", 5), row("i2", "盐", 0)]);
   mocks.unitStore = fakeRefStore([row("u1", "克", 3), row("u2", "个", 1)]);
   const categories = [row("c1", "家常菜", 3), row("c2", "荤菜", 1)];
@@ -281,7 +283,9 @@ describe("RecipeEdit", () => {
       steps: [],
       ingredients: [],
     });
-    expect(mocks.push).toHaveBeenCalledWith("/recipe/new-1");
+    // 新建用 replace：别在历史里退回一张空表单
+    expect(mocks.replace).toHaveBeenCalledWith("/recipe/new-1");
+    expect(mocks.back).not.toHaveBeenCalled();
   });
 
   it("点分类行打开 RefSheet 单选，选中后行上显示分类名", async () => {
@@ -483,7 +487,7 @@ describe("RecipeEdit", () => {
     await save(wrapper);
 
     expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({ is_public: 1 }));
-    expect(mocks.push).toHaveBeenCalledWith("/recipe/new-1");
+    expect(mocks.replace).toHaveBeenCalledWith("/recipe/new-1");
   });
 
   it("有未保存改动时点返回 → 弹 ConfirmDialog，取消则不跳转", async () => {
@@ -503,13 +507,28 @@ describe("RecipeEdit", () => {
     expect(inputValue(wrapper, '[data-test="name"]')).toBe("红烧肉");
   });
 
-  it("保存成功后跳到详情页 /recipe/:id", async () => {
+  it("保存成功后回详情页：没带来源标记时用 replace，不退回一张空表单", async () => {
     mocks.routeParams = { id: "r1" };
     const wrapper = await page();
 
     await save(wrapper);
 
-    expect(mocks.push).toHaveBeenCalledWith("/recipe/r1");
+    expect(mocks.replace).toHaveBeenCalledWith("/recipe/r1");
+    expect(mocks.back).not.toHaveBeenCalled();
+  });
+
+  it("从详情页进来编辑，保存后用 back() 弹掉编辑页（历史不叠成 列表→详情→编辑→详情）", async () => {
+    mocks.routeParams = { id: "r1" };
+    mocks.routeQuery = { from: "detail" };
+    const wrapper = await page();
+
+    await save(wrapper);
+
+    expect(mocks.update).toHaveBeenCalledWith("r1", expect.anything());
+    expect(mocks.back).toHaveBeenCalledTimes(1);
+    // 不能 push 也不能 replace：那两种都会把编辑页留在历史里
+    expect(mocks.push).not.toHaveBeenCalled();
+    expect(mocks.replace).not.toHaveBeenCalled();
   });
 
   it("store.create 抛错 → 错误显示在页面上，不跳转", async () => {
@@ -546,7 +565,7 @@ describe("RecipeEdit", () => {
     await flushPromises();
 
     expect(mocks.create).toHaveBeenCalledTimes(1);
-    expect(mocks.push).toHaveBeenCalledWith("/recipe/new-1");
+    expect(mocks.replace).toHaveBeenCalledWith("/recipe/new-1");
     // 保存成功后不再是「有未保存改动」，守卫不会拦住去详情页的跳转
     expect(mocks.leaveGuard?.()).toBe(true);
   });
@@ -564,7 +583,7 @@ describe("RecipeEdit", () => {
     await save(wrapper);
 
     expect(mocks.create).toHaveBeenCalledTimes(2);
-    expect(mocks.push).toHaveBeenCalledWith("/recipe/new-2");
+    expect(mocks.replace).toHaveBeenCalledWith("/recipe/new-2");
   });
 
   it("表单干净时路由守卫放行（硬件返回键直接离页）", async () => {

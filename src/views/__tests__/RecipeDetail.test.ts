@@ -16,6 +16,7 @@ const NOW = "2026-10-13T00:00:00.000Z";
 // 页面只负责「拿到详情怎么画、点了往哪跳」，取数与排序由 Task 4 的 store 负责（其测试已覆盖）。
 const mocks = vi.hoisted(() => ({
   push: vi.fn(),
+  replace: vi.fn(),
   back: vi.fn(),
   routeParams: {} as Record<string, string>,
   getDetail: vi.fn(),
@@ -24,10 +25,11 @@ const mocks = vi.hoisted(() => ({
   isFavorited: vi.fn(),
   favorite: vi.fn(),
   unfavorite: vi.fn(),
+  fetchWithAuth: vi.fn(),
 }));
 
 vi.mock("vue-router", () => ({
-  useRouter: () => ({ push: mocks.push, back: mocks.back }),
+  useRouter: () => ({ push: mocks.push, replace: mocks.replace, back: mocks.back }),
   useRoute: () => ({ params: mocks.routeParams }),
 }));
 
@@ -59,7 +61,44 @@ vi.mock("@/stores/community", () => ({
   }),
 }));
 
+// 步骤图也走鉴权下载通道补下来：网络层换成替身，文件 IO 用 setFileSyncDeps 注入假文件系统。
+vi.mock("@/services/api", () => ({
+  hasBaseUrl: () => true,
+  fetchWithAuth: mocks.fetchWithAuth,
+}));
+
+import { setFileSyncDeps, type FileSyncDeps } from "@/services/syncFiles";
+
 const wrappers: VueWrapper[] = [];
+
+/** 只喂 downloadOne 用到的 ok/status/arrayBuffer。 */
+function fileRes(status: number, bytes: Uint8Array): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    arrayBuffer: async () => bytes.buffer as ArrayBuffer,
+  } as unknown as Response;
+}
+
+/** 内存假文件系统：只实现图片通道用到的 exists / writeFile / rename。 */
+function fakeIo(): { deps: FileSyncDeps; store: Map<string, Uint8Array> } {
+  const store = new Map<string, Uint8Array>();
+  return {
+    store,
+    deps: {
+      readFile: async () => new Uint8Array(),
+      exists: async (path) => store.has(path),
+      writeFile: async (path, bytes) => {
+        store.set(path, bytes);
+      },
+      rename: async (from, to) => {
+        const bytes = store.get(from);
+        store.delete(from);
+        if (bytes) store.set(to, bytes);
+      },
+    },
+  };
+}
 
 function label(id: string, name: string, kind: LabelKind): Label {
   return { id, name, kind, created_at: NOW, updated_at: NOW, deleted_at: null };
@@ -141,6 +180,7 @@ beforeEach(() => {
 afterEach(() => {
   for (const wrapper of wrappers) wrapper.unmount();
   wrappers.length = 0;
+  setFileSyncDeps(null);
   vi.restoreAllMocks();
   document.body.innerHTML = "";
 });
@@ -221,15 +261,36 @@ describe("RecipeDetail", () => {
     expect(wrapper.findAll('[data-test="step-order"]').map((node) => node.text())).toEqual(["1", "2"]);
   });
 
-  it("步骤有插图时渲染图", async () => {
+  it("步骤图落盘后才渲染图；未落盘时宁可不显示也不出破图", async () => {
+    const io = fakeIo();
+    setFileSyncDeps(io.deps);
+    mocks.fetchWithAuth.mockResolvedValue(fileRes(200, new Uint8Array([1, 2])));
     const data = detail();
     data.steps = [step("s1", 0, "切块", "step-1.jpg")];
     mocks.getDetail.mockResolvedValue(data);
 
     const wrapper = await page();
 
+    await vi.waitFor(() => expect(wrapper.find('[data-test="step-image"]').exists()).toBe(true));
     const image = wrapper.get('[data-test="step-image"]');
     expect(image.attributes("src")).toBe("asset://localhost/images/step-1.jpg");
+  });
+
+  it("步骤图还没落盘时不渲染 <img>（首次打开社区菜谱的破图回归）", async () => {
+    const io = fakeIo();
+    setFileSyncDeps(io.deps);
+    mocks.fetchWithAuth.mockRejectedValue(new Error("断网"));
+    const data = detail();
+    data.steps = [step("s1", 0, "切块", "step-1.jpg")];
+    mocks.getDetail.mockResolvedValue(data);
+
+    const wrapper = await page();
+
+    await vi.waitFor(() => expect(mocks.fetchWithAuth).toHaveBeenCalled());
+    await flushPromises();
+    expect(wrapper.find('[data-test="step-image"]').exists()).toBe(false);
+    // 步骤本身照常显示，只是暂时没有图
+    expect(wrapper.get('[data-test="step-text"]').text()).toBe("切块");
   });
 
   it("空菜谱（无食材无步骤）不报错，两个区块各显示一句空态文案", async () => {
@@ -246,12 +307,15 @@ describe("RecipeDetail", () => {
     expect(wrapper.find('[data-test="not-found"]').exists()).toBe(false);
   });
 
-  it("点「编辑」跳到 /recipe/:id/edit", async () => {
+  it("点「编辑」跳到 /recipe/:id/edit，并带上「从详情页来」的标记", async () => {
     const wrapper = await page();
 
     await wrapper.get('[data-test="edit"]').trigger("click");
 
-    expect(mocks.push).toHaveBeenCalledWith("/recipe/r1/edit");
+    expect(mocks.push).toHaveBeenCalledWith({
+      path: "/recipe/r1/edit",
+      query: { from: "detail" },
+    });
   });
 
   it("点「删除」弹 ConfirmDialog，确认后调 store.remove 并跳回列表", async () => {
@@ -264,7 +328,9 @@ describe("RecipeDetail", () => {
     await flushPromises();
 
     expect(mocks.remove).toHaveBeenCalledWith("r1");
-    expect(mocks.push).toHaveBeenCalledWith("/");
+    // replace：删除后历史里不能留下这张已删除菜谱的详情
+    expect(mocks.replace).toHaveBeenCalledWith("/");
+    expect(mocks.push).not.toHaveBeenCalled();
   });
 
   it("删除失败时显示错误提示、不跳转、页面内容还在", async () => {

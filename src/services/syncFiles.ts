@@ -169,17 +169,18 @@ export async function downloadMissingFiles(
 }
 
 /**
- * 补下载社区封面，返回其中**本机确已落盘**的名字。
+ * 补下载图片（封面 / 步骤图共用），返回其中**本机确已落盘**的名字。
  *
- * 社区列表 / 用户页的 `cover_path` 只是本机文件名，图还没经下载通道下来（spec §11.1）。
- * 模板据此决定出 `<img>` 还是字母兜底：文件没到时出 `<img>` 就是破图（spec §2 目标：在线浏览要看到图片）。
- * 未配地址 / 已退登时 `downloadMissingFiles` 自己早退，这里只会返回空集合。
+ * 社区列表 / 用户页的 `cover_path` 与详情的 `image_path` 都只是本机文件名，图还没经下载通道
+ * 下来（spec §11.1）。模板据此决定出 `<img>` 还是兜底：文件没到时出 `<img>` 就是破图
+ * （spec §2 目标：在线浏览要看到图片）。
+ * 未配地址 / 已退登时 `downloadMissingFiles` 自己早退，这里只会返回**磁盘上已有**的名字。
  */
-export async function ensureLocalCovers(
-  coverPaths: (string | null)[],
+export async function ensureLocalImages(
+  paths: (string | null)[],
   deps: FileSyncDeps = activeDeps,
 ): Promise<Set<string>> {
-  const names = [...new Set(coverPaths.filter((name): name is string => name !== null))];
+  const names = [...new Set(paths.filter((name): name is string => name !== null))];
   if (names.length === 0) return new Set();
   await downloadMissingFiles(
     names.map((name) => ({ name, size: 0 })),

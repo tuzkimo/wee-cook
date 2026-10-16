@@ -4,7 +4,7 @@ import { useRouter } from "vue-router";
 import { Star } from "lucide-vue-next";
 import { useCommunityStore } from "@/stores/community";
 import { imageSrc } from "@/services/imageStore";
-import { ensureLocalCovers } from "@/services/syncFiles";
+import { ensureLocalImages } from "@/services/syncFiles";
 
 const router = useRouter();
 const store = useCommunityStore();
@@ -15,7 +15,7 @@ const localCovers = ref<Set<string>>(new Set());
 watch(
   () => store.items,
   async () => {
-    localCovers.value = await ensureLocalCovers(store.items.map((item) => item.cover_path));
+    localCovers.value = await ensureLocalImages(store.items.map((item) => item.cover_path));
   },
   { immediate: true },
 );

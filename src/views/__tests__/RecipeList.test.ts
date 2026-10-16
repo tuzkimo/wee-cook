@@ -4,6 +4,7 @@ import type { Label, LabelKind, Recipe, RecipeListItem } from "@/types";
 import type { CommunityRecipe } from "@/services/community";
 import RecipeList from "@/views/RecipeList.vue";
 import { useRecipeFilterStore } from "@/stores/recipeFilter";
+import { setFileSyncDeps, type FileSyncDeps } from "@/services/syncFiles";
 
 const NOW = "2026-10-13T00:00:00.000Z";
 
@@ -30,7 +31,8 @@ const mocks = vi.hoisted(() => ({
   apply: vi.fn(),
   clear: vi.fn(),
   community: null as CommunityMock | null,
-  auth: { isOnline: true },
+  auth: null as { isOnline: boolean; syncVersion: number } | null,
+  enqueueSync: vi.fn(),
 }));
 
 vi.mock("vue-router", () => ({ useRouter: () => ({ push: mocks.push }) }));
@@ -57,7 +59,14 @@ vi.mock("@/stores/community", async () => {
 });
 vi.mock("@/services/imageStore", () => ({ imageSrc: mocks.imageSrc }));
 // 未登录时社区段不渲染（C3）；默认站在登录态，个别用例自己改。
-vi.mock("@/stores/auth", () => ({ useAuthStore: () => mocks.auth }));
+// syncVersion 必须 reactive：组件 watch 它来重拉列表。
+vi.mock("@/stores/auth", async () => {
+  const { reactive } = await import("vue");
+  mocks.auth = reactive({ isOnline: true, syncVersion: 0 });
+  return { useAuthStore: () => mocks.auth };
+});
+// 收藏 tab 会催一次同步；这里只关心「有没有催」，真调度由 sync 自己的测试覆盖。
+vi.mock("@/services/sync", () => ({ enqueueSync: mocks.enqueueSync }));
 vi.mock("@/stores/recipeFilter", async () => {
   const { reactive } = await import("vue");
   const filter = reactive({
@@ -125,6 +134,30 @@ function communityStore(): CommunityMock {
   return mocks.community!;
 }
 
+function auth(): { isOnline: boolean; syncVersion: number } {
+  return mocks.auth!;
+}
+
+/** 内存假文件系统：只实现图片通道用到的 exists / writeFile / rename。 */
+function fakeIo(): { deps: FileSyncDeps; store: Map<string, Uint8Array> } {
+  const store = new Map<string, Uint8Array>();
+  return {
+    store,
+    deps: {
+      readFile: async () => new Uint8Array(),
+      exists: async (path) => store.has(path),
+      writeFile: async (path, bytes) => {
+        store.set(path, bytes);
+      },
+      rename: async (from, to) => {
+        const bytes = store.get(from);
+        store.delete(from);
+        if (bytes) store.set(to, bytes);
+      },
+    },
+  };
+}
+
 function communityRecipe(id: string, name: string): CommunityRecipe {
   return {
     id,
@@ -148,7 +181,8 @@ function resetFilter(): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.auth.isOnline = true;
+  auth().isOnline = true;
+  auth().syncVersion = 0;
   resetFilter();
   // recipes 由 mountList 重置；favorites 得自己清，否则上一条用例的收藏会漏进下一条
   mocks.favorites.length = 0;
@@ -163,6 +197,7 @@ beforeEach(() => {
 afterEach(() => {
   for (const wrapper of wrappers) wrapper.unmount();
   wrappers.length = 0;
+  setFileSyncDeps(null);
 });
 
 describe("RecipeList", () => {
@@ -185,11 +220,15 @@ describe("RecipeList", () => {
     ]);
   });
 
-  it("有封面时用 imageSrc 出来的地址，无封面时显示菜名首字", () => {
+  it("封面已落盘时用 imageSrc 出来的地址，无封面时显示菜名首字", async () => {
+    const io = fakeIo();
+    io.store.set("images/a.jpg", new Uint8Array([1]));
+    setFileSyncDeps(io.deps);
     const wrapper = mountList([
       item("r1", "红烧肉", { cover: "a.jpg" }),
       item("r2", "番茄炒蛋"),
     ]);
+    await flushPromises();
 
     const cards = wrapper.findAll('[data-test="recipe-card"]');
     expect(cards[0].get('[data-test="recipe-cover"]').attributes("src")).toBe(
@@ -201,6 +240,19 @@ describe("RecipeList", () => {
     expect(mocks.imageSrc).not.toHaveBeenCalledWith(null);
     expect(cards[1].find("img").exists()).toBe(false);
     expect(cards[1].get('[data-test="recipe-cover-fallback"]').text()).toBe("番");
+  });
+
+  it("封面还没落盘时不渲染 <img>，出字母兜底（收藏里社区菜谱首次打开的破图回归）", async () => {
+    setFileSyncDeps(fakeIo().deps);
+    mocks.favorites.splice(0, mocks.favorites.length, item("r2", "红烧肉", { cover: "not-yet.jpg" }));
+    const wrapper = mountList([]);
+
+    await wrapper.get('[data-test="tab-fav"]').trigger("click");
+    await flushPromises();
+
+    const card = wrapper.get('[data-test="recipe-card"]');
+    expect(card.find('[data-test="recipe-cover"]').exists()).toBe(false);
+    expect(card.get('[data-test="recipe-cover-fallback"]').text()).toBe("红");
   });
 
   it("空列表显示「还没有菜谱，点右上角加号记一道」和加号", () => {
@@ -367,7 +419,7 @@ describe("RecipeList", () => {
   });
 
   it("未登录时不渲染社区段，关注 tab 给登录提示（C3 回归）", async () => {
-    mocks.auth.isOnline = false;
+    auth().isOnline = false;
     const wrapper = mountList([item("r1", "红烧肉")]);
     await flushPromises();
 
@@ -435,6 +487,59 @@ describe("RecipeList", () => {
     resolveFavorites();
     await flushPromises();
     expect(wrapper.find('[data-test="favorites-loading"]').exists()).toBe(false);
+  });
+
+  it("进「收藏」tab 且在线时触发一次同步，让服务端最新收藏集合下来", async () => {
+    const wrapper = mountList([]);
+    await flushPromises();
+    mocks.enqueueSync.mockClear();
+
+    await wrapper.get('[data-test="tab-fav"]').trigger("click");
+    await flushPromises();
+
+    expect(mocks.fetchFavorites).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueSync).toHaveBeenCalledWith({});
+  });
+
+  it("未登录时进「收藏」tab 不发任何请求，本地收藏照常显示", async () => {
+    auth().isOnline = false;
+    mocks.favorites.splice(0, mocks.favorites.length, item("r2", "收藏的红烧肉"));
+    const wrapper = mountList([]);
+
+    await wrapper.get('[data-test="tab-fav"]').trigger("click");
+    await flushPromises();
+
+    expect(mocks.enqueueSync).not.toHaveBeenCalled();
+    expect(names(wrapper)).toEqual(["收藏的红烧肉"]);
+  });
+
+  it("同步完成后（syncVersion 变化）重拉列表，且不再触发新的同步（防自激循环）", async () => {
+    mountList([item("r1", "红烧肉")]);
+    await flushPromises();
+    mocks.fetchAll.mockClear();
+    mocks.enqueueSync.mockClear();
+
+    auth().syncVersion++;
+    await flushPromises();
+
+    expect(mocks.fetchAll).toHaveBeenCalledTimes(1);
+    // syncVersion 的 watch 里再 enqueueSync 会变成每 3 秒同步一次的死循环
+    expect(mocks.enqueueSync).not.toHaveBeenCalled();
+  });
+
+  it("同步完成时若在「收藏」tab，重拉收藏但不再触发同步", async () => {
+    mocks.favorites.splice(0, mocks.favorites.length, item("r2", "收藏的红烧肉"));
+    const wrapper = mountList([]);
+    await wrapper.get('[data-test="tab-fav"]').trigger("click");
+    await flushPromises();
+    mocks.fetchFavorites.mockClear();
+    mocks.enqueueSync.mockClear();
+
+    auth().syncVersion++;
+    await flushPromises();
+
+    expect(mocks.fetchFavorites).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueSync).not.toHaveBeenCalled();
   });
 
   it("搜索框在顶栏里，信息条紧贴顶栏（不在搜索框和列表之间）", async () => {
