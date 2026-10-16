@@ -600,6 +600,11 @@ func TestGetPublicRecipeReturnsDictRowsForOfflineRender(t *testing.T) {
 	b := seedUser(t, pool)
 	now := time.Now().UTC()
 	recipeID := "r-" + uuid.NewString()
+	// 作者头像：详情页的作者卡片靠它显示（与列表的 author_avatar_url 同源）。
+	if _, err := pool.Exec(ctx,
+		`UPDATE users SET avatar_url = 'data:image/jpeg;base64,AV' WHERE id = $1`, a); err != nil {
+		t.Fatalf("设作者头像失败: %v", err)
+	}
 	ingredientID := "ing-" + uuid.NewString()
 	unitID := "u-" + uuid.NewString()
 	labelID := "l-" + uuid.NewString()
@@ -641,6 +646,9 @@ func TestGetPublicRecipeReturnsDictRowsForOfflineRender(t *testing.T) {
 	got := payload.Recipes[0]
 	if got.ID != recipeID || got.OwnerID != a || got.Name != "A的公开菜" {
 		t.Errorf("详情菜谱 = %+v, want id=%s owner=%s", got, recipeID, a)
+	}
+	if got.OwnerAvatarURL == nil || *got.OwnerAvatarURL != "data:image/jpeg;base64,AV" {
+		t.Errorf("详情要带作者头像（可空），got %v", got.OwnerAvatarURL)
 	}
 	if len(got.Steps) != 1 || got.Steps[0].Text != "切块" {
 		t.Errorf("详情要带步骤子行，got %+v", got.Steps)

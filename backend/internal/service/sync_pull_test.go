@@ -264,7 +264,7 @@ func TestBackfillAddsReferencedDictRows(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	q := &pullQuerier{rows: map[string][][]any{
-		"FROM recipes r":                      {{"r-1", "me", int16(0), "红烧肉", nil, "cat-1", now, now, nil, "测试"}},
+		"FROM recipes r":                      {{"r-1", "me", int16(0), "红烧肉", nil, "cat-1", now, now, nil, "测试", "data:image/jpeg;base64,AV"}},
 		"FROM recipe_steps":                   {{"r-1", "s-1", 1, "切肉", nil}},
 		"FROM recipe_ingredients":             {{"r-1", "ri-1", "ing-1", 200.0, "unit-1", 1}},
 		"FROM recipe_labels":                  {{"r-1", "lab-1"}},
@@ -288,6 +288,9 @@ func TestBackfillAddsReferencedDictRows(t *testing.T) {
 	}
 	if r.OwnerNickname != "测试" {
 		t.Errorf("作者昵称要随 JOIN users 下发（客户端离线显示靠它），got %q", r.OwnerNickname)
+	}
+	if r.OwnerAvatarURL == nil || *r.OwnerAvatarURL != "data:image/jpeg;base64,AV" {
+		t.Errorf("作者头像要随 JOIN users 下发（收藏卡与详情页的作者头像靠它），got %v", r.OwnerAvatarURL)
 	}
 
 	// 四条引用逐个补齐；已随增量下发的 lab-1 不该被重复补拉。
@@ -338,8 +341,8 @@ func TestFilesListedOnlyForReturnedRecipes(t *testing.T) {
 	q := &pullQuerier{
 		rows: map[string][][]any{
 			"FROM recipes r": {
-				{"r-1", "me", int16(0), "红烧肉", "a.jpg", "cat-1", now, now, nil, "测试"},
-				{"r-2", "me", int16(0), "糖醋排骨", "a.jpg", "cat-1", now, now, nil, "测试"}, // 与 r-1 同一张封面：去重
+				{"r-1", "me", int16(0), "红烧肉", "a.jpg", "cat-1", now, now, nil, "测试", nil},
+				{"r-2", "me", int16(0), "糖醋排骨", "a.jpg", "cat-1", now, now, nil, "测试", nil}, // 与 r-1 同一张封面：去重
 			},
 			"FROM recipe_steps": {
 				{"r-1", "s-1", 1, "切肉", "b.jpg"},
@@ -394,7 +397,7 @@ func TestCursorIsSnapshotMax(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	q := &pullQuerier{rows: map[string][][]any{
-		"FROM recipes r": {{"r-1", "me", int16(0), "红烧肉", nil, "cat-1", now, now, nil, "测试"}},
+		"FROM recipes r": {{"r-1", "me", int16(0), "红烧肉", nil, "cat-1", now, now, nil, "测试", nil}},
 		"MAX(s)":         {{int64(431)}},
 	}}
 

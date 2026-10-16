@@ -21,19 +21,21 @@ type RecipeIngredient struct {
 // Recipe 整条同步。OwnerID 只在响应里有意义，请求里带的值一律丢弃（服务端赋值，spec §7.1）。
 // IsPublic 0 = 私有（默认），1 = 公开到社区；由菜谱主人的客户端写入。
 // OwnerNickname 只在响应里有意义（服务端 JOIN users 取），供客户端离线显示作者（spec §7.1）。
+// OwnerAvatarURL 同理，可空：没设头像的作者是 NULL，客户端回退到默认头像。
 // 三个子集合不加 omitempty：空数组要能表达「清空」。
 type Recipe struct {
-	ID            string             `json:"id"`
-	OwnerID       string             `json:"owner_id"`
-	OwnerNickname string             `json:"owner_nickname"`
-	IsPublic      int16              `json:"is_public"`
-	Name          string             `json:"name"`
-	CoverPath     *string            `json:"cover_path"`
-	CategoryID    string             `json:"category_id"`
-	CreatedAt     time.Time          `json:"created_at"`
-	UpdatedAt     time.Time          `json:"updated_at"`
-	DeletedAt     *time.Time         `json:"deleted_at"`
-	Steps         []RecipeStep       `json:"steps"`
-	Ingredients   []RecipeIngredient `json:"ingredients"`
-	LabelIDs      []string           `json:"label_ids"`
+	ID             string             `json:"id"`
+	OwnerID        string             `json:"owner_id"`
+	OwnerNickname  string             `json:"owner_nickname"`
+	OwnerAvatarURL *string            `json:"owner_avatar_url"`
+	IsPublic       int16              `json:"is_public"`
+	Name           string             `json:"name"`
+	CoverPath      *string            `json:"cover_path"`
+	CategoryID     string             `json:"category_id"`
+	CreatedAt      time.Time          `json:"created_at"`
+	UpdatedAt      time.Time          `json:"updated_at"`
+	DeletedAt      *time.Time         `json:"deleted_at"`
+	Steps          []RecipeStep       `json:"steps"`
+	Ingredients    []RecipeIngredient `json:"ingredients"`
+	LabelIDs       []string           `json:"label_ids"`
 }
