@@ -142,7 +142,7 @@ async function open(id: string): Promise<void> {
             class="h-16 w-16 shrink-0 rounded-full"
             text-class="text-2xl"
           />
-          <div class="min-w-0">
+          <div class="min-w-0 flex-1">
             <h1 data-test="user-nickname" class="truncate text-base font-semibold text-text">
               {{ profile.nickname }}
             </h1>
