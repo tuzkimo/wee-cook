@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   favorite: vi.fn(),
   unfavorite: vi.fn(),
   fetchWithAuth: vi.fn(),
+  authReady: { value: true },
 }));
 
 vi.mock("vue-router", () => ({
@@ -65,6 +66,7 @@ vi.mock("@/stores/community", () => ({
 vi.mock("@/services/api", () => ({
   hasBaseUrl: () => true,
   fetchWithAuth: mocks.fetchWithAuth,
+  authTokenReady: mocks.authReady,
 }));
 
 import { setFileSyncDeps, type FileSyncDeps } from "@/services/syncFiles";
@@ -175,6 +177,7 @@ beforeEach(() => {
   mocks.isFavorited.mockResolvedValue(false);
   mocks.favorite.mockResolvedValue(undefined);
   mocks.unfavorite.mockResolvedValue(undefined);
+  mocks.authReady.value = true;
 });
 
 afterEach(() => {
@@ -291,6 +294,21 @@ describe("RecipeDetail", () => {
     expect(wrapper.find('[data-test="step-image"]').exists()).toBe(false);
     // 步骤本身照常显示，只是暂时没有图
     expect(wrapper.get('[data-test="step-text"]').text()).toBe("切块");
+  });
+
+  it("已配地址但未登录（guest）时打开缓存菜谱详情：零图片请求，不渲染 <img>", async () => {
+    mocks.authReady.value = false;
+    setFileSyncDeps(fakeIo().deps);
+    const data = detail();
+    data.steps = [step("s1", 0, "切块", "step-1.jpg")];
+    mocks.getDetail.mockResolvedValue(data);
+
+    const wrapper = await page();
+
+    await flushPromises();
+    // 未登录不发任何网络请求（spec §3）：已配地址也不行
+    expect(mocks.fetchWithAuth).not.toHaveBeenCalled();
+    expect(wrapper.find('[data-test="step-image"]').exists()).toBe(false);
   });
 
   it("空菜谱（无食材无步骤）不报错，两个区块各显示一句空态文案", async () => {
@@ -520,6 +538,40 @@ describe("RecipeDetail", () => {
 
     const wrapper = await page();
 
+    expect(wrapper.get('[data-test="recipe-favorite"]').text()).toBe("已收藏");
+  });
+
+  it("步骤图还在下载时不阻塞收藏态初始化（先读本地收藏，再等图）", async () => {
+    setFileSyncDeps(fakeIo().deps);
+    // 卡住下载：收藏初值读的是本地 SQL，不该等在途的网络
+    mocks.fetchWithAuth.mockReturnValue(new Promise<Response>(() => {}));
+    const data = others();
+    data.steps = [step("s1", 0, "切块", "step-1.jpg")];
+    mocks.getDetail.mockResolvedValue(data);
+    mocks.isFavorited.mockResolvedValue(true);
+
+    const wrapper = await page();
+
+    expect(wrapper.get('[data-test="recipe-favorite"]').text()).toBe("已收藏");
+  });
+
+  it("exists 读不了时不炸整页，收藏态照常初始化", async () => {
+    const io = fakeIo();
+    setFileSyncDeps({
+      ...io.deps,
+      exists: async () => {
+        throw new Error("FS 读不了");
+      },
+    });
+    mocks.fetchWithAuth.mockRejectedValue(new Error("断网"));
+    const data = others();
+    data.steps = [step("s1", 0, "切块", "step-1.jpg")];
+    mocks.getDetail.mockResolvedValue(data);
+    mocks.isFavorited.mockResolvedValue(true);
+
+    const wrapper = await page();
+
+    expect(wrapper.get('[data-test="detail-name"]').text()).toBe("红烧肉");
     expect(wrapper.get('[data-test="recipe-favorite"]').text()).toBe("已收藏");
   });
 

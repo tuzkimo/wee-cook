@@ -53,9 +53,11 @@ onMounted(async () => {
     error.value = loadError instanceof Error ? loadError.message : "菜谱不存在";
     return;
   }
-  localImages.value = await ensureLocalImages(steps.value.map((step) => step.image_path));
-  // 读不到（库未就绪）就当没收藏：一个按钮初值不值得挡住整页详情
+  // 读不到（库未就绪）就当没收藏：一个按钮初值不值得挡住整页详情。
+  // 先读本地收藏再等图：读本地 SQL 是毫秒级，图片下载要串行跑完，反过来的话慢网下
+  // 按钮会在图下完之前一直显示错的「收藏」态
   favorited.value = await communityStore.isFavorited(id).catch(() => false);
+  localImages.value = await ensureLocalImages(steps.value.map((step) => step.image_path));
 });
 
 /** 乐观翻转：先让按钮变，服务端拒绝就翻回去并说明原因，不静默。 */

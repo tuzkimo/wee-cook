@@ -12,7 +12,7 @@
 // 真 readFile/exists/writeFile/rename 都跑不起来 ⇒ 四个 IO 从参数进来、默认用 `realDeps`。
 import { BaseDirectory, exists, mkdir, readFile, rename, writeFile } from "@tauri-apps/plugin-fs";
 import { getDb } from "@/db";
-import { fetchWithAuth, hasBaseUrl } from "@/services/api";
+import { authTokenReady, fetchWithAuth, hasBaseUrl } from "@/services/api";
 
 /** 远端 `files` 列表的一项（spec §7.1）。本轮只用名字，`size` 留给以后做进度/校验 */
 export interface FileRef {
@@ -135,8 +135,9 @@ async function downloadOne(ref: FileRef, deps: FileSyncDeps): Promise<DownloadOu
     // 下次 exists 就为真、永不重下 ⇒ 当失败处理。在写盘前拦下，连 .tmp 都不会产生
     if (bytes.length === 0) return "retry";
 
-    // 临时名再改名：断网/杀进程留下的是 .tmp，正式名要么不存在、要么就是完整文件
-    const tmp = `${path}.tmp`;
+    // 临时名带随机后缀：详情页与列表两条通道会并发下载同一张图，固定的 images/<name>.tmp
+    // 会被互相覆盖，rename 后可能就是半截文件挂在正式名下（exists 永真 ⇒ 永久破图）
+    const tmp = `${path}.${crypto.randomUUID()}.tmp`;
     await deps.writeFile(tmp, bytes);
     await deps.rename(tmp, path);
     return "downloaded";
@@ -153,9 +154,9 @@ export async function downloadMissingFiles(
   refs: FileRef[],
   deps: FileSyncDeps = activeDeps,
 ): Promise<{ downloaded: number; failed: number }> {
-  // 地址没配就是「没开始」，不是「每张都失败」：报 N 个失败等于把缺配置伪装成 N 张坏图，
-  // 且会白做 N 次 exists。不发任何请求（api 层约定），也不记失败
-  if (!hasBaseUrl()) return { downloaded: 0, failed: 0 };
+  // 没配地址 / 没有登录凭据就是「没开始」，不是「每张都失败」：报 N 个失败等于把缺配置伪装成
+  // N 张坏图，且会白做 N 次 exists。未登录不发任何网络请求（spec §3）
+  if (!hasBaseUrl() || !authTokenReady.value) return { downloaded: 0, failed: 0 };
 
   let downloaded = 0;
   let failed = 0;
@@ -187,7 +188,15 @@ export async function ensureLocalImages(
     deps,
   );
   const present: string[] = [];
-  for (const name of names) if (await deps.exists(`images/${name}`)) present.push(name);
+  for (const name of names) {
+    // 本文件约定「下载失败只记账不抛」：exists 读不了同理（这里被 onMounted 直接 await），
+    // 出错只当这张没确认，不影响其它名字
+    try {
+      if (await deps.exists(`images/${name}`)) present.push(name);
+    } catch {
+      // 这张确认不了，跳过
+    }
+  }
   return new Set(present);
 }
 
@@ -201,8 +210,8 @@ export async function downloadPendingFiles(
   deps: FileSyncDeps = activeDeps,
 ): Promise<{ retry: string[] }> {
   if (names.length === 0) return { retry: [] };
-  // 没配地址 / 已退登：一张都下不了，全部留待下轮（不是「都失败」）
-  if (!hasBaseUrl()) return { retry: [...names] };
+  // 没配地址 / 没登录：一张都下不了，全部留待下轮（不是「都失败」）。未登录不发请求（spec §3）
+  if (!hasBaseUrl() || !authTokenReady.value) return { retry: [...names] };
 
   const retry: string[] = [];
   for (const name of names) {

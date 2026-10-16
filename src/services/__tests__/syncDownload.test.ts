@@ -21,6 +21,7 @@ vi.mock("@/services/api", () => ({
   hasBaseUrl: vi.fn(() => true),
   apiFetch: vi.fn(),
   fetchWithAuth: vi.fn(),
+  authTokenReady: { value: true },
 }));
 
 import { apiFetch } from "@/services/api";

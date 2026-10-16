@@ -33,6 +33,9 @@ const mocks = vi.hoisted(() => ({
   community: null as CommunityMock | null,
   auth: null as { isOnline: boolean; syncVersion: number } | null,
   enqueueSync: vi.fn(),
+  // 已配地址但未登录的场景：hasBaseUrl 为真、凭据为假
+  authReady: { value: false },
+  fetchWithAuth: vi.fn(),
 }));
 
 vi.mock("vue-router", () => ({ useRouter: () => ({ push: mocks.push }) }));
@@ -67,6 +70,12 @@ vi.mock("@/stores/auth", async () => {
 });
 // 收藏 tab 会催一次同步；这里只关心「有没有催」，真调度由 sync 自己的测试覆盖。
 vi.mock("@/services/sync", () => ({ enqueueSync: mocks.enqueueSync }));
+// 图片通道的闸门：已配地址（hasBaseUrl 真）但 guest（authTokenReady 假）时不得发请求
+vi.mock("@/services/api", () => ({
+  hasBaseUrl: () => true,
+  fetchWithAuth: mocks.fetchWithAuth,
+  authTokenReady: mocks.authReady,
+}));
 vi.mock("@/stores/recipeFilter", async () => {
   const { reactive } = await import("vue");
   const filter = reactive({
@@ -183,6 +192,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   auth().isOnline = true;
   auth().syncVersion = 0;
+  mocks.authReady.value = false;
   resetFilter();
   // recipes 由 mountList 重置；favorites 得自己清，否则上一条用例的收藏会漏进下一条
   mocks.favorites.length = 0;
@@ -253,6 +263,19 @@ describe("RecipeList", () => {
     const card = wrapper.get('[data-test="recipe-card"]');
     expect(card.find('[data-test="recipe-cover"]').exists()).toBe(false);
     expect(card.get('[data-test="recipe-cover-fallback"]').text()).toBe("红");
+  });
+
+  it("已配地址但未登录（guest）时进「收藏」tab：零图片请求，出兜底不出破图", async () => {
+    setFileSyncDeps(fakeIo().deps);
+    mocks.favorites.splice(0, mocks.favorites.length, item("r2", "红烧肉", { cover: "not-yet.jpg" }));
+    const wrapper = mountList([]);
+
+    await wrapper.get('[data-test="tab-fav"]').trigger("click");
+    await flushPromises();
+
+    // 未登录不发任何网络请求（spec §3）：已配地址也不行
+    expect(mocks.fetchWithAuth).not.toHaveBeenCalled();
+    expect(wrapper.get('[data-test="recipe-cover-fallback"]').text()).toBe("红");
   });
 
   it("空列表显示「还没有菜谱，点右上角加号记一道」和加号", () => {

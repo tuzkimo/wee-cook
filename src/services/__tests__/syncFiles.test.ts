@@ -4,17 +4,23 @@ import { freshTestDb } from "@/db/__tests__/sqliteTestDb";
 import {
   collectReferencedFileNames,
   downloadMissingFiles,
+  downloadPendingFiles,
+  ensureLocalImages,
   uploadPendingFiles,
   type FileRef,
   type FileSyncDeps,
   type SyncPayload,
 } from "@/services/syncFiles";
 
+// authTokenReady 是响应式镜像（computed ref），测试里换成可直接翻的开关
+const authReady = vi.hoisted(() => ({ value: true }));
+
 // 真网络层（api.ts）在这里整体换掉：本任务测的是「什么时候发请求、失败了写不写库」，
 // 401/超时/单飞刷新是 api.ts 自己的测试范围。
 vi.mock("@/services/api", () => ({
   hasBaseUrl: vi.fn(() => true),
   fetchWithAuth: vi.fn(),
+  authTokenReady: authReady,
 }));
 
 import { fetchWithAuth, hasBaseUrl } from "@/services/api";
@@ -85,6 +91,10 @@ async function uploadedNames(db: Db): Promise<string[]> {
   const rows = await db.select<{ name: string }[]>("SELECT name FROM uploaded_files ORDER BY name");
   return rows.map((r) => r.name);
 }
+
+beforeEach(() => {
+  authReady.value = true;
+});
 
 describe("collectReferencedFileNames", () => {
   it("collectReferencedFileNames 收集封面与步骤图，去重，跳过 null", () => {
@@ -214,10 +224,38 @@ describe("downloadMissingFiles", () => {
     expect(result).toEqual({ downloaded: 1, failed: 0 });
     expect(fetchWithAuthMock.mock.calls[0][0]).toBe(`/api/v1/files/${encodeURIComponent("x.jpg")}`);
     expect(io.store.get("images/x.jpg")).toEqual(new Uint8Array([1, 2, 3]));
-    // 先写临时名再改名：正式名只由 rename 产出，半截文件不会挂着正式名
-    expect(io.writePaths).toEqual(["images/x.jpg.tmp"]);
-    expect(io.renames).toEqual([{ from: "images/x.jpg.tmp", to: "images/x.jpg" }]);
-    expect(io.store.has("images/x.jpg.tmp")).toBe(false);
+    // 先写临时名再改名：正式名只由 rename 产出，半截文件不会挂着正式名。
+    // 临时名带随机后缀：详情页与列表两条通道会并发下载同一张图，固定 .tmp 会互相覆盖成坏文件
+    expect(io.writePaths).toHaveLength(1);
+    expect(io.writePaths[0]).toMatch(/^images\/x\.jpg\.[0-9a-f-]+\.tmp$/);
+    expect(io.renames).toEqual([{ from: io.writePaths[0], to: "images/x.jpg" }]);
+    expect(io.store.has(io.writePaths[0])).toBe(false);
+  });
+
+  it("并发下载同一张图时临时名各不相同（不会互相覆盖 .tmp）", async () => {
+    const io = fakeIo();
+    fetchWithAuthMock.mockResolvedValue(fileRes(200, new Uint8Array([9])));
+
+    await Promise.all([
+      downloadMissingFiles([{ name: "same.jpg", size: 1 }], io.deps),
+      downloadMissingFiles([{ name: "same.jpg", size: 1 }], io.deps),
+    ]);
+
+    // 两条通道都以为本地没有，各自先写自己的临时名；随机后缀保证不互相踩
+    expect(io.writePaths).toHaveLength(2);
+    expect(new Set(io.writePaths).size).toBe(2);
+    expect(io.store.get("images/same.jpg")).toEqual(new Uint8Array([9]));
+  });
+
+  it("已配地址但未登录（guest / 退登后）时不发任何请求，也不算失败", async () => {
+    authReady.value = false;
+    const io = fakeIo();
+
+    const result = await downloadMissingFiles([{ name: "a.jpg", size: 1 }], io.deps);
+
+    // 未登录不发任何网络请求（spec §3）；这是「没开始」，不是「这张失败了」
+    expect(result).toEqual({ downloaded: 0, failed: 0 });
+    expect(fetchWithAuthMock).not.toHaveBeenCalled();
   });
 
   it("没有配置服务器地址时不发请求，也不逐张报失败", async () => {
@@ -246,5 +284,45 @@ describe("downloadMissingFiles", () => {
     expect(io.writePaths).toEqual([]);
     expect(io.renames).toEqual([]);
     expect(io.store.has("images/empty.jpg")).toBe(false);
+  });
+});
+
+describe("downloadPendingFiles", () => {
+  beforeEach(() => {
+    hasBaseUrlMock.mockReturnValue(true);
+    fetchWithAuthMock.mockReset();
+  });
+
+  it("未登录时全部留待下轮，不发任何请求", async () => {
+    authReady.value = false;
+    const io = fakeIo();
+
+    const result = await downloadPendingFiles(["a.jpg", "b.jpg"], io.deps);
+
+    expect(result).toEqual({ retry: ["a.jpg", "b.jpg"] });
+    expect(fetchWithAuthMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("ensureLocalImages", () => {
+  beforeEach(() => {
+    hasBaseUrlMock.mockReturnValue(true);
+    fetchWithAuthMock.mockReset();
+  });
+
+  it("exists 抛错时不抛给调用方，只返回已确认存在的名字", async () => {
+    const io = fakeIo({ "images/good.jpg": [1] });
+    const deps: FileSyncDeps = {
+      ...io.deps,
+      exists: async (path) => {
+        if (path === "images/broken.jpg") throw new Error("FS 读不了");
+        return true;
+      },
+    };
+
+    // 本文件约定「下载失败只记账不抛」：exists 读不了同理，调用方（详情页 onMounted）不该被炸
+    await expect(ensureLocalImages(["good.jpg", "broken.jpg"], deps)).resolves.toEqual(
+      new Set(["good.jpg"]),
+    );
   });
 });

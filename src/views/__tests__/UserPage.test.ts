@@ -41,6 +41,7 @@ vi.mock("@/services/imageStore", () => ({
 vi.mock("@/services/api", () => ({
   hasBaseUrl: () => true,
   fetchWithAuth: vi.fn(),
+  authTokenReady: { value: true },
 }));
 
 import UserPage from "@/views/UserPage.vue";
