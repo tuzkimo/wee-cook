@@ -77,7 +77,7 @@ function openSheet(options: {
       store: options.store,
       mode: options.mode ?? "single",
       selectedIds: options.selectedIds ?? [],
-      emptyHint: "还没有食材，点下面新建一个",
+      emptyHint: "还没有食材，输入名称即可新建",
     },
   });
   wrappers.push(wrapper);
@@ -151,9 +151,9 @@ describe("RefSheet", () => {
     expect(names()).toEqual(["常用料", "冷门料"]);
     expect(store.fetchAll).toHaveBeenCalledTimes(1);
 
-    await el('[data-test="ref-new"]').trigger("click");
-    await el('[data-test="ref-form-name"]').setValue("新料");
-    await el('[data-test="ref-form-save"]').trigger("click");
+    // 新契约：搜索词非空且无同名 → 出现行内创建行，点它即建即排在 store 给的顺序里
+    await el('[data-test="ref-filter"]').setValue("新料");
+    await el('[data-test="ref-create"]').trigger("click");
     await flushPromises();
 
     expect(names()).toEqual(["常用料", "冷门料", "新料"]);
@@ -196,23 +196,25 @@ describe("RefSheet", () => {
     await el('[data-test="ref-filter"]').setValue("鸡");
     expect(names()).toEqual(["鸡蛋", "鸡胸肉"]);
 
+    // 新契约：无匹配但搜索词非空 → 出创建行，且不再显示「没有匹配的条目」（Review Focus 1）
     await el('[data-test="ref-filter"]').setValue("没有这样一项");
     expect(names()).toEqual([]);
-    expect(bodyText()).toContain("没有匹配的条目");
+    expect(has('[data-test="ref-create"]')).toBe(true);
 
     await el('[data-test="ref-filter"]').setValue("");
     expect(names()).toEqual(["鸡蛋", "鸡胸肉", "盐"]);
   });
 
-  it("single 模式点第二行时替换选中，只有一个勾", async () => {
+  it("single 模式点行即发 select，行内不画勾选框", async () => {
     const store = makeStore([row("i1", "鸡蛋", 5), row("i2", "盐", 0)]);
     const wrapper = openSheet({ store, mode: "single", selectedIds: ["i1"] });
     await flushPromises();
-    expect(checkedNames()).toEqual(["鸡蛋"]);
+    // §4.5：单选不画勾选框，选中态只由 emit 表达
+    expect(checkedNames()).toEqual([]);
 
     await rowByName("盐").trigger("click");
 
-    expect(checkedNames()).toEqual(["盐"]);
+    expect(checkedNames()).toEqual([]);
     expect(wrapper.emitted("select")).toEqual([[["i2"]]]);
     // R3：关窗是父组件的事，RefSheet 自己从不发 close
     expect(wrapper.emitted("close")).toBeUndefined();
@@ -249,36 +251,38 @@ describe("RefSheet", () => {
     await flushPromises();
 
     expect(names()).toEqual([]);
-    expect(bodyText()).toContain("还没有食材，点下面新建一个");
+    expect(bodyText()).toContain("还没有食材，输入名称即可新建");
   });
 
-  it("点「新建」进表单模式，输入名称保存后回到列表且选中它", async () => {
+  it("搜索无同名时出现创建行，点它即建即选中", async () => {
     const store = makeStore([row("i1", "鸡蛋", 5)]);
     const wrapper = openSheet({ store, mode: "single" });
     await flushPromises();
 
-    await el('[data-test="ref-new"]').trigger("click");
-    expect(has('[data-test="ref-form-name"]')).toBe(true);
+    await el('[data-test="ref-filter"]').setValue("新料");
+    expect(has('[data-test="ref-create"]')).toBe(true);
 
-    await el('[data-test="ref-form-name"]').setValue("酱油");
-    await el('[data-test="ref-form-save"]').trigger("click");
+    await el('[data-test="ref-create"]').trigger("click");
     await flushPromises();
 
-    expect(store.add).toHaveBeenCalledWith("酱油");
-    expect(has('[data-test="ref-form-name"]')).toBe(false);
-    expect(checkedNames()).toEqual(["酱油"]);
-    expect(names()).toEqual(["鸡蛋", "酱油"]);
-    // 仅单选模式：新建后立刻回报选择，父组件据此进下一步
+    expect(store.add).toHaveBeenCalledWith("新料");
+    // 选完收起：搜索词被清掉，创建行随之消失
+    expect(has('[data-test="ref-create"]')).toBe(false);
+    expect(names()).toEqual(["鸡蛋", "新料"]);
+    // 仅单选模式：创建后立刻回报选择，父组件据此进下一步（R3：不自己关窗）
     expect(wrapper.emitted("select")).toEqual([[["new-1"]]]);
   });
 
-  it("点「编辑」进表单，改名保存后回到列表且不额外发 select", async () => {
+  it("管理模式下点铅笔改名，保存后留在管理模式且不额外发 select", async () => {
     const store = makeStore([row("i1", "鸡蛋", 5)]);
     const wrapper = openSheet({ store, mode: "single" });
     await flushPromises();
 
+    await el('[data-test="ref-manage"]').trigger("click");
+    expect(has('[data-test="ref-usage"]')).toBe(true);
+
     await el('[data-test="ref-edit"]').trigger("click");
-    // @click.stop：点行内按钮不会顺手选中这一行
+    // 改名是管理模式的动作，不会顺手选中这一行
     expect(wrapper.emitted("select")).toBeUndefined();
     expect((el('[data-test="ref-form-name"]').element as HTMLInputElement).value).toBe("鸡蛋");
 
@@ -289,44 +293,41 @@ describe("RefSheet", () => {
     expect(store.update).toHaveBeenCalledWith("i1", "土鸡蛋");
     expect(has('[data-test="ref-form-name"]')).toBe(false);
     expect(names()).toEqual(["土鸡蛋"]);
+    // §8.5：保存后回到管理模式，不是选择态
+    expect(has('[data-test="ref-usage"]')).toBe(true);
     expect(wrapper.emitted("select")).toBeUndefined();
   });
 
-  it("保存时名称纯空格 → 显示错误、不调 store.add", async () => {
+  it("搜索词是纯空格时不出现创建行，也不调 store.add", async () => {
     const store = makeStore([]);
     openSheet({ store });
     await flushPromises();
 
-    await el('[data-test="ref-new"]').trigger("click");
-    await el('[data-test="ref-form-name"]').setValue("   ");
-    await el('[data-test="ref-form-save"]').trigger("click");
+    await el('[data-test="ref-filter"]').setValue("   ");
     await flushPromises();
 
+    expect(has('[data-test="ref-create"]')).toBe(false);
     expect(store.add).not.toHaveBeenCalled();
-    expect(el('[data-test="ref-form-error"]').text()).not.toBe("");
-    expect(has('[data-test="ref-form-name"]')).toBe(true);
   });
 
-  it("store.add 抛「同名食材已存在」→ 错误显示在表单里且留在表单模式", async () => {
+  it("已有同名条目时不出现创建行", async () => {
     const store = makeStore([row("i1", "鸡蛋", 5)]);
-    store.add.mockRejectedValueOnce(new Error("同名食材已存在"));
     openSheet({ store });
     await flushPromises();
 
-    await el('[data-test="ref-new"]').trigger("click");
-    await el('[data-test="ref-form-name"]').setValue("鸡蛋");
-    await el('[data-test="ref-form-save"]').trigger("click");
-    await flushPromises();
+    await el('[data-test="ref-filter"]').setValue("鸡蛋");
 
-    expect(el('[data-test="ref-form-error"]').text()).toContain("同名食材已存在");
-    expect(has('[data-test="ref-form-name"]')).toBe(true);
+    expect(has('[data-test="ref-create"]')).toBe(false);
+    expect(names()).toEqual(["鸡蛋"]);
   });
 
-  it("点「删除」弹 ConfirmDialog，确认后才调 store.remove", async () => {
-    const store = makeStore([row("i1", "鸡蛋", 5)]);
+  it("管理模式下点删除弹 ConfirmDialog，确认后才调 store.remove", async () => {
+    // usage_count 为 0 才点得动垃圾桶（§8.4：>0 时 disabled）
+    const store = makeStore([row("i1", "鸡蛋", 0)]);
     const wrapper = openSheet({ store });
     await flushPromises();
 
+    await el('[data-test="ref-manage"]').trigger("click");
     await el('[data-test="ref-delete"]').trigger("click");
 
     expect(dialogRoot()).not.toBeNull();
@@ -344,11 +345,13 @@ describe("RefSheet", () => {
   });
 
   it("store.remove 抛错 → 弹提示对话框，条目还在列表里", async () => {
-    const store = makeStore([row("i1", "鸡蛋", 5)]);
+    // usage_count 为 0（垃圾桶可用）但 remove 仍抛：读到用量与真正删除之间的窗口
+    const store = makeStore([row("i1", "鸡蛋", 0)]);
     store.remove.mockRejectedValueOnce(new Error("有 1 道菜谱在用「鸡蛋」，不能删除"));
     openSheet({ store });
     await flushPromises();
 
+    await el('[data-test="ref-manage"]').trigger("click");
     await el('[data-test="ref-delete"]').trigger("click");
     await dialogButton("确认删除").trigger("click");
     await flushPromises();
@@ -363,7 +366,8 @@ describe("RefSheet", () => {
 
   it("关闭再打开时选中态与筛选框被重置", async () => {
     const store = makeStore([row("i1", "鸡蛋", 5), row("i2", "盐", 0)]);
-    const wrapper = openSheet({ store, mode: "single", selectedIds: ["i1"] });
+    // single 不画勾选框（§4.5），用 multiple 才能观察到选中态的重置
+    const wrapper = openSheet({ store, mode: "multiple", selectedIds: ["i1"] });
     await flushPromises();
     expect(checkedNames()).toEqual(["鸡蛋"]);
 
@@ -382,11 +386,12 @@ describe("RefSheet", () => {
   });
 
   it("关闭再打开时上一次的删除失败提示被清掉", async () => {
-    const store = makeStore([row("i1", "鸡蛋", 5)]);
+    const store = makeStore([row("i1", "鸡蛋", 0)]);
     store.remove.mockRejectedValueOnce(new Error("有 1 道菜谱在用「鸡蛋」，不能删除"));
     const wrapper = openSheet({ store });
     await flushPromises();
 
+    await el('[data-test="ref-manage"]').trigger("click");
     await el('[data-test="ref-delete"]').trigger("click");
     await dialogButton("确认删除").trigger("click");
     await flushPromises();
@@ -398,5 +403,111 @@ describe("RefSheet", () => {
 
     expect(bodyText()).not.toContain("不能删除");
     expect(dialogRoot()).toBeNull();
+  });
+
+  it("搜索词非空且不撞名时出现创建行，列表为空也不显示 emptyHint", async () => {
+    openSheet({ store: makeStore([]) });
+    await flushPromises();
+
+    await el('[data-test="ref-filter"]').setValue("新料");
+
+    // Review Focus 1：「还没有食材」和「创建它」不能并列
+    expect(has('[data-test="ref-create"]')).toBe(true);
+    expect(bodyText()).not.toContain("还没有食材");
+  });
+
+  it("搜索词与已有条目只差大小写 → 不出现创建行", async () => {
+    openSheet({ store: makeStore([row("i1", "Tomato", 0)]) });
+    await flushPromises();
+
+    await el('[data-test="ref-filter"]').setValue("tomato");
+
+    // store.add 的 SQL 是精确匹配，大小写不同的同名点下去只会吃一个错
+    expect(has('[data-test="ref-create"]')).toBe(false);
+  });
+
+  it("搜索词命中前缀不影响创建", async () => {
+    openSheet({ store: makeStore([row("i1", "五花肉", 0)]) });
+    await flushPromises();
+
+    await el('[data-test="ref-filter"]').setValue("五");
+
+    expect(has('[data-test="ref-create"]')).toBe(true);
+  });
+
+  it("多选模式创建后勾上并留在面板，确定时一起带出去", async () => {
+    const store = makeStore([]);
+    const wrapper = openSheet({ store, mode: "multiple" });
+    await flushPromises();
+
+    await el('[data-test="ref-filter"]').setValue("新料");
+    await el('[data-test="ref-create"]').trigger("click");
+    await flushPromises();
+
+    expect(store.add).toHaveBeenCalledWith("新料");
+    expect(checkedNames()).toEqual(["新料"]);
+    expect(has('[data-test="ref-confirm"]')).toBe(true);
+    // 未点「确定」前不对外发选择
+    expect(wrapper.emitted("select")).toBeUndefined();
+
+    await el('[data-test="ref-confirm"]').trigger("click");
+
+    expect(wrapper.emitted("select")).toEqual([[["new-1"]]]);
+  });
+
+  it("单选模式创建失败 → 不发 select，错误显示出来", async () => {
+    const store = makeStore([]);
+    store.add.mockRejectedValue(new Error("同名食材已存在"));
+    const wrapper = openSheet({ store, mode: "single" });
+    await flushPromises();
+
+    await el('[data-test="ref-filter"]').setValue("新料");
+    await el('[data-test="ref-create"]').trigger("click");
+    await flushPromises();
+
+    // Review Focus 5：不能发 select，否则父组件拿着空 id 进第二步
+    expect(wrapper.emitted("select")).toBeUndefined();
+    expect(el('[data-test="ref-form-error"]').text()).toContain("同名食材已存在");
+  });
+
+  it("切进管理模式再切回，已勾选的条目还在", async () => {
+    const store = makeStore([row("i1", "鸡蛋", 5)]);
+    openSheet({ store, mode: "multiple" });
+    await flushPromises();
+
+    await rowByName("鸡蛋").trigger("click");
+    expect(checkedNames()).toEqual(["鸡蛋"]);
+
+    await el('[data-test="ref-manage"]').trigger("click");
+    await el('[data-test="ref-manage"]').trigger("click");
+
+    // Review Focus 3：切模式只换渲染，不清 selected
+    expect(checkedNames()).toEqual(["鸡蛋"]);
+  });
+
+  it("管理模式的行点不动，不改变勾选", async () => {
+    const store = makeStore([row("i1", "鸡蛋", 5)]);
+    openSheet({ store, mode: "multiple" });
+    await flushPromises();
+
+    await el('[data-test="ref-manage"]').trigger("click");
+    await rowByName("鸡蛋").trigger("click");
+
+    expect(checkedNames()).toEqual([]);
+  });
+
+  it("管理模式里被引用的条目垃圾桶禁用", async () => {
+    const store = makeStore([row("i1", "鸡蛋", 5), row("i2", "盐", 0)]);
+    openSheet({ store });
+    await flushPromises();
+
+    await el('[data-test="ref-manage"]').trigger("click");
+
+    // §8.4：usage_count > 0 时禁删，置灰比让用户点了吃报错好
+    const buttons = [
+      ...document.body.querySelectorAll<HTMLButtonElement>('[data-test="ref-delete"]'),
+    ];
+    expect(buttons.map((button) => button.disabled)).toEqual([true, false]);
+    expect(el('[data-test="ref-usage"]').text()).toContain("5 道菜谱在用");
   });
 });

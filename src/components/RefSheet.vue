@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, toValue, watch } from "vue";
+import { Pencil, Trash2 } from "lucide-vue-next";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import { useKeyboardInset } from "@/composables/useKeyboardInset";
 import type { RefRow, RefStore } from "@/stores/refStore";
@@ -25,7 +26,8 @@ const panelPadBottom = computed(
   () => `calc(${keyboardInset.value}px + 2rem + env(safe-area-inset-bottom))`,
 );
 
-// ---- 列表模式 ----
+// 面板自身的两个模式，与 props.mode（single | multiple）无关，切勿同名
+const panelMode = ref<"select" | "manage">("select");
 // 选中态是本地状态，每次打开从 selectedIds 重新播种；关窗由父组件决定，这里从不自己关
 const selected = ref<string[]>([]);
 const keyword = ref("");
@@ -39,10 +41,17 @@ const filtered = computed<Row[]>(() => {
   return items.filter((item) => item.name.includes(kw));
 });
 
+// 创建入口只由搜索词决定：非空且没有完全同名（忽略大小写）才出现，前缀命中不影响创建（§8.3）
+const showCreate = computed(() => {
+  const kw = keyword.value.trim().toLowerCase();
+  return (
+    kw.length > 0 && !toValue(props.store.items).some((item) => item.name.toLowerCase() === kw)
+  );
+});
+
 const emptyText = computed(() => (keyword.value.trim() ? "没有匹配的条目" : props.emptyHint));
 
-// ---- 表单模式 ----
-const showForm = ref(false);
+// ---- 内联改名 ----
 const editingId = ref<string | null>(null);
 const formName = ref("");
 const formError = ref("");
@@ -57,7 +66,7 @@ watch(
     if (!visible) return;
     selected.value = [...props.selectedIds];
     keyword.value = "";
-    showForm.value = false;
+    panelMode.value = "select";
     editingId.value = null;
     formName.value = "";
     formError.value = "";
@@ -72,6 +81,8 @@ function isSelected(id: string): boolean {
 }
 
 function handleRowClick(item: Row): void {
+  // 管理模式的行只读，点不动
+  if (panelMode.value !== "select") return;
   if (props.mode === "single") {
     selected.value = [item.id];
     emit("select", [item.id]);
@@ -82,21 +93,44 @@ function handleRowClick(item: Row): void {
     : [...selected.value, item.id];
 }
 
-function openNew(): void {
-  editingId.value = null;
-  formName.value = "";
+/** 管理 / 完成：只换渲染，选中的条目留着（Review Focus 3）。 */
+function toggleMode(): void {
+  panelMode.value = panelMode.value === "select" ? "manage" : "select";
+  keyword.value = "";
   formError.value = "";
-  showForm.value = true;
+  deleteError.value = "";
+}
+
+async function createAndSelect(): Promise<void> {
+  const name = keyword.value.trim();
+  if (!name) return;
+  formError.value = "";
+  try {
+    const created = await props.store.add(name);
+    selected.value = [...selected.value, created.id];
+    keyword.value = "";
+    // 仅单选模式：新建后立刻回报，父组件据此进下一步；关窗由父组件决定（R3）
+    if (props.mode === "single") emit("select", [created.id]);
+  } catch (error: unknown) {
+    // 失败绝不 emit select：否则父组件会拿着空 id 进下一步（Review Focus 5）
+    formError.value = error instanceof Error ? error.message : "创建失败";
+  }
 }
 
 function openEdit(item: Row): void {
   editingId.value = item.id;
   formName.value = item.name;
   formError.value = "";
-  showForm.value = true;
 }
 
-async function handleSubmit(): Promise<void> {
+function cancelEdit(): void {
+  editingId.value = null;
+  formError.value = "";
+}
+
+async function saveEdit(): Promise<void> {
+  const id = editingId.value;
+  if (!id) return;
   const name = formName.value.trim();
   if (!name) {
     formError.value = "请输入名称";
@@ -104,15 +138,10 @@ async function handleSubmit(): Promise<void> {
   }
   formError.value = "";
   try {
-    if (editingId.value) {
-      await props.store.update(editingId.value, name);
-    } else {
-      const created = await props.store.add(name);
-      selected.value = [...selected.value, created.id];
-      // 仅单选模式：新建后立刻回报，多选模式等用户点「确定」
-      if (props.mode === "single") emit("select", [created.id]);
-    }
-    showForm.value = false;
+    await props.store.update(id, name);
+    // 保存成功回到管理模式，改名时把搜索词与错误清掉
+    editingId.value = null;
+    formName.value = "";
   } catch (error: unknown) {
     formError.value = error instanceof Error ? error.message : "操作失败";
   }
@@ -143,10 +172,18 @@ async function confirmDelete(): Promise<void> {
         class="fixed inset-x-0 bottom-0 z-50 flex max-h-[85vh] flex-col rounded-t-2xl bg-surface px-4 pt-4 shadow-xl"
         :style="{ paddingBottom: panelPadBottom }"
       >
-        <!-- ========== 列表模式 ========== -->
-        <template v-if="!showForm">
-          <div class="mb-3 flex items-center justify-between">
-            <h2 class="text-lg font-semibold text-text">{{ title }}</h2>
+        <div class="mb-3 flex items-center justify-between">
+          <h2 class="text-lg font-semibold text-text">{{ editingId ? "重命名" : title }}</h2>
+          <div class="flex items-center gap-1">
+            <!-- 正在改单条时「管理」让位：此刻模板已是改名表单 -->
+            <button
+              v-if="editingId === null"
+              data-test="ref-manage"
+              class="shrink-0 rounded px-2 py-1 text-sm font-medium text-text-secondary transition-colors hover:bg-gray-100"
+              @click="toggleMode"
+            >
+              {{ panelMode === "manage" ? "完成" : "管理" }}
+            </button>
             <button
               class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-text-secondary hover:bg-gray-100"
               aria-label="关闭"
@@ -155,7 +192,42 @@ async function confirmDelete(): Promise<void> {
               ✕
             </button>
           </div>
+        </div>
 
+        <!-- ========== 内联改名：列表与创建行都让位 ========== -->
+        <template v-if="editingId !== null">
+          <div class="flex-1 overflow-auto">
+            <input
+              v-model="formName"
+              data-test="ref-form-name"
+              type="text"
+              aria-label="名称"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
+            />
+            <p v-if="formError" data-test="ref-form-error" class="mt-2 text-sm text-danger">
+              {{ formError }}
+            </p>
+          </div>
+
+          <div class="mt-4 flex gap-3">
+            <button
+              class="flex-1 rounded-xl border border-gray-200 py-3 text-sm font-semibold text-text-secondary transition-colors hover:bg-gray-50"
+              @click="cancelEdit"
+            >
+              取消
+            </button>
+            <button
+              data-test="ref-form-save"
+              class="flex-1 rounded-xl bg-primary py-3 text-sm font-semibold text-white transition-colors hover:bg-primary-dark"
+              @click="saveEdit"
+            >
+              保存
+            </button>
+          </div>
+        </template>
+
+        <!-- ========== 搜索选择态 / 管理模式 ========== -->
+        <template v-else>
           <input
             v-model="keyword"
             data-test="ref-filter"
@@ -166,22 +238,28 @@ async function confirmDelete(): Promise<void> {
           />
 
           <div class="flex-1 overflow-auto">
-            <div v-if="filtered.length === 0" class="py-8 text-center text-sm text-text-secondary">
+            <!-- 有创建行时不显示空态：「还没有」和「创建它」不能并列（Review Focus 1） -->
+            <div
+              v-if="filtered.length === 0 && !showCreate"
+              class="py-8 text-center text-sm text-text-secondary"
+            >
               {{ emptyText }}
             </div>
+
             <div
               v-for="item in filtered"
               :key="item.id"
               data-test="ref-row"
-              class="flex items-center gap-3 rounded-lg px-2 py-2.5 text-sm transition-colors hover:bg-gray-50"
+              class="flex items-center gap-3 rounded-lg px-2 py-2.5 text-sm transition-colors"
+              :class="panelMode === 'select' ? 'cursor-pointer hover:bg-gray-50' : ''"
               @click="handleRowClick(item)"
             >
+              <!-- 选择态：multiple 画勾选框，single 不画（§4.5） -->
               <span
+                v-if="panelMode === 'select' && mode === 'multiple'"
                 class="flex h-5 w-5 shrink-0 items-center justify-center rounded border text-xs"
                 :class="
-                  isSelected(item.id)
-                    ? 'border-primary bg-primary text-white'
-                    : 'border-gray-300'
+                  isSelected(item.id) ? 'border-primary bg-primary text-white' : 'border-gray-300'
                 "
               >
                 <span v-if="isSelected(item.id)" data-test="ref-check">✓</span>
@@ -189,78 +267,59 @@ async function confirmDelete(): Promise<void> {
               <span data-test="ref-name" class="min-w-0 flex-1 truncate text-text">
                 {{ item.name }}
               </span>
-              <button
-                data-test="ref-edit"
-                class="shrink-0 rounded px-2 py-1 text-xs text-text-secondary transition-colors hover:bg-gray-200"
-                @click.stop="openEdit(item)"
-              >
-                编辑
-              </button>
-              <button
-                data-test="ref-delete"
-                class="shrink-0 rounded px-2 py-1 text-xs text-danger transition-colors hover:bg-danger/10"
-                @click.stop="deleteTarget = item"
-              >
-                删除
-              </button>
+
+              <!-- 管理模式：用量 + 改名 + 删除，整块换掉选择态的渲染 -->
+              <template v-if="panelMode === 'manage'">
+                <span data-test="ref-usage" class="shrink-0 text-xs text-text-secondary">
+                  {{ item.usage_count }} 道菜谱在用
+                </span>
+                <button
+                  data-test="ref-edit"
+                  class="shrink-0 rounded p-1 text-text-secondary transition-colors hover:bg-gray-200"
+                  aria-label="重命名"
+                  @click.stop="openEdit(item)"
+                >
+                  <Pencil :size="16" />
+                </button>
+                <button
+                  data-test="ref-delete"
+                  class="shrink-0 rounded p-1 transition-colors"
+                  :class="
+                    item.usage_count > 0
+                      ? 'cursor-not-allowed text-gray-300'
+                      : 'text-danger hover:bg-danger/10'
+                  "
+                  :disabled="item.usage_count > 0"
+                  aria-label="删除"
+                  @click.stop="deleteTarget = item"
+                >
+                  <Trash2 :size="16" />
+                </button>
+              </template>
             </div>
-          </div>
 
-          <div class="mt-4 flex gap-3">
+            <!-- 搜索词非空且无同名 → 行内直接创建，不走整页表单 -->
             <button
-              data-test="ref-new"
-              class="flex-1 rounded-xl border border-gray-200 py-3 text-sm font-semibold text-text-secondary transition-colors hover:bg-gray-50"
-              @click="openNew"
+              v-if="showCreate"
+              data-test="ref-create"
+              class="flex w-full items-center gap-2 rounded-lg px-2 py-2.5 text-left text-sm text-primary transition-colors hover:bg-gray-50"
+              @click="createAndSelect"
             >
-              新建
-            </button>
-            <button
-              v-if="mode === 'multiple'"
-              data-test="ref-confirm"
-              class="flex-1 rounded-xl bg-primary py-3 text-sm font-semibold text-white transition-colors hover:bg-primary-dark"
-              @click="emit('select', [...selected])"
-            >
-              确定
-            </button>
-          </div>
-        </template>
-
-        <!-- ========== 表单模式 ========== -->
-        <template v-else>
-          <div class="mb-4 flex items-center justify-between">
-            <h2 class="text-lg font-semibold text-text">
-              {{ editingId ? "编辑" : "新建" }}
-            </h2>
-            <button
-              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-text-secondary hover:bg-gray-100"
-              aria-label="返回列表"
-              @click="showForm = false"
-            >
-              ✕
+              + 创建「{{ keyword.trim() }}」
             </button>
           </div>
 
-          <div class="flex-1 overflow-auto">
-            <label class="block text-sm font-medium text-text-secondary">
-              名称
-              <input
-                v-model="formName"
-                data-test="ref-form-name"
-                type="text"
-                class="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
-              />
-            </label>
-            <p v-if="formError" data-test="ref-form-error" class="mt-2 text-sm text-danger">
-              {{ formError }}
-            </p>
-          </div>
+          <p v-if="formError" data-test="ref-form-error" class="mt-2 text-sm text-danger">
+            {{ formError }}
+          </p>
 
           <button
-            data-test="ref-form-save"
-            class="mt-4 w-full rounded-xl bg-primary py-3 text-center text-base font-semibold text-white transition-colors hover:bg-primary-dark"
-            @click="handleSubmit"
+            v-if="panelMode === 'select' && mode === 'multiple'"
+            data-test="ref-confirm"
+            class="mt-4 w-full rounded-xl bg-primary py-3 text-sm font-semibold text-white transition-colors hover:bg-primary-dark"
+            @click="emit('select', [...selected])"
           >
-            {{ editingId ? "保存" : "创建" }}
+            确定
           </button>
         </template>
       </div>
