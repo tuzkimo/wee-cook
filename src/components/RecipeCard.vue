@@ -13,6 +13,11 @@ defineProps<{
   authorAvatarUrl: string | null;
   testPrefix: "recipe" | "community";
 }>();
+
+/** 按码点取首字：charAt(0) 会把 emoji 切成半个代理对（与 UserAvatar 同一套判断） */
+function firstChar(name: string): string {
+  return Array.from(name.trim())[0] ?? "?";
+}
 </script>
 
 <template>
@@ -34,7 +39,7 @@ defineProps<{
       :data-test="`${testPrefix}-cover-fallback`"
       class="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-lg font-semibold text-text-secondary"
     >
-      {{ name.charAt(0) }}
+      {{ firstChar(name) }}
     </div>
     <div class="min-w-0 flex-1">
       <h3 :data-test="`${testPrefix}-name`" class="line-clamp-2 text-sm font-medium text-text">

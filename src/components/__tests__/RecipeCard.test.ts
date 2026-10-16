@@ -56,6 +56,12 @@ describe("RecipeCard", () => {
     expect(wrapper.get('[data-test="recipe-cover-fallback"]').text()).toBe("红");
   });
 
+  it("菜名以 emoji 开头时兜底取整个 emoji，不是半个代理对", () => {
+    const wrapper = mountCard({ name: "🍜牛肉面", coverSrc: null });
+
+    expect(wrapper.get('[data-test="recipe-cover-fallback"]').text()).toBe("🍜");
+  });
+
   it("有图源时画 <img> 且不做兜底", () => {
     const wrapper = mountCard({ coverSrc: "/x.jpg" });
 
