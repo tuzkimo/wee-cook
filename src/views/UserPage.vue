@@ -3,6 +3,7 @@
 // 在线页：资料与列表都走 REST（用户页本身要在线，作者昵称的离线显示在菜谱详情页那边）。
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import { UserCheck, UserPlus } from "lucide-vue-next";
 import AppHeader from "@/components/AppHeader.vue";
 import UserAvatar from "@/components/UserAvatar.vue";
 import { imageSrc } from "@/services/imageStore";
@@ -153,16 +154,18 @@ async function open(id: string): Promise<void> {
           <button
             type="button"
             data-test="user-follow"
-            class="shrink-0 rounded-lg border px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50"
+            :aria-label="profile.followed ? '取消关注' : '关注'"
+            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-50"
             :class="
               profile.followed
-                ? 'border-gray-300 text-text-secondary hover:bg-gray-50'
-                : 'border-primary text-primary hover:bg-primary/10'
+                ? 'text-primary hover:bg-primary/10'
+                : 'bg-primary text-white hover:bg-primary-dark'
             "
             :disabled="!auth.isOnline || following"
             @click="toggleFollow"
           >
-            {{ profile.followed ? "取消关注" : "关注" }}
+            <UserCheck v-if="profile.followed" :size="18" />
+            <UserPlus v-else :size="18" />
           </button>
         </div>
 

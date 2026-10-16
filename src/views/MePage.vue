@@ -32,11 +32,18 @@ function openCard(): void {
   void router.push(auth.isOnline ? "/me/profile" : "/me/login");
 }
 
-const lastSyncText = computed(() =>
-  auth.lastSyncedTime ? new Date(auth.lastSyncedTime).toLocaleString() : "还没同步过",
+const syncing = computed(() => syncInFlight.value);
+
+// 同步条：一条状态点 + 一行状态文案（照 wee-count 的形状，整条可点 = 手动同步）
+const syncText = computed(() =>
+  auth.lastSyncedTime ? `已同步 ${new Date(auth.lastSyncedTime).toLocaleString()}` : "还没同步过",
 );
 
-const syncing = computed(() => syncInFlight.value);
+const syncDotClass = computed(() => {
+  if (syncing.value) return "bg-yellow-400";
+  if (auth.lastSyncFailed) return "bg-danger";
+  return "bg-green-500";
+});
 
 async function logout(): Promise<void> {
   await auth.logout();
@@ -68,85 +75,70 @@ async function logout(): Promise<void> {
         <ChevronRight :size="16" class="text-text-secondary" />
       </button>
 
-      <section class="rounded-xl border border-gray-200">
-        <!-- 未配置服务器：入口 -->
+      <!-- 未配置服务器：入口 -->
+      <button
+        v-if="!configured"
+        type="button"
+        data-test="server-row"
+        class="flex w-full items-center justify-between rounded-xl bg-surface px-4 py-3.5 text-sm transition-colors hover:bg-gray-50 active:bg-gray-100"
+        @click="router.push('/me/server')"
+      >
+        <span class="text-text">多设备同步</span>
+        <span data-test="server-state" class="text-text-secondary">未开启</span>
+      </button>
+
+      <!-- 配了地址但还没登录 -->
+      <button
+        v-else-if="!auth.isOnline"
+        type="button"
+        data-test="server-row"
+        class="flex w-full items-center justify-between rounded-xl bg-surface px-4 py-3.5 text-sm transition-colors hover:bg-gray-50 active:bg-gray-100"
+        @click="router.push('/me/login')"
+      >
+        <span class="text-text">多设备同步</span>
+        <span data-test="server-state" class="text-text-secondary">未登录</span>
+      </button>
+
+      <!-- 已登录：一条同步信息条（整条可点 = 立刻跑一次增量同步）+ 退出登录 -->
+      <template v-else>
         <button
-          v-if="!configured"
           type="button"
-          data-test="server-row"
-          class="flex w-full items-center justify-between px-3 py-3 text-sm transition-colors hover:bg-gray-50"
-          @click="router.push('/me/server')"
+          data-test="me-sync-card"
+          :disabled="syncing"
+          class="flex w-full items-center gap-2.5 rounded-xl bg-surface px-4 py-3.5 text-left text-sm transition-colors hover:bg-gray-50 active:bg-gray-100 disabled:cursor-default disabled:hover:bg-transparent"
+          @click="requestSyncNow"
         >
-          <span class="text-text">多设备同步</span>
-          <span data-test="server-state" class="text-text-secondary">未开启</span>
+          <span class="h-2.5 w-2.5 shrink-0 rounded-full" :class="syncDotClass" aria-hidden="true" />
+          <span v-if="syncing" data-test="syncing" class="min-w-0 flex-1 truncate text-text-secondary">
+            同步中…
+          </span>
+          <span
+            v-else-if="auth.lastSyncFailed"
+            data-test="sync-failed"
+            class="min-w-0 flex-1 truncate text-danger"
+          >
+            上次同步没成功，点一下重试
+          </span>
+          <span v-else data-test="last-sync" class="min-w-0 flex-1 truncate text-text">
+            {{ syncText }}
+          </span>
+          <!-- 图标是「这一条能点」的可见提示（在途时转起来） -->
+          <RefreshCw
+            :size="16"
+            aria-hidden="true"
+            :class="syncing ? 'animate-spin text-primary' : 'text-primary'"
+          />
         </button>
 
-        <!-- 配了地址但还没登录 -->
         <button
-          v-else-if="!auth.isOnline"
           type="button"
-          data-test="server-row"
-          class="flex w-full items-center justify-between px-3 py-3 text-sm transition-colors hover:bg-gray-50"
-          @click="router.push('/me/login')"
+          data-test="logout"
+          class="w-full rounded-xl bg-danger py-2.5 text-sm font-medium text-white transition-colors hover:bg-danger/90"
+          @click="logout"
         >
-          <span class="text-text">多设备同步</span>
-          <span data-test="server-state" class="text-text-secondary">未登录</span>
+          退出登录
         </button>
-
-        <!-- 已登录：整块可点 = 立刻跑一次增量同步 -->
-        <div v-else class="flex flex-col">
-          <button
-            type="button"
-            data-test="me-sync-card"
-            :disabled="syncing"
-            class="flex w-full flex-col gap-3 px-3 py-3 text-left text-sm transition-colors hover:bg-gray-50 active:bg-gray-100 disabled:cursor-default disabled:hover:bg-transparent"
-            @click="requestSyncNow"
-          >
-            <div class="flex items-center justify-between">
-              <span class="text-text-secondary">多设备同步</span>
-              <span class="flex items-center gap-1.5">
-                <span data-test="server-state" class="text-text">已开启</span>
-                <!-- 图标是「这里能点」的可见提示（在途时转起来） -->
-                <RefreshCw
-                  :size="14"
-                  aria-hidden="true"
-                  :class="syncing ? 'animate-spin text-primary' : 'text-text-secondary'"
-                />
-              </span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="text-text-secondary">账号</span>
-              <span data-test="nickname" class="text-text">{{ displayName }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="text-text-secondary">上次同步</span>
-              <span data-test="last-sync" class="text-text">{{ lastSyncText }}</span>
-            </div>
-            <span v-if="syncing" data-test="syncing" class="block text-xs text-text-secondary">
-              同步中…
-            </span>
-            <span
-              v-else-if="auth.lastSyncFailed"
-              data-test="sync-failed"
-              class="block text-xs text-danger"
-            >
-              上次同步没成功，点一下重试
-            </span>
-            <span v-else data-test="sync-hint" class="block text-xs text-primary">
-              点一下立刻同步
-            </span>
-          </button>
-
-          <button
-            type="button"
-            data-test="logout"
-            class="mx-3 my-3 rounded-lg bg-danger py-2 text-sm font-medium text-white transition-colors hover:bg-danger/90"
-            @click="logout"
-          >
-            退出登录
-          </button>
-        </div>
-      </section>
+      </template>
     </div>
   </div>
 </template>

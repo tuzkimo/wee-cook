@@ -166,20 +166,20 @@ describe("UserPage", () => {
   it("点关注后按钮变「取消关注」，再点回到未关注", async () => {
     const wrapper = await page();
 
-    expect(wrapper.get('[data-test="user-follow"]').text()).toBe("关注");
+    expect(wrapper.get('[data-test="user-follow"]').attributes("aria-label")).toBe("关注");
 
     await wrapper.get('[data-test="user-follow"]').trigger("click");
     await flushPromises();
 
     expect(mocks.follow).toHaveBeenCalledWith("u2");
     expect(mocks.unfollow).not.toHaveBeenCalled();
-    expect(wrapper.get('[data-test="user-follow"]').text()).toBe("取消关注");
+    expect(wrapper.get('[data-test="user-follow"]').attributes("aria-label")).toBe("取消关注");
 
     await wrapper.get('[data-test="user-follow"]').trigger("click");
     await flushPromises();
 
     expect(mocks.unfollow).toHaveBeenCalledWith("u2");
-    expect(wrapper.get('[data-test="user-follow"]').text()).toBe("关注");
+    expect(wrapper.get('[data-test="user-follow"]').attributes("aria-label")).toBe("关注");
   });
 
   it("关注失败时按钮回到原状并提示", async () => {
@@ -190,7 +190,7 @@ describe("UserPage", () => {
     await flushPromises();
 
     expect(wrapper.get('[data-test="user-follow-error"]').text()).toContain("网络不可用");
-    expect(wrapper.get('[data-test="user-follow"]').text()).toBe("关注");
+    expect(wrapper.get('[data-test="user-follow"]').attributes("aria-label")).toBe("关注");
   });
 
   it("掉线后关注按钮变为不可用（disabled，且视觉上也灰着）", async () => {

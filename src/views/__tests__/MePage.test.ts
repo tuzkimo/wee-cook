@@ -116,8 +116,9 @@ describe("MePage 多设备同步入口", () => {
     const wrapper = await page();
 
     expect(wrapper.find('[data-test="me-sync-card"]').exists()).toBe(true);
-    expect(wrapper.get('[data-test="server-state"]').text()).toBe("已开启");
-    expect(wrapper.get('[data-test="nickname"]').text()).toBe("阿丽");
+    // 已登录态的「已开启」与昵称改由上方用户卡承担（同步条只报同步状态）
+    expect(wrapper.get('[data-test="me-user-status"]').text()).toBe("已开启多设备同步");
+    expect(wrapper.get('[data-test="me-user-name"]').text()).toBe("阿丽");
     expect(wrapper.get('[data-test="last-sync"]').text()).toBe("还没同步过");
   });
 });
@@ -179,11 +180,12 @@ describe("MePage 同步卡", () => {
     expect(wrapper.find('[data-test="syncing"]').exists()).toBe(false);
   });
 
-  it("空闲时显示「点一下立刻同步」的可点提示", async () => {
+  it("空闲时整条可点（未 disabled）且带刷新图标", async () => {
     const wrapper = await loggedInPage();
 
-    expect(wrapper.get('[data-test="sync-hint"]').text()).toContain("点一下立刻同步");
     expect(wrapper.get('[data-test="me-sync-card"]').attributes("disabled")).toBeUndefined();
+    // 图标在同步条里，是「这一条能点」的可见提示
+    expect(wrapper.get('[data-test="me-sync-card"]').find("svg").exists()).toBe(true);
   });
 });
 

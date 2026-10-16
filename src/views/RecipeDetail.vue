@@ -270,11 +270,14 @@ async function confirmDelete(): Promise<void> {
         </p>
 
         <!-- 别人的菜谱：只读，能给的是「知道是谁的」「关注 ta」与「收藏」（spec §7 / §9.3） -->
-        <div v-if="!canEdit(detail.recipe)" class="mb-4 flex items-center gap-3">
+        <div
+          v-if="!canEdit(detail.recipe)"
+          class="mb-4 flex items-center gap-3 rounded-xl bg-surface px-3 py-3"
+        >
           <button
             v-if="detail.recipe.owner_id"
             type="button"
-            class="flex min-w-0 flex-1 items-center gap-3 rounded-xl bg-surface px-3 py-3 text-left transition-colors hover:bg-gray-50"
+            class="flex min-w-0 flex-1 items-center gap-3 text-left"
             @click="openAuthor"
           >
             <UserAvatar
