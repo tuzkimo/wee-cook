@@ -4,7 +4,7 @@
 // ⚠️ 不做计时器 / 防熄屏 / 逐步高亮，那是下一轮的跟做模式，别在这里加。
 import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { Pencil, Trash2 } from "lucide-vue-next";
+import { Pencil, Star, Trash2, UserCheck, UserPlus } from "lucide-vue-next";
 import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import UserAvatar from "@/components/UserAvatar.vue";
@@ -197,6 +197,22 @@ async function confirmDelete(): Promise<void> {
           </h1>
         </template>
         <template #action>
+          <!-- 收藏只对别人的菜谱可见（spec §9.3）：图标按钮放顶栏，正文不再占一行 -->
+          <button
+            v-if="!canEdit(detail.recipe)"
+            type="button"
+            data-test="recipe-favorite"
+            :aria-label="favorited ? '已收藏' : '收藏'"
+            class="flex h-8 w-8 items-center justify-center rounded-full hover:bg-gray-100 disabled:opacity-50"
+            :disabled="!auth.isOnline || favoriting"
+            @click="toggleFavorite"
+          >
+            <Star
+              :size="18"
+              :fill="favorited ? 'currentColor' : 'none'"
+              :class="favorited ? 'text-primary' : 'text-text-secondary'"
+            />
+          </button>
           <button
             v-if="canEdit(detail.recipe)"
             type="button"
@@ -254,10 +270,9 @@ async function confirmDelete(): Promise<void> {
         </p>
 
         <!-- 别人的菜谱：只读，能给的是「知道是谁的」「关注 ta」与「收藏」（spec §7 / §9.3） -->
-        <div v-if="!canEdit(detail.recipe)" class="mb-4 flex flex-col gap-3">
-          <div class="flex items-center gap-3">
-            <button
-              v-if="detail.recipe.owner_id"
+        <div v-if="!canEdit(detail.recipe)" class="mb-4 flex items-center gap-3">
+          <button
+            v-if="detail.recipe.owner_id"
               type="button"
               class="flex min-w-0 flex-1 items-center gap-3 rounded-xl bg-surface px-3 py-3 text-left transition-colors hover:bg-gray-50"
               @click="openAuthor"
@@ -282,39 +297,23 @@ async function confirmDelete(): Promise<void> {
                 </p>
               </div>
             </button>
-            <button
-              v-if="authorProfile"
-              type="button"
-              data-test="recipe-author-follow"
-              class="shrink-0 rounded-lg border px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50"
-              :class="
-                authorProfile.followed
-                  ? 'border-gray-300 text-text-secondary hover:bg-gray-50'
-                  : 'border-primary text-primary hover:bg-primary/10'
-              "
-              :disabled="!auth.isOnline || following"
-              @click="toggleFollow"
-            >
-              {{ authorProfile.followed ? "取消关注" : "关注" }}
-            </button>
-          </div>
-
-          <div class="flex justify-end">
-            <button
-              type="button"
-              data-test="recipe-favorite"
-              class="shrink-0 rounded-lg border px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50"
-              :class="
-                favorited
-                  ? 'border-gray-300 text-text-secondary hover:bg-gray-50'
-                  : 'border-primary text-primary hover:bg-primary/10'
-              "
-              :disabled="!auth.isOnline || favoriting"
-              @click="toggleFavorite"
-            >
-              {{ favorited ? "已收藏" : "收藏" }}
-            </button>
-          </div>
+          <button
+            v-if="authorProfile"
+            type="button"
+            data-test="recipe-author-follow"
+            :aria-label="authorProfile.followed ? '取消关注' : '关注'"
+            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-50"
+            :class="
+              authorProfile.followed
+                ? 'text-primary hover:bg-primary/10'
+                : 'bg-primary text-white hover:bg-primary-dark'
+            "
+            :disabled="!auth.isOnline || following"
+            @click="toggleFollow"
+          >
+            <UserCheck v-if="authorProfile.followed" :size="18" />
+            <UserPlus v-else :size="18" />
+          </button>
         </div>
 
         <label

@@ -515,8 +515,10 @@ describe("RecipeDetail", () => {
 
     const author = wrapper.get('[data-test="recipe-author"]');
     expect(author.text()).toBe("老王");
-    // 收藏按钮与作者同属「别人的菜谱」这一态
-    expect(wrapper.find('[data-test="recipe-favorite"]').exists()).toBe(true);
+    // 收藏按钮与作者同属「别人的菜谱」这一态，而且是顶栏里的图标按钮
+    const favorite = wrapper.find('[data-test="recipe-favorite"]');
+    expect(favorite.exists()).toBe(true);
+    expect(wrapper.get("header").find('[data-test="recipe-favorite"]').exists()).toBe(true);
     await author.trigger("click");
     expect(mocks.push).toHaveBeenCalledWith("/user/u2");
   });
@@ -549,7 +551,7 @@ describe("RecipeDetail", () => {
 
     expect(mocks.profile).toHaveBeenCalledWith("u2");
     expect(wrapper.get('[data-test="recipe-author-count"]').text()).toContain("12");
-    expect(wrapper.get('[data-test="recipe-author-follow"]').text()).toBe("关注");
+    expect(wrapper.get('[data-test="recipe-author-follow"]').attributes("aria-label")).toBe("关注");
   });
 
   it("已关注的作者显示「取消关注」", async () => {
@@ -561,7 +563,7 @@ describe("RecipeDetail", () => {
     const wrapper = await page();
 
     expect(wrapper.get('[data-test="recipe-author-count"]').text()).toContain("3");
-    expect(wrapper.get('[data-test="recipe-author-follow"]').text()).toBe("取消关注");
+    expect(wrapper.get('[data-test="recipe-author-follow"]').attributes("aria-label")).toBe("取消关注");
   });
 
   it("点关注按钮只关注作者，不跳用户页", async () => {
@@ -592,7 +594,7 @@ describe("RecipeDetail", () => {
     await flushPromises();
 
     expect(wrapper.get('[data-test="author-follow-error"]').text()).toContain("网络不可用");
-    expect(wrapper.get('[data-test="recipe-author-follow"]').text()).toBe("关注");
+    expect(wrapper.get('[data-test="recipe-author-follow"]').attributes("aria-label")).toBe("关注");
   });
 
   it("作者资料请求失败时完全静默：卡片照常，不报错也不画数字与关注按钮", async () => {
@@ -629,12 +631,12 @@ describe("RecipeDetail", () => {
 
     const wrapper = await page();
 
-    expect(wrapper.get('[data-test="recipe-favorite"]').text()).toBe("收藏");
+    expect(wrapper.get('[data-test="recipe-favorite"]').attributes("aria-label")).toBe("收藏");
     await wrapper.get('[data-test="recipe-favorite"]').trigger("click");
     await flushPromises();
 
     expect(mocks.favorite).toHaveBeenCalledWith("r1");
-    expect(wrapper.get('[data-test="recipe-favorite"]').text()).toBe("已收藏");
+    expect(wrapper.get('[data-test="recipe-favorite"]').attributes("aria-label")).toBe("已收藏");
   });
 
   it("本地已收藏的菜谱进详情页直接显示已收藏", async () => {
@@ -643,7 +645,7 @@ describe("RecipeDetail", () => {
 
     const wrapper = await page();
 
-    expect(wrapper.get('[data-test="recipe-favorite"]').text()).toBe("已收藏");
+    expect(wrapper.get('[data-test="recipe-favorite"]').attributes("aria-label")).toBe("已收藏");
   });
 
   it("步骤图还在下载时不阻塞收藏态初始化（先读本地收藏，再等图）", async () => {
@@ -657,7 +659,7 @@ describe("RecipeDetail", () => {
 
     const wrapper = await page();
 
-    expect(wrapper.get('[data-test="recipe-favorite"]').text()).toBe("已收藏");
+    expect(wrapper.get('[data-test="recipe-favorite"]').attributes("aria-label")).toBe("已收藏");
   });
 
   it("exists 读不了时不炸整页，收藏态照常初始化", async () => {
@@ -677,7 +679,7 @@ describe("RecipeDetail", () => {
     const wrapper = await page();
 
     expect(wrapper.get('[data-test="detail-name"]').text()).toBe("红烧肉");
-    expect(wrapper.get('[data-test="recipe-favorite"]').text()).toBe("已收藏");
+    expect(wrapper.get('[data-test="recipe-favorite"]').attributes("aria-label")).toBe("已收藏");
   });
 
   it("收藏失败时按钮回到原状并提示，不静默", async () => {
@@ -692,7 +694,7 @@ describe("RecipeDetail", () => {
     await flushPromises();
 
     expect(wrapper.get('[data-test="favorite-error"]').text()).toContain("网络不可用");
-    expect(wrapper.get('[data-test="recipe-favorite"]').text()).toBe("收藏");
+    expect(wrapper.get('[data-test="recipe-favorite"]').attributes("aria-label")).toBe("收藏");
   });
 
   it("自己的菜谱渲染编辑与删除按钮", async () => {

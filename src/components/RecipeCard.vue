@@ -49,7 +49,7 @@ function firstChar(name: string): string {
         <span
           v-if="category"
           :data-test="`${testPrefix}-category`"
-          class="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-text-secondary"
+          class="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary"
         >
           {{ category }}
         </span>

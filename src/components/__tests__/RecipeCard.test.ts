@@ -42,6 +42,13 @@ describe("RecipeCard", () => {
     expect(wrapper.find('[data-test="recipe-tag"]').exists()).toBe(false);
   });
 
+  it("分类用主色 chip，标签仍是灰的（看得出一类二类）", () => {
+    const wrapper = mountCard({ category: "家常菜", tags: ["下饭"] });
+
+    expect(wrapper.get('[data-test="recipe-category"]').classes()).toContain("text-primary");
+    expect(wrapper.get('[data-test="recipe-tag"]').classes()).toContain("text-text-secondary");
+  });
+
   it("作者为空时第三行整行不渲染", () => {
     const wrapper = mountCard({ authorName: null, authorAvatarUrl: null });
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
-import { ChevronRight } from "lucide-vue-next";
+import { ChevronRight, RefreshCw } from "lucide-vue-next";
 import AppHeader from "@/components/AppHeader.vue";
 import UserAvatar from "@/components/UserAvatar.vue";
 import { requestSyncNow, syncInFlight } from "@/services/sync";
@@ -99,12 +99,19 @@ async function logout(): Promise<void> {
             type="button"
             data-test="me-sync-card"
             :disabled="syncing"
-            class="flex w-full flex-col gap-3 px-3 py-3 text-left text-sm transition-colors hover:bg-gray-50 disabled:cursor-default disabled:hover:bg-transparent"
+            class="flex w-full flex-col gap-3 px-3 py-3 text-left text-sm transition-colors hover:bg-gray-50 active:bg-gray-100 disabled:cursor-default disabled:hover:bg-transparent"
             @click="requestSyncNow"
           >
             <div class="flex items-center justify-between">
               <span class="text-text-secondary">多设备同步</span>
-              <span data-test="server-state" class="text-text">已开启</span>
+              <span class="flex items-center gap-1.5">
+                <span data-test="server-state" class="text-text">已开启</span>
+                <!-- 图标是「这里能点」的可见提示（在途时转起来） -->
+                <RefreshCw
+                  :size="14"
+                  :class="syncing ? 'animate-spin text-primary' : 'text-text-secondary'"
+                />
+              </span>
             </div>
             <div class="flex items-center justify-between">
               <span class="text-text-secondary">账号</span>
@@ -124,16 +131,9 @@ async function logout(): Promise<void> {
             >
               上次同步没成功
             </span>
-          </button>
-
-          <button
-            type="button"
-            data-test="server-settings-row"
-            class="flex w-full items-center justify-between px-3 py-3 text-sm transition-colors hover:bg-gray-50"
-            @click="router.push('/me/server')"
-          >
-            <span class="text-text">服务器设置</span>
-            <ChevronRight :size="16" class="text-text-secondary" />
+            <span v-else data-test="sync-hint" class="block text-xs text-primary">
+              点一下立刻同步
+            </span>
           </button>
 
           <button

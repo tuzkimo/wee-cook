@@ -177,12 +177,11 @@ describe("MePage 同步卡", () => {
     expect(wrapper.find('[data-test="syncing"]').exists()).toBe(false);
   });
 
-  it("已登录时有「服务器设置」入口", async () => {
+  it("空闲时显示「点一下立刻同步」的可点提示", async () => {
     const wrapper = await loggedInPage();
 
-    await wrapper.get('[data-test="server-settings-row"]').trigger("click");
-
-    expect(mocks.push).toHaveBeenCalledWith("/me/server");
+    expect(wrapper.get('[data-test="sync-hint"]').text()).toContain("点一下立刻同步");
+    expect(wrapper.get('[data-test="me-sync-card"]').attributes("disabled")).toBeUndefined();
   });
 });
 
