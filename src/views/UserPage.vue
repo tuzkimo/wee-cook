@@ -155,7 +155,7 @@ async function open(id: string): Promise<void> {
             type="button"
             data-test="user-follow"
             :aria-label="profile.followed ? '取消关注' : '关注'"
-            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-50"
+            class="flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-50"
             :class="
               profile.followed
                 ? 'text-primary hover:bg-primary/10'

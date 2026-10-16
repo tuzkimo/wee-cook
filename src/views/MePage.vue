@@ -42,6 +42,8 @@ const syncText = computed(() =>
 const syncDotClass = computed(() => {
   if (syncing.value) return "bg-yellow-400";
   if (auth.lastSyncFailed) return "bg-danger";
+  // 从没成功同步过就不给「绿」：绿点配「还没同步过」是自相矛盾的信号
+  if (auth.lastSyncedTime === null) return "bg-gray-300";
   return "bg-green-500";
 });
 
@@ -105,10 +107,15 @@ async function logout(): Promise<void> {
           type="button"
           data-test="me-sync-card"
           :disabled="syncing"
-          class="flex w-full items-center gap-2.5 rounded-xl bg-surface px-4 py-3.5 text-left text-sm transition-colors hover:bg-gray-50 active:bg-gray-100 disabled:cursor-default disabled:hover:bg-transparent"
+          class="flex w-full items-center gap-2.5 rounded-xl bg-surface px-4 py-3.5 text-left text-sm transition-colors hover:bg-gray-50 active:bg-gray-100 disabled:cursor-default disabled:hover:bg-surface"
           @click="requestSyncNow"
         >
-          <span class="h-2.5 w-2.5 shrink-0 rounded-full" :class="syncDotClass" aria-hidden="true" />
+          <span
+            data-test="sync-dot"
+            class="h-2.5 w-2.5 shrink-0 rounded-full"
+            :class="syncDotClass"
+            aria-hidden="true"
+          />
           <span v-if="syncing" data-test="syncing" class="min-w-0 flex-1 truncate text-text-secondary">
             同步中…
           </span>

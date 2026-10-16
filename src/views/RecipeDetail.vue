@@ -271,11 +271,10 @@ async function confirmDelete(): Promise<void> {
 
         <!-- 别人的菜谱：只读，能给的是「知道是谁的」「关注 ta」与「收藏」（spec §7 / §9.3） -->
         <div
-          v-if="!canEdit(detail.recipe)"
+          v-if="!canEdit(detail.recipe) && detail.recipe.owner_id"
           class="mb-4 flex items-center gap-3 rounded-xl bg-surface px-3 py-3"
         >
           <button
-            v-if="detail.recipe.owner_id"
             type="button"
             class="flex min-w-0 flex-1 items-center gap-3 text-left"
             @click="openAuthor"
@@ -305,7 +304,7 @@ async function confirmDelete(): Promise<void> {
             type="button"
             data-test="recipe-author-follow"
             :aria-label="authorProfile.followed ? '取消关注' : '关注'"
-            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-50"
+            class="flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-50"
             :class="
               authorProfile.followed
                 ? 'text-primary hover:bg-primary/10'

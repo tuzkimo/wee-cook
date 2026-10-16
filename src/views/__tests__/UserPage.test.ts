@@ -167,6 +167,8 @@ describe("UserPage", () => {
     const wrapper = await page();
 
     expect(wrapper.get('[data-test="user-follow"]').attributes("aria-label")).toBe("关注");
+    // 图标本身就是这次改动的可见内容：没它按钮就只是个空圈
+    expect(wrapper.get('[data-test="user-follow"]').find("svg").exists()).toBe(true);
 
     await wrapper.get('[data-test="user-follow"]').trigger("click");
     await flushPromises();
@@ -174,6 +176,7 @@ describe("UserPage", () => {
     expect(mocks.follow).toHaveBeenCalledWith("u2");
     expect(mocks.unfollow).not.toHaveBeenCalled();
     expect(wrapper.get('[data-test="user-follow"]').attributes("aria-label")).toBe("取消关注");
+    expect(wrapper.get('[data-test="user-follow"]').find("svg").exists()).toBe(true);
 
     await wrapper.get('[data-test="user-follow"]').trigger("click");
     await flushPromises();

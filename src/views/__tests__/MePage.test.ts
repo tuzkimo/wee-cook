@@ -186,6 +186,25 @@ describe("MePage 同步卡", () => {
     expect(wrapper.get('[data-test="me-sync-card"]').attributes("disabled")).toBeUndefined();
     // 图标在同步条里，是「这一条能点」的可见提示
     expect(wrapper.get('[data-test="me-sync-card"]').find("svg").exists()).toBe(true);
+    // 从没同步过 → 灰点（绿点配「还没同步过」自相矛盾）
+    expect(wrapper.get('[data-test="sync-dot"]').classes()).toContain("bg-gray-300");
+  });
+
+  it("同步成功后状态点变绿且文案带「已同步」", async () => {
+    const wrapper = await loggedInPage();
+    useAuthStore().lastSyncedTime = NOW;
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="last-sync"]').text()).toMatch(/^已同步 /);
+    expect(wrapper.get('[data-test="sync-dot"]').classes()).toContain("bg-green-500");
+  });
+
+  it("同步失败时状态点变红", async () => {
+    const wrapper = await loggedInPage();
+    useAuthStore().lastSyncFailed = true;
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="sync-dot"]').classes()).toContain("bg-danger");
   });
 });
 
