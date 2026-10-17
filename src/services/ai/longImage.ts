@@ -37,9 +37,14 @@ export type LayoutResult = { ok: true; layout: LongImageLayout } | { ok: false; 
 
 const SEGMENT_STEP = MAX_SEGMENT_HEIGHT - SEGMENT_OVERLAP;
 
-/** 输出坐标 (x,y,w,h) → 原图坐标。除回 scale 让 drawImage 的源矩形与输出尺寸一一对应。 */
-function toSource(y: number, w: number, h: number, scale: number): Rect {
-  return { x: 0, y: Math.round(y / scale), w: Math.round(w / scale), h: Math.round(h / scale) };
+/**
+ * 输出坐标 (x,y,w,h) → 原图坐标。除回 scale 让 drawImage 的源矩形与输出尺寸一一对应。
+ * 高度要夹到原图边界：独立 round 会比 outH 的 round 多出 1px，canvas 会裁掉源矩形并等比缩目标，
+ * 底边留下一条未绘制的黑边。
+ */
+function toSource(y: number, w: number, h: number, scale: number, height: number): Rect {
+  const sy = Math.round(y / scale);
+  return { x: 0, y: sy, w: Math.round(w / scale), h: Math.min(height - sy, Math.round(h / scale)) };
 }
 
 export function planLongImage(size: { width: number; height: number }): LayoutResult {
@@ -59,7 +64,7 @@ export function planLongImage(size: { width: number; height: number }): LayoutRe
   for (let i = 0; i < count; i += 1) {
     const y = i * SEGMENT_STEP;
     const h = Math.min(MAX_SEGMENT_HEIGHT, outH - y);
-    segments.push({ source: toSource(y, outW, h, scale), width: outW, height: h });
+    segments.push({ source: toSource(y, outW, h, scale, height), width: outW, height: h });
   }
 
   const coverH = Math.min(outH, Math.round((outW * 4) / 3));
@@ -68,7 +73,7 @@ export function planLongImage(size: { width: number; height: number }): LayoutRe
     layout: {
       width: outW,
       height: outH,
-      cover: { source: toSource(0, outW, coverH, scale), width: outW, height: coverH },
+      cover: { source: toSource(0, outW, coverH, scale, height), width: outW, height: coverH },
       segments,
     },
   };

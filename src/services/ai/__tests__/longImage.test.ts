@@ -71,6 +71,42 @@ describe("长图几何", () => {
     }
   });
 
+  it("源矩形永不超出原图（非整数缩放下 round 会多出 1px）", () => {
+    for (const size of [
+      { width: 2499, height: 3000 },
+      { width: 2499, height: 10000 },
+    ]) {
+      const layout = okLayout(size);
+      for (const p of layout.segments) {
+        expect(p.source.y + p.source.h).toBeLessThanOrEqual(size.height);
+        expect(p.source.x + p.source.w).toBeLessThanOrEqual(size.width);
+      }
+      if (layout.cover === null) throw new Error("预期有封面");
+      expect(layout.cover.source.y + layout.cover.source.h).toBeLessThanOrEqual(size.height);
+    }
+  });
+
+  it("缩放图的 segment.source 是原图坐标，不是输出坐标", () => {
+    const layout = okLayout({ width: 2160, height: 4000 }); // scale 0.5
+    expect(layout.segments[0]).toMatchObject({ source: { x: 0, y: 0, w: 2160, h: 3000 }, width: 1080, height: 1500 });
+  });
+
+  it("1px 短边 / 超窄长图不出现 0 边", () => {
+    for (const size of [
+      { width: 1, height: 100 },
+      { width: 3000, height: 1 },
+    ]) {
+      const layout = okLayout(size);
+      for (const p of [...layout.segments, layout.cover]) {
+        if (p === null) throw new Error("预期有封面");
+        expect(p.width).toBeGreaterThan(0);
+        expect(p.height).toBeGreaterThan(0);
+        expect(p.source.w).toBeGreaterThan(0);
+        expect(p.source.h).toBeGreaterThan(0);
+      }
+    }
+  });
+
   it("宽或高为 0 / 负数 / 非有限数 ⇒ invalid", () => {
     expect(planLongImage({ width: 0, height: 100 })).toEqual({ ok: false, reason: "invalid" });
     expect(planLongImage({ width: 100, height: 0 })).toEqual({ ok: false, reason: "invalid" });
