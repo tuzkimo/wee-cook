@@ -1,0 +1,87 @@
+name: deploy-backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/deploy-backend.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/wee-cook-api
+  # 服务器上 API 的宿主侧地址，与服务器 .env 的 API_ADDR 必须一致（改一处就两处一起改）。
+  API_ADDR: 127.0.0.1:8081
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache-dependency-path: backend/go.sum
+      # testcontainers 会起真的 postgres 容器，ubuntu-latest 自带 Docker，无需额外装配。
+      - name: 跑测试
+        run: go test ./...
+
+  build-push:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          port: ${{ secrets.DEPLOY_PORT }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            cd "${{ secrets.DEPLOY_PATH }}"
+            docker compose pull api
+            # --no-build：compose 里有 build: ./backend，不加这个可能在服务器上现场编译一遍。
+            docker compose up -d --no-build
+            # 容器起来就崩（迁移失败、配置写错）时 compose 的退出码仍是 0，
+            # 不打这一枪这次部署会显示成绿色。distroless 镜像里没有 curl/wget，
+            # 只能从宿主机打映射出来的端口。
+            curl -fsS --retry 30 --retry-delay 2 --retry-connrefused \
+              -o /dev/null "http://${{ env.API_ADDR }}/api/v1/healthz" || {
+                echo "::error::健康检查失败，最近 50 行容器日志："
+                docker compose logs --tail=50 api
+                exit 1
+              }

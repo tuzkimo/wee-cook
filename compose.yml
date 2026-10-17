@@ -4,7 +4,9 @@ services:
     build: ./backend
     image: ghcr.io/tuzkimo/wee-cook-api:latest
     restart: unless-stopped
-    ports: ["8080:8080"]
+    # 整个宿主侧地址都可覆盖：本地不设 = 8080 全接口（安卓实机联调照旧）；
+    # 服务器 .env 写 API_ADDR=127.0.0.1:8081 = 只有本机反代能进，公网摸不到。
+    ports: ["${API_ADDR:-8080}:8080"]
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-wee}:${POSTGRES_PASSWORD:-wee}@postgres:5432/${POSTGRES_DB:-wee-cook}?sslmode=disable}
       REDIS_URL: ${REDIS_URL:-redis:6379}

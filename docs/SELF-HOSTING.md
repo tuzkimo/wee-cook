@@ -12,11 +12,16 @@ WeeCook 后端是**可选**组件：不部署时 App 完全本地运行；部署
 - 已安装 Docker + Docker Compose（或 Podman）
 - 开放入站端口 `8080`（API）。PostgreSQL/Redis 仅容器内通信并绑定 `127.0.0.1`，**不要**对公网开放
 
-## 方式一：免克隆最小部署（镜像尚未发布，暂不可用）
+> 同一台机器上已有一套 wee-count 占着 `8080`，或者前面要挂 Caddy 反代时，宿主侧地址可改：
+> 把 `api` 的 `ports` 写成 `"${API_ADDR:-8080}:8080"`，`.env` 里填 `API_ADDR=127.0.0.1:8081`。
+> 详见 [后端 CI/CD 自动部署指南](后端CI-CD自动部署指南.md)。
 
-> ⚠️ 预构建镜像 `ghcr.io/tuzkimo/wee-cook-api:latest` **尚未发布**（等仓库 CI 接上自动构建），
-> 现在直接 `docker compose up -d` 会在拉镜像那一步失败。**当前请用「方式二：源码构建」**
-> （`git clone` + `docker compose up -d --build`）。镜像发布后此节即可照用。
+## 方式一：免克隆最小部署（用预构建镜像）
+
+> 预构建镜像 `ghcr.io/tuzkimo/wee-cook-api:latest` 由 CI 在每次 push 到 `main` 时自动发布，
+> 仓库是 public，匿名即可拉取。下面这段 compose 与仓库根目录的 `compose.yml` 内容基本一致
+> （那份额外带 `build: ./backend`，并用 `API_ADDR` 覆盖宿主侧地址）。
+> 想在服务器上接自动部署，见 [后端 CI/CD 自动部署指南](后端CI-CD自动部署指南.md)。
 
 1. 在服务器上建一个目录（如 `wee-cook`），保存以下内容为 `compose.yml`：
 
@@ -80,6 +85,9 @@ volumes:
   pgdata:
   files:
 ```
+
+> 若前面挂 Caddy/nginx 反代或端口冲突，把 `api` 的 `ports` 改成 `"${API_ADDR:-8080}:8080"`，
+> 并在 `.env` 里写 `API_ADDR=127.0.0.1:8081` 与 `TRUST_PROXY=true`。
 
 2. 同目录创建 `.env`（**务必改掉这两个必填值**）：
 
@@ -238,10 +246,14 @@ https://<你的域名>
 **方式一（免克隆/镜像）**：
 
 ```bash
+# --no-build：compose.yml 里带 build: ./backend，不加这个可能在服务器上现场编译一遍
 docker compose pull api
-docker compose up -d
+docker compose up -d --no-build
 ```
 
+已接 CI/CD 的服务器（见 [后端 CI/CD 自动部署指南](后端CI-CD自动部署指南.md)）push 到 `main` 就自动更新，无需手动执行本节。
+
+**注意**：升级只换镜像，**不会**同步 `compose.yml`。改过 compose（加服务、改环境变量、改端口）仍需手动 `git pull` 后 `docker compose up -d --no-build`。
 **方式二（源码构建）**：
 
 ```bash
