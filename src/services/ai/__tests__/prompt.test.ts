@@ -61,7 +61,9 @@ describe("buildSystemPrompt", () => {
 
     expect(p).toContain("search_recipes");
     expect(p).toContain("五花肉"); // 「找有五花肉的菜」
-    expect(p).toContain("create_recipe_draft"); // 长截图那条
+    expect(p).toContain("不放辣椒"); // 纯检索那条
+    expect(p).not.toContain("create_recipe_draft"); // 本计划不实现截图收录，prompt 不能提到它
+    expect(p).not.toContain("截图");
     expect(p).toContain("不调用工具"); // 「我库里有哪些分类」直接答
   });
 
