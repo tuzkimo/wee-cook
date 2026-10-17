@@ -62,6 +62,8 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
   const error = ref<string | null>(null);
   // 本机唯一会话；load / send / clear 共用同一条，避免重复查询
   let sessionId: string | null = null;
+  // 退登 / 换号的世代。send 在飞时用户可能已退登，响应回来时不能把上一个账号的内容写回内存。
+  let epoch = 0;
 
   async function ensureSession(): Promise<string> {
     if (sessionId === null) sessionId = await loadOrCreateSession();
@@ -75,10 +77,13 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
   async function send(text: string): Promise<void> {
     const content = text.trim();
     if (sending.value || content === "") return;
+    // 世代采样必须在第一个 await 之前，否则 reset() 发生在等待中时这里已经看不到它
+    const start = epoch;
     sending.value = true;
     error.value = null;
     try {
       const id = await ensureSession();
+      if (start !== epoch) return;
       // 历史要在插入本轮提问之前取，runAgent 自己会把本轮提问接在后面
       const history = messages.value
         .filter((message) => message.text !== "")
@@ -98,6 +103,8 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
         loadItems: async () => recipeStore.recipes,
       });
 
+      // 退登后回来的这一发属于上一个账号：不落库、不进内存
+      if (start !== epoch) return;
       // assistant 消息只在 agent 成功后才插入，失败路径不留半条
       const assistantMessage = newMessage(
         "assistant",
@@ -114,9 +121,11 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
       messages.value.push(toChatMessage(assistantMessage));
       await appendMessage(id, assistantMessage);
     } catch (err) {
+      if (start !== epoch) return;
       error.value = err instanceof AiError ? ERROR_TEXT[err.code] : GENERIC_ERROR;
     } finally {
-      sending.value = false;
+      // 世代变了说明 reset() 已经复位过 sending（可能已经是新账号的那一发），别再动
+      if (start === epoch) sending.value = false;
     }
   }
 
@@ -132,8 +141,11 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
 
   /** 退登 / 换号：只清内存，库里的行原样留着（spec §12.1）。 */
   function reset(): void {
+    // 在飞的 send 作废：响应回来时世代对不上，既不加消息也不写错误
+    epoch++;
     messages.value = [];
     error.value = null;
+    sending.value = false;
     sessionId = null;
   }
 

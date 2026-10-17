@@ -274,6 +274,52 @@ describe("aiChatStore.reset", () => {
     await store.load();
     expect(loadOrCreateSession).toHaveBeenCalledTimes(2);
   });
+
+  it("send 在途时 reset：上一个账号的响应回来不得写回内存", async () => {
+    let release: (value: AgentOutcome) => void = () => {};
+    vi.mocked(runAgent).mockReturnValue(
+      new Promise<AgentOutcome>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const store = useAiChatStore();
+
+    const pending = store.send("今天吃什么");
+    await vi.waitFor(() => expect(runAgent).toHaveBeenCalledTimes(1));
+
+    // 退登：清内存，同时把在飞的这一发作废
+    store.reset();
+    release(outcome());
+    await pending;
+
+    expect(store.messages).toEqual([]);
+    expect(store.error).toBeNull();
+    expect(store.sending).toBe(false);
+    // 助手那条根本不该落库（用户那条已经在退登前写入，属于上一个账号，不动）
+    expect(appendMessage).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(appendMessage).mock.calls[0][1].role).toBe("user");
+  });
+
+  it("send 在途时 reset：失败回来的错误文案也不得写回", async () => {
+    let reject: (err: unknown) => void = () => {};
+    vi.mocked(runAgent).mockReturnValue(
+      new Promise<AgentOutcome>((_resolve, rejectFn) => {
+        reject = rejectFn;
+      }),
+    );
+    const store = useAiChatStore();
+
+    const pending = store.send("今天吃什么");
+    await vi.waitFor(() => expect(runAgent).toHaveBeenCalledTimes(1));
+
+    store.reset();
+    reject(new AiError("ai_quota_exceeded"));
+    await pending;
+
+    expect(store.error).toBeNull();
+    expect(store.messages).toEqual([]);
+    expect(store.sending).toBe(false);
+  });
 });
 
 describe("aiChatStore.openInFilter", () => {
