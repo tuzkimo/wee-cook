@@ -16,11 +16,11 @@ afterEach(() => {
   wrappers.length = 0;
 });
 
-function bubble(image: string | null): VueWrapper {
+function bubble(image: string | null, text = "这个怎么做"): VueWrapper {
   const message: ChatMessage = {
     id: "m1",
     role: "user",
-    text: "这个怎么做",
+    text,
     image,
     filter: null,
     items: [],
@@ -41,5 +41,12 @@ describe("ChatBubble", () => {
     expect(thumb.element.nextElementSibling?.getAttribute("data-test")).toBe("ai-bubble");
 
     expect(bubble(null).find('[data-test="ai-bubble-image"]').exists()).toBe(false);
+  });
+
+  it("纯图轮（没打字）：只渲染缩略图，不出一个空的彩色气泡", () => {
+    const wrapper = bubble("data:image/jpeg;base64,x", "");
+
+    expect(wrapper.find('[data-test="ai-bubble-image"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="ai-bubble"]').exists()).toBe(false);
   });
 });

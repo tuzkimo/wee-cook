@@ -71,6 +71,28 @@ describe("toScreenshot", () => {
     expectFailure(await toScreenshot(PNG, { decode: async () => fakeDecoded(1080, 9000) }), MSG_TOO_LONG);
   });
 
+  it("位图每条退出路径都释放：布局被拒、渲染抛错、成功都不漏", async () => {
+    const closed = { tooLong: 0, renderErr: 0, ok: 0 };
+    await toScreenshot(PNG, {
+      decode: async () => ({ ...fakeDecoded(1080, 9000), close: () => void (closed.tooLong += 1) }),
+    });
+    await toScreenshot(PNG, {
+      decode: async () => ({
+        width: 1080,
+        height: 1000,
+        close: () => void (closed.renderErr += 1),
+        render: async () => {
+          throw new Error("canvas gone");
+        },
+      }),
+    });
+    await toScreenshot(PNG, {
+      decode: async () => ({ ...fakeDecoded(1080, 1000), close: () => void (closed.ok += 1) }),
+    });
+    // 未释放 = 32MB 位图泄漏（render 不再自己 close，全靠 toScreenshot 收口）
+    expect(closed).toEqual({ tooLong: 1, renderErr: 1, ok: 1 });
+  });
+
   it("解码抛错 ⇒ 「这张图片打不开」，不冒泡", async () => {
     const r = await toScreenshot(PNG, {
       decode: async () => {

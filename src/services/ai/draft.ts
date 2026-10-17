@@ -106,6 +106,8 @@ export function resolveDraft(args: DraftArgs, dict: Dict): RecipeDraft {
   for (const tag of args.tags ?? []) {
     const id = matchId(tag, dict.tags);
     if (id === null) continue;
+    // 模型重复同一个标签名 ⇒ 同一个 id 只收一次，否则编辑页会挂上重复标签
+    if (tagIds.includes(id)) continue;
     tagIds.push(id);
     tagNames.push(nameOf(id, dict.tags));
   }

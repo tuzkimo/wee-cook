@@ -264,6 +264,39 @@ describe("intakeShare：失败路径（都要消费 + 跳 AI 页，否则用户�
     }
   });
 
+  it("截图步骤直接抛错（如动态 import 的 chunk 加载失败）⇒ 读失败文案 + 消费 + 跳页，不静默丢", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const raw = imageRaw();
+    const { deps, calls } = harness({
+      readPending: async () => raw,
+      toScreenshot: async () => {
+        throw new Error("chunk load failed");
+      },
+    });
+    await expect(intakeShare(deps)).resolves.toBe("failed");
+    expect(calls.notices).toEqual([MSG_READ_FAILED]);
+    expect(calls.consume).toEqual([JSON.parse(raw)]);
+    expect(calls.attached).toEqual([]);
+    expect(calls.pushAi).toBe(1);
+    warn.mockRestore();
+  });
+
+  it("setAttachment 抛错也一样收口：不冒泡，文案 + 消费 + 跳页都还在", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const raw = imageRaw();
+    const { deps, calls } = harness({
+      readPending: async () => raw,
+      setAttachment: () => {
+        throw new Error("store gone");
+      },
+    });
+    await expect(intakeShare(deps)).resolves.toBe("failed");
+    expect(calls.notices).toEqual([MSG_READ_FAILED]);
+    expect(calls.consume).toHaveLength(1);
+    expect(calls.pushAi).toBe(1);
+    warn.mockRestore();
+  });
+
   it("三个 error code ⇒ 各自文案 + 消费（consume 收到 error payload）", async () => {
     const cases = [
       ["no_stream", MSG_NO_STREAM],

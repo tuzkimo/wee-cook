@@ -32,7 +32,11 @@ const useAiSettingsStoreBase = defineStore("aiSettings", () => {
       status.value = null;
       return;
     }
-    sendingEnabled.value = await readAiSendingEnabled();
+    // 读盘要 await：中途换号时晚到的结果不能把上一个账号的同意写回来
+    const uid = aiAccount();
+    const stored = await readAiSendingEnabled();
+    if (aiAccount() !== uid) return;
+    sendingEnabled.value = stored;
     if (!hasBaseUrl()) {
       // 没配地址：一个请求都不发，status 保持未知态
       status.value = null;

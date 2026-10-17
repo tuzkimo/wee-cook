@@ -54,6 +54,7 @@ function continueInFilter(): void {
       class="mb-1 max-h-40 rounded-xl object-cover"
     />
     <p
+      v-if="message.text !== ''"
       data-test="ai-bubble"
       class="max-w-[85%] whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-sm"
       :class="message.role === 'user' ? 'bg-primary text-white' : 'bg-surface text-text'"

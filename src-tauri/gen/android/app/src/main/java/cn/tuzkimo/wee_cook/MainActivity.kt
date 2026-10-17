@@ -209,10 +209,10 @@ class MainActivity : TauriActivity() {
   private companion object {
     /**
      * 分享的拷贝串行执行：多次分享按顺序写盘 ⇒ latest wins 语义不变。
-     * 必须放在 companion（进程级）而不是实例字段：Activity 重建（旋转/深色模式/分屏/字体
-     * 变化，`TauriActivity` 未声明 `configChanges`）时旧实例的线程还在跑，两个池就是两个线程
-     * 同时写同一份 `pending.json.tmp`（`writeText` 会截断，rename 可能发布出半截内容）。
-     * 全局一个池同时让旧实例不再泄漏、线程不会滞留。
+     * 必须放在 companion（进程级）而不是实例字段：manifest 虽然声明了 `configChanges`，
+     * 但进程里可能同时存在不止一个 MainActivity 实例（共用一个池，不会各自一个线程
+     * 同时写同一份 `pending.json.tmp`——`writeText` 会截断，rename 可能发布出半截内容）；
+     * 放实例字段还会让每个旧实例带着一条自己的线程直到被回收。
      */
     val inboxExecutor = Executors.newSingleThreadExecutor()
 

@@ -25,8 +25,12 @@ vi.mock("@/services/ai/session", async (importOriginal) => {
 
 vi.mock("@/services/ai/filter", () => ({ loadDict: vi.fn() }));
 
-// 草稿槽是模块级单例：这里只关心「谁在什么时候写进去什么」，槽本身由 draft.test.ts 覆盖
-vi.mock("@/services/ai/draft", () => ({ setDraft: vi.fn() }));
+// 草稿槽是模块级单例：这里只关心「谁在什么时候写进去什么」，槽本身由 draft.test.ts 覆盖。
+// 但 setDraft / clearDraft 用真身（包在 spy 里）：reset 必须真把槽清空，否则换号后带出上一个账号的草稿
+vi.mock("@/services/ai/draft", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/services/ai/draft")>();
+  return { ...actual, setDraft: vi.fn(actual.setDraft), clearDraft: vi.fn(actual.clearDraft) };
+});
 // 封面落盘要真 Tauri 插件；store 单测只断言调用与结果映射
 vi.mock("@/services/imageStore", () => ({ saveImageBytes: vi.fn() }));
 
@@ -43,7 +47,7 @@ import { AiError } from "@/services/ai/transport";
 import { setAiAccount } from "@/services/ai/account";
 import { runAgent, type AgentDeps, type AgentOutcome } from "@/services/ai/agent";
 import { loadDict } from "@/services/ai/filter";
-import { setDraft } from "@/services/ai/draft";
+import { clearDraft, setDraft, takeDraft } from "@/services/ai/draft";
 import { saveImageBytes } from "@/services/imageStore";
 import {
   SCREENSHOT_PLACEHOLDER,
@@ -545,6 +549,16 @@ describe("aiChatStore.clear", () => {
 });
 
 describe("aiChatStore.reset", () => {
+  it("reset 连草稿槽一起清：换号后不得把上一个账号的草稿（含封面）带进编辑页", () => {
+    const store = useAiChatStore();
+    setDraft(draft({ cover_path: "cover-of-A.jpg" }));
+
+    store.reset();
+
+    expect(clearDraft).toHaveBeenCalledTimes(1);
+    expect(takeDraft()).toBeNull();
+  });
+
   it("reset 只清内存：messages / error / 会话缓存，不碰库", async () => {
     vi.mocked(loadMessages).mockResolvedValue(stored);
     const store = useAiChatStore();

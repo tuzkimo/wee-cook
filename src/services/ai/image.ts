@@ -32,6 +32,8 @@ export interface Decoded {
   width: number;
   height: number;
   render(plan: LongImageLayout): Promise<{ segments: string[]; cover: string }>;
+  /** 释放底层位图。失败路径（布局被拒 / 编码报错）也要调，所以由 toScreenshot 收口 */
+  close?(): void;
 }
 
 export interface ScreenshotDeps {
@@ -81,9 +83,10 @@ export async function toScreenshot(
   }
 
   const planned = planLongImage({ width: decoded.width, height: decoded.height });
-  if (!planned.ok) return { ok: false, message: planned.reason === "too_long" ? MSG_TOO_LONG : MSG_DECODE_FAILED };
-
   try {
+    if (!planned.ok) {
+      return { ok: false, message: planned.reason === "too_long" ? MSG_TOO_LONG : MSG_DECODE_FAILED };
+    }
     const { segments, cover } = await decoded.render(planned.layout);
     if (segments.some((s) => base64Bytes(s) > MAX_SEGMENT_BYTES)) return { ok: false, message: MSG_TOO_LARGE };
     return {
@@ -99,6 +102,9 @@ export async function toScreenshot(
   } catch {
     // 编码失败 / canvas 拿不到 2d context / 封面 dataUrl 不是 base64 —— 都是「打不开」
     return { ok: false, message: MSG_DECODE_FAILED };
+  } finally {
+    // 8MP 位图 = 32MB：布局被拒、超限、编码报错、成功四条路都得释放
+    decoded.close?.();
   }
 }
 
@@ -141,13 +147,11 @@ const realDeps: ScreenshotDeps = {
       width: bitmap.width,
       height: bitmap.height,
       async render(plan) {
-        try {
-          if (plan.cover === null) throw new Error("no-cover");
-          return { segments: plan.segments.map((piece) => encodePiece(bitmap, piece)), cover: encodePiece(bitmap, plan.cover) };
-        } finally {
-          // 8MP 位图 = 32MB，编完立刻释放
-          bitmap.close();
-        }
+        if (plan.cover === null) throw new Error("no-cover");
+        return { segments: plan.segments.map((piece) => encodePiece(bitmap, piece)), cover: encodePiece(bitmap, plan.cover) };
+      },
+      close() {
+        bitmap.close();
       },
     };
   },

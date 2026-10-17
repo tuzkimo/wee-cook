@@ -133,6 +133,23 @@ async function runIntake(deps: ShareIntakeDeps): Promise<IntakeOutcome> {
   consumedRaw = raw;
 
   const payload = parsePending(raw);
+  // 已记账之后任何一步抛错（动态 import 的 chunk 加载失败、store 写入抛错）都不能就这么漏出去，
+  // 否则用户看不到任何提示、这份分享也白丢了
+  try {
+    return await handlePayload(deps, payload, raw);
+  } catch (e) {
+    console.warn("[ai/share] 处理中抛错：", errorTag(e));
+    await noticeAndConsume(deps, payload, raw, MSG_READ_FAILED);
+    return "failed";
+  }
+}
+
+/** 原文已记账后的正常分支：所有失败都走 noticeAndConsume，不抛。 */
+async function handlePayload(
+  deps: ShareIntakeDeps,
+  payload: PendingPayload | null,
+  raw: string,
+): Promise<IntakeOutcome> {
   if (payload === null) {
     console.warn("[ai/share] pending.json 形状不认，按读失败处理并消费");
     await noticeAndConsume(deps, null, raw, MSG_READ_FAILED);

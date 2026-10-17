@@ -116,6 +116,26 @@ describe("AI 入口三态可见性", () => {
     expect(fetchAiStatus).not.toHaveBeenCalled();
     expect(store.tabVisible).toBe(false);
   });
+
+  it("读盘在途时换号：晚到的结果不得把上一个账号的同意写回来", async () => {
+    let release: (value: boolean) => void = () => {};
+    vi.mocked(readAiSendingEnabled).mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const store = useAiSettingsStore();
+
+    const pending = store.load();
+    await vi.waitFor(() => expect(readAiSendingEnabled).toHaveBeenCalledTimes(1));
+
+    // 换号：这时 A 的读盘还没回来（B 的 consent 必是默认关）
+    setAiAccount("u-B");
+    release(true);
+    await pending;
+
+    expect(store.sendingEnabled).toBe(false);
+  });
 });
 
 describe("隐私说明卡与开关", () => {

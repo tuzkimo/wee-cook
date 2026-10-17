@@ -4,7 +4,7 @@ import { defineStore } from "pinia";
 import { ref, type Ref } from "vue";
 import { aiAccount } from "@/services/ai/account";
 import { runAgent } from "@/services/ai/agent";
-import { setDraft } from "@/services/ai/draft";
+import { clearDraft, setDraft } from "@/services/ai/draft";
 import { loadDict, type UnresolvedNames } from "@/services/ai/filter";
 import type { Screenshot } from "@/services/ai/image";
 import { PROMPT_VERSION } from "@/services/ai/prompt";
@@ -243,6 +243,8 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
     draftReady.value = false;
     sending.value = false;
     sessionId = null;
+    // 草稿槽是模块级单例，不跟着 store 清就会把上一个账号的草稿（含封面）带给下一个账号
+    clearDraft();
   }
 
   return {

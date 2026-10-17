@@ -131,6 +131,13 @@ describe("resolveDraft", () => {
     expect(hit.tag_names).toEqual([]);
   });
 
+  it("模型重复同一个标签名 ⇒ 同一个 id 只进一次（否则编辑页挂上重复标签）", () => {
+    const draft = resolveDraft(validated('{"name":"葱油面","tags":["快手","快手"]}'), dict);
+
+    expect(draft.tag_ids).toEqual(["t1"]);
+    expect(draft.tag_names).toEqual(["快手"]);
+  });
+
   it("步骤逐条 trim，空串丢弃；cover_path 留空等 store 填", () => {
     const draft = resolveDraft(
       validated('{"name":"炒饭","steps":[" 打蛋 ","", "\u3000","下锅"]}'),

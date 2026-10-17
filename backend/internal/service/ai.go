@@ -238,8 +238,10 @@ func upstreamMessages(msgs []AIMessage) []upstreamMessage {
 	out := make([]upstreamMessage, 0, len(msgs))
 	for _, m := range msgs {
 		// 字面 null 与缺键在上游眼里不等价：content:null 会被拒，所以归一成零值让 omitempty 省掉这个键。
+		// 空字符串同理：json.RawMessage 里 `""` 是两个字节（不是零值），omitempty 不会省掉它，
+		// 而客户端在模型只调工具、没说文字时就是这么发的。空 content 与缺键语义等价。
 		content := m.Content
-		if len(content) == 0 || string(content) == "null" {
+		if len(content) == 0 || string(content) == "null" || string(content) == `""` {
 			content = nil
 		}
 		um := upstreamMessage{Role: m.Role, Content: content, ToolCallID: m.ToolCallID}

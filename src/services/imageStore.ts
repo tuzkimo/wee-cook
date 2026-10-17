@@ -68,9 +68,9 @@ export function scaleToFit(size: ImageSize, maxEdge: number = MAX_EDGE): ScaledS
 /**
  * 魔数嗅探：只认 JPEG / PNG / WebP，其余一律 `null`。
  *
- * ⚠️ **本项目没有生产调用方**（裁决 R5）：转码走 `createImageBitmap`，它按内容解码、不看 MIME，
- * 所以魔数**不参与准入**（准入判据只有一条：解码器解不解得开，见文件头）。留着它是为了
- * 「压缩前先知道源类型」这条判据将来要用时不必重写，且单元测试直接断言它。
+ * ⚠️ 生产调用方**只有截图链**（`services/ai/image.ts` 拿它做准入闸门：HEIC/BMP 这类它不认的
+ * 格式仍旧走普通图片路径）。别处不得据此判 MIME、也不得拿它代替转码判断：转码走
+ * `createImageBitmap`，它按内容解码、不看 MIME（准入只有一条：解码器解不解得开，见文件头）。
  * 别把它接成一道否决权 —— ANIM/APNG 与静态图字节头完全同构，魔数判不出"静态"。
  */
 export function sniffImageMime(bytes: Uint8Array): ImageMime | null {

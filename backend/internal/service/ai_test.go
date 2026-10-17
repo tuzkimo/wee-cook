@@ -184,6 +184,32 @@ func TestAIChatTreatsNullContentAsAbsent(t *testing.T) {
 	}
 }
 
+// 空字符串 content 也是「没说文字」：客户端（agent.ts）在模型只调工具时就是这么发的，
+// `""` 是两个字节、omitempty 省不掉，必须与 null 一样归一成缺键。
+func TestAIChatTreatsEmptyStringContentAsAbsent(t *testing.T) {
+	var captured map[string]any
+	srv := newFakeUpstream(t, http.StatusOK,
+		`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`, &captured)
+	svc := NewAIService(aiTestConfig(srv.URL))
+
+	var req AIChatRequest
+	if err := json.Unmarshal([]byte(`{"messages":[{"role":"assistant","content":"",
+		"tool_calls":[{"id":"call_1","name":"search_recipes","arguments":"{}"}]}]}`), &req); err != nil {
+		t.Fatalf("请求解析失败: %v", err)
+	}
+	if _, err := svc.Chat(context.Background(), req); err != nil {
+		t.Fatalf("Chat 失败: %v", err)
+	}
+
+	first := captured["messages"].([]any)[0].(map[string]any)
+	if _, has := first["content"]; has {
+		t.Errorf("content 为空串时上游不得出现 content 键，实际键集 %v", keysOf(first))
+	}
+	if got := keysOf(first); len(got) != 2 || got[0] != "role" || got[1] != "tool_calls" {
+		t.Errorf("键集应为 role / tool_calls，实际 %v", got)
+	}
+}
+
 // 上游嵌套形状 → 归一化扁平形状。
 func TestAIChatNormalizesUpstreamResponse(t *testing.T) {
 	srv := newFakeUpstream(t, http.StatusOK, `{"choices":[{"message":{"content":"找到 1 道","tool_calls":[
