@@ -83,9 +83,18 @@ jobs:
             # 容器起来就崩（迁移失败、配置写错）时 compose 的退出码仍是 0，
             # 不打这一枪这次部署会显示成绿色。distroless 镜像里没有 curl/wget，
             # 只能从宿主机打映射出来的端口。
-            curl -fsS --retry 30 --retry-delay 2 --retry-connrefused \
-              -o /dev/null "http://${{ env.API_ADDR }}/api/v1/healthz" || {
-                echo "::error::健康检查失败，最近 50 行容器日志："
-                docker compose logs --tail=50 api
-                exit 1
-              }
+            #
+            # 用显式循环而不是 curl --retry：刚 Started 时 docker-proxy 给的是
+            # ECONNRESET(56)，它不在 curl 默认重试范围内（--retry-all-errors 又要
+            # curl 7.71+，不想给服务器再加一个版本前提）。
+            ok=0
+            for i in $(seq 1 30); do
+              if curl -fsS -o /dev/null "http://${{ env.API_ADDR }}/api/v1/healthz"; then ok=1; break; fi
+              sleep 2
+            done
+            if [ "$ok" -ne 1 ]; then
+              echo "::error::等了 60s 健康检查仍未通过，最近 50 行容器日志："
+              docker compose logs --tail=50 api
+              exit 1
+            fi
+            echo "健康检查通过：http://${{ env.API_ADDR }}/api/v1/healthz"
