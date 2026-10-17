@@ -28,12 +28,13 @@ var (
 	ErrAIUpstreamError   = errors.New("ai upstream error")
 )
 
-// AIMessage 是客户端与后端之间的归一化消息形状。
+// AIMessage 是客户端与后端之间的归一化消息形状。Content 用 json.RawMessage：
+// 既可承载纯字符串，也可承载 OpenAI 兼容的内容块数组（文本 + 图片），后端只透传不解析。
 type AIMessage struct {
-	Role       string       `json:"role"`
-	Content    string       `json:"content,omitempty"`
-	ToolCallID string       `json:"tool_call_id,omitempty"`
-	ToolCalls  []AIToolCall `json:"tool_calls,omitempty"`
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	ToolCalls  []AIToolCall    `json:"tool_calls,omitempty"`
 }
 
 // AIToolCall 是扁平形状，与客户端一致；发往上游时才转成嵌套的 {id,type,function}。
@@ -77,9 +78,10 @@ type AIChatResponse struct {
 // upstreamMessage 是发往 OpenAI 兼容上游的消息形状：tool_calls 为嵌套结构。
 // Content 带 omitempty —— role + tool_calls 的消息不能出现 content 键，
 // 显式的 content:null 会被上游拒（这是本层唯一一处真正的形状转换）。
+// 透传是语义等价，不保证字节原样：json.Marshal 会 compact 空白并对 <>& 做 HTML 转义。
 type upstreamMessage struct {
 	Role       string             `json:"role"`
-	Content    string             `json:"content,omitempty"`
+	Content    json.RawMessage    `json:"content,omitempty"`
 	ToolCallID string             `json:"tool_call_id,omitempty"`
 	ToolCalls  []upstreamToolCall `json:"tool_calls,omitempty"`
 }
@@ -235,7 +237,12 @@ func (s *AIService) Chat(ctx context.Context, req AIChatRequest) (*AIChatRespons
 func upstreamMessages(msgs []AIMessage) []upstreamMessage {
 	out := make([]upstreamMessage, 0, len(msgs))
 	for _, m := range msgs {
-		um := upstreamMessage{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID}
+		// 字面 null 与缺键在上游眼里不等价：content:null 会被拒，所以归一成零值让 omitempty 省掉这个键。
+		content := m.Content
+		if len(content) == 0 || string(content) == "null" {
+			content = nil
+		}
+		um := upstreamMessage{Role: m.Role, Content: content, ToolCallID: m.ToolCallID}
 		for _, tc := range m.ToolCalls {
 			um.ToolCalls = append(um.ToolCalls, upstreamToolCall{
 				ID:   tc.ID,

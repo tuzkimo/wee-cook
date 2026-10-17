@@ -178,7 +178,7 @@ func TestAIChatSuccessWritesNormalizedResponse(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("正常聊天: got %d, want 200；body: %s", rec.Code, rec.Body.String())
 	}
-	if len(svc.gotReq.Messages) != 1 || svc.gotReq.Messages[0].Content != "你好" {
+	if len(svc.gotReq.Messages) != 1 || string(svc.gotReq.Messages[0].Content) != `"你好"` {
 		t.Errorf("传给 service 的请求 = %+v, want 一条 content=你好", svc.gotReq)
 	}
 	var got service.AIChatResponse

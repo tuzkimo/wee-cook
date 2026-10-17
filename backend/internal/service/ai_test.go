@@ -65,7 +65,7 @@ func TestAIChatForwardsToolCallMessageWithoutContentKey(t *testing.T) {
 
 	_, err := svc.Chat(context.Background(), AIChatRequest{Messages: []AIMessage{
 		{Role: "assistant", ToolCalls: []AIToolCall{{ID: "call_1", Name: "search_recipes", Arguments: `{"q":"x"}`}}},
-		{Role: "tool", Content: "[]", ToolCallID: "call_1"},
+		{Role: "tool", Content: json.RawMessage(`[]`), ToolCallID: "call_1"},
 	}})
 	if err != nil {
 		t.Fatalf("Chat 失败: %v", err)
@@ -106,8 +106,8 @@ func TestAIChatPassesStringContentThrough(t *testing.T) {
 	svc := NewAIService(aiTestConfig(srv.URL))
 
 	if _, err := svc.Chat(context.Background(), AIChatRequest{Messages: []AIMessage{
-		{Role: "system", Content: "你是菜谱助手"},
-		{Role: "user", Content: "红烧肉怎么做"},
+		{Role: "system", Content: json.RawMessage(`"你是菜谱助手"`)},
+		{Role: "user", Content: json.RawMessage(`"红烧肉怎么做"`)},
 	}}); err != nil {
 		t.Fatalf("Chat 失败: %v", err)
 	}
@@ -123,6 +123,67 @@ func TestAIChatPassesStringContentThrough(t *testing.T) {
 	}
 }
 
+// content 也可以是 OpenAI 兼容的内容块数组（文本 + 图片）：纯透传，不解析不重排不丢字段。
+func TestAIChatPassesContentBlocksThrough(t *testing.T) {
+	var captured map[string]any
+	srv := newFakeUpstream(t, http.StatusOK,
+		`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`, &captured)
+	svc := NewAIService(aiTestConfig(srv.URL))
+
+	var req AIChatRequest
+	if err := json.Unmarshal([]byte(`{"messages":[{"role":"user","content":[
+		{"type":"text","text":"看看这张"},
+		{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,AAA"}}]}]}`), &req); err != nil {
+		t.Fatalf("请求解析失败: %v", err)
+	}
+	if _, err := svc.Chat(context.Background(), req); err != nil {
+		t.Fatalf("Chat 失败: %v", err)
+	}
+
+	first := captured["messages"].([]any)[0].(map[string]any)
+	blocks, ok := first["content"].([]any)
+	if !ok || len(blocks) != 2 {
+		t.Fatalf("上游 content 应是 2 个内容块，实际 %v", first["content"])
+	}
+	text, ok := blocks[0].(map[string]any)
+	if !ok || text["type"] != "text" || text["text"] != "看看这张" {
+		t.Errorf("文本块透传不对: %v", blocks[0])
+	}
+	image, ok := blocks[1].(map[string]any)
+	if !ok || image["type"] != "image_url" {
+		t.Fatalf("图片块透传不对: %v", blocks[1])
+	}
+	imgURL, ok := image["image_url"].(map[string]any)
+	if !ok || imgURL["url"] != "data:image/jpeg;base64,AAA" {
+		t.Errorf("图片块 url 透传不对: %v", image["image_url"])
+	}
+}
+
+// 字面 null ⇒ 转发时不得出现 content 键（content:null 会被上游判非法）。
+func TestAIChatTreatsNullContentAsAbsent(t *testing.T) {
+	var captured map[string]any
+	srv := newFakeUpstream(t, http.StatusOK,
+		`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`, &captured)
+	svc := NewAIService(aiTestConfig(srv.URL))
+
+	var req AIChatRequest
+	if err := json.Unmarshal([]byte(`{"messages":[{"role":"assistant","content":null,
+		"tool_calls":[{"id":"call_1","name":"search_recipes","arguments":"{}"}]}]}`), &req); err != nil {
+		t.Fatalf("请求解析失败: %v", err)
+	}
+	if _, err := svc.Chat(context.Background(), req); err != nil {
+		t.Fatalf("Chat 失败: %v", err)
+	}
+
+	first := captured["messages"].([]any)[0].(map[string]any)
+	if _, has := first["content"]; has {
+		t.Errorf("content 为 null 时上游不得出现 content 键，实际键集 %v", keysOf(first))
+	}
+	if got := keysOf(first); len(got) != 2 || got[0] != "role" || got[1] != "tool_calls" {
+		t.Errorf("键集应为 role / tool_calls，实际 %v", got)
+	}
+}
+
 // 上游嵌套形状 → 归一化扁平形状。
 func TestAIChatNormalizesUpstreamResponse(t *testing.T) {
 	srv := newFakeUpstream(t, http.StatusOK, `{"choices":[{"message":{"content":"找到 1 道","tool_calls":[
@@ -131,7 +192,7 @@ func TestAIChatNormalizesUpstreamResponse(t *testing.T) {
  "usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`, nil)
 	svc := NewAIService(aiTestConfig(srv.URL))
 
-	resp, err := svc.Chat(context.Background(), AIChatRequest{Messages: []AIMessage{{Role: "user", Content: "hi"}}})
+	resp, err := svc.Chat(context.Background(), AIChatRequest{Messages: []AIMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}}})
 	if err != nil {
 		t.Fatalf("Chat 失败: %v", err)
 	}
@@ -156,7 +217,7 @@ func TestAIChatHandlesNullContent(t *testing.T) {
 		`{"choices":[{"message":{"content":null},"finish_reason":"stop"}]}`, nil)
 	svc := NewAIService(aiTestConfig(srv.URL))
 
-	resp, err := svc.Chat(context.Background(), AIChatRequest{Messages: []AIMessage{{Role: "user", Content: "hi"}}})
+	resp, err := svc.Chat(context.Background(), AIChatRequest{Messages: []AIMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}}})
 	if err != nil {
 		t.Fatalf("content 为 null 时 Chat 不该失败: %v", err)
 	}
@@ -172,7 +233,7 @@ func TestAIChatSendsModelAndMaxTokens(t *testing.T) {
 		`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`, &captured)
 	svc := NewAIService(aiTestConfig(srv.URL))
 
-	if _, err := svc.Chat(context.Background(), AIChatRequest{Messages: []AIMessage{{Role: "user", Content: "hi"}}}); err != nil {
+	if _, err := svc.Chat(context.Background(), AIChatRequest{Messages: []AIMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}}}); err != nil {
 		t.Fatalf("Chat 失败: %v", err)
 	}
 	if captured["model"] != "test-model" {
@@ -200,7 +261,7 @@ func TestAIChatMapsUpstreamErrors(t *testing.T) {
 			srv := newFakeUpstream(t, tc.status, `{"error":{"message":"sk-secret-leak"}}`, nil)
 			svc := NewAIService(aiTestConfig(srv.URL))
 
-			_, err := svc.Chat(context.Background(), AIChatRequest{Messages: []AIMessage{{Role: "user", Content: "hi"}}})
+			_, err := svc.Chat(context.Background(), AIChatRequest{Messages: []AIMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}}})
 			if !errors.Is(err, tc.want) {
 				t.Errorf("err = %v，想要 %v", err, tc.want)
 			}
@@ -220,7 +281,7 @@ func TestAIChatMapsUpstreamTimeout(t *testing.T) {
 	cfg.AITimeout = 100 * time.Millisecond
 	svc := NewAIService(cfg)
 
-	if _, err := svc.Chat(context.Background(), AIChatRequest{Messages: []AIMessage{{Role: "user", Content: "hi"}}}); !errors.Is(err, ErrAIUpstreamTimeout) {
+	if _, err := svc.Chat(context.Background(), AIChatRequest{Messages: []AIMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}}}); !errors.Is(err, ErrAIUpstreamTimeout) {
 		t.Errorf("err = %v，想要 %v", err, ErrAIUpstreamTimeout)
 	}
 }
@@ -232,7 +293,7 @@ func TestAIChatMapsUnreachableUpstream(t *testing.T) {
 	srv.Close()
 
 	svc := NewAIService(aiTestConfig(url))
-	if _, err := svc.Chat(context.Background(), AIChatRequest{Messages: []AIMessage{{Role: "user", Content: "hi"}}}); !errors.Is(err, ErrAIUnreachable) {
+	if _, err := svc.Chat(context.Background(), AIChatRequest{Messages: []AIMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}}}); !errors.Is(err, ErrAIUnreachable) {
 		t.Errorf("err = %v，想要 %v", err, ErrAIUnreachable)
 	}
 }
@@ -266,7 +327,7 @@ func TestAIChatDoesNotDoubleSlashWithTrailingSlash(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	svc := NewAIService(aiTestConfig(srv.URL + "/v1/"))
-	if _, err := svc.Chat(context.Background(), AIChatRequest{Messages: []AIMessage{{Role: "user", Content: "hi"}}}); err != nil {
+	if _, err := svc.Chat(context.Background(), AIChatRequest{Messages: []AIMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}}}); err != nil {
 		t.Fatalf("Chat 失败: %v", err)
 	}
 	if gotPath != "/v1/chat/completions" {
