@@ -23,6 +23,7 @@ vi.mock("@/services/ai/privacy", () => ({
 }));
 
 import { hasBaseUrl } from "@/services/api";
+import { setAiAccount } from "@/services/ai/account";
 import { AiError, fetchAiStatus, type AiStatus } from "@/services/ai/transport";
 import { readAiSendingEnabled, writeAiSendingEnabled } from "@/services/ai/privacy";
 import { useAiSettingsStore } from "@/stores/aiSettings";
@@ -33,6 +34,8 @@ const OFF: AiStatus = { enabled: false, model: "", host: "" };
 beforeEach(() => {
   setActivePinia(createPinia());
   vi.clearAllMocks();
+  // 入口门控按账号读 opt-in（spec §12.1）：没有账号时 load() 直接不发请求
+  setAiAccount("u-A");
   vi.mocked(hasBaseUrl).mockReturnValue(false);
   vi.mocked(readAiSendingEnabled).mockResolvedValue(false);
   vi.mocked(writeAiSendingEnabled).mockResolvedValue(undefined);
@@ -101,6 +104,18 @@ describe("AI 入口三态可见性", () => {
     expect(store.status).toEqual(ON);
     expect(store.tabVisible).toBe(false);
   });
+
+  it("登录前 load() 不发探活、入口隐藏", async () => {
+    vi.mocked(hasBaseUrl).mockReturnValue(true);
+    vi.mocked(readAiSendingEnabled).mockResolvedValue(true);
+    setAiAccount(null);
+    const store = useAiSettingsStore();
+
+    await store.load();
+
+    expect(fetchAiStatus).not.toHaveBeenCalled();
+    expect(store.tabVisible).toBe(false);
+  });
 });
 
 describe("隐私说明卡与开关", () => {
@@ -131,6 +146,21 @@ describe("隐私说明卡与开关", () => {
 
     expect(store.tabVisible).toBe(false);
     expect(store.canShowPrivacyCard).toBe(false);
+  });
+});
+
+describe("reset", () => {
+  it("reset() 只清内存，不写盘", () => {
+    const store = useAiSettingsStore();
+    store.sendingEnabled = true;
+    store.status = ON;
+
+    store.reset();
+
+    expect(store.sendingEnabled).toBe(false);
+    expect(store.status).toBeNull();
+    // 退登不是撤回同意：盘上属于这个账号的键一概不动（spec §12.1）
+    expect(writeAiSendingEnabled).not.toHaveBeenCalled();
   });
 });
 

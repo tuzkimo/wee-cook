@@ -7,6 +7,7 @@ import * as tokenStorage from "@/services/tokenStorage";
 import { writeRefreshToken } from "@/services/tokenStorage";
 import { triggerFullPushAndSync } from "@/services/migration";
 import { readAiSendingEnabled } from "@/services/ai/privacy";
+import { aiAccount, setAiAccount } from "@/services/ai/account";
 import { useAiSettingsStore } from "@/stores/aiSettings";
 import { useAuthStore } from "@/stores/auth";
 
@@ -21,6 +22,14 @@ const resetSyncTimersMock = vi.hoisted(() => vi.fn());
 vi.mock("@/services/sync", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/services/sync")>();
   return { ...actual, resetSyncTimers: resetSyncTimersMock };
+});
+
+// 会话变在线后 auth 会让 aiSettings 重新 load 一次（内含 /ai/status 探活）。
+// 换成 spy：否则它会混进本文件用来断言请求次数与地址的 fetch mock 里。
+const fetchAiStatusMock = vi.hoisted(() => vi.fn());
+vi.mock("@/services/ai/transport", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/services/ai/transport")>();
+  return { ...actual, fetchAiStatus: fetchAiStatusMock };
 });
 
 const syncMock = vi.mocked(triggerFullPushAndSync);
@@ -75,6 +84,9 @@ function stubFetch(
 
 beforeEach(async () => {
   setActivePinia(createPinia());
+  // 账号态是模块级单例，跨用例会残留：每条用例从「未登录」起
+  setAiAccount(null);
+  fetchAiStatusMock.mockResolvedValue({ enabled: true, model: "deepseek-flash", host: "ai.example.com" });
   api.clearTokens();
   // clearTokens 的「删落盘 refresh token」是 fire-and-forget，等它落定再清 localStorage，
   // 否则它可能把下一条用例刚铺好的 token 删掉。
@@ -344,19 +356,67 @@ describe("authStore", () => {
     expect(storedSetting("server_username")).toBe("alice");
   });
 
-  it("logout 关掉 AI 开关：换账号不该继承上一个账号的同意", async () => {
+  it("logout 清空内存里的 AI 状态，但不动本账号已经写下的同意", async () => {
     stubFetch(() => res(200, authBody(user("u1", { username: "alice" }), "access-1", "refresh-1")));
     const store = useAuthStore();
     const aiSettings = useAiSettingsStore();
     await store.login("https://srv", "alice", "pw");
     await aiSettings.setSendingEnabled(true);
     aiSettings.status = { enabled: true, model: "deepseek-flash", host: "api.deepseek.com" };
+    expect(aiAccount()).toBe("u1");
 
     await store.logout();
 
-    expect(await readAiSendingEnabled()).toBe(false);
+    // 退登不是撤回同意：只清内存与账号态（spec §12.1）
+    expect(aiAccount()).toBeNull();
     expect(aiSettings.sendingEnabled).toBe(false);
     expect(aiSettings.status).toBeNull();
+    // 无账号 ⇒ 读不到任何人的同意
+    expect(await readAiSendingEnabled()).toBe(false);
+    // 同一个账号回来，自己的同意原样恢复
+    setAiAccount("u1");
+    expect(await readAiSendingEnabled()).toBe(true);
+  });
+
+  it("登录成功会设置账号态并重新 load 一次入口状态", async () => {
+    stubFetch(() => res(200, authBody(user("u1", { username: "alice" }), "access-1", "refresh-1")));
+    const aiSettings = useAiSettingsStore();
+    const loadSpy = vi.spyOn(aiSettings, "load");
+    const store = useAuthStore();
+
+    await store.login("https://srv", "alice", "pw");
+
+    expect(aiAccount()).toBe("u1");
+    expect(loadSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("冷启动恢复会话成功同样设置账号态并重新 load 一次入口状态", async () => {
+    seedSetting("server_url", "https://srv");
+    seedSetting("server_user_id", "u1");
+    await writeRefreshToken("u1", "refresh-old");
+    stubFetch(() => res(200, authBody(user("u1"), "access-new", "refresh-new")));
+    const aiSettings = useAiSettingsStore();
+    const loadSpy = vi.spyOn(aiSettings, "load");
+    const store = useAuthStore();
+
+    await store.restoreSession();
+
+    expect(aiAccount()).toBe("u1");
+    expect(loadSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("logout 清掉 AI 聊天内存（库里的行不动）", async () => {
+    stubFetch(() => res(200, authBody(user("u1", { username: "alice" }), "access-1", "refresh-1")));
+    const store = useAuthStore();
+    await store.login("https://srv", "alice", "pw");
+    const { useAiChatStore } = await import("@/stores/aiChat");
+    const chat = useAiChatStore();
+    const resetSpy = vi.spyOn(chat, "reset");
+
+    await store.logout();
+
+    expect(resetSpy).toHaveBeenCalledTimes(1);
+    expect(aiAccount()).toBeNull();
   });
 
   it("logout 期间在途的 refresh 回来不得把已退出的会话写回", async () => {

@@ -258,6 +258,24 @@ describe("aiChatStore.clear", () => {
   });
 });
 
+describe("aiChatStore.reset", () => {
+  it("reset 只清内存：messages / error / 会话缓存，不碰库", async () => {
+    vi.mocked(loadMessages).mockResolvedValue(stored);
+    const store = useAiChatStore();
+    await store.load();
+    store.error = "AI 暂时用不了，稍后再试";
+
+    store.reset();
+
+    expect(store.messages).toEqual([]);
+    expect(store.error).toBeNull();
+    expect(clearMessages).not.toHaveBeenCalled();
+    // 会话缓存也清了：下次 load 重新取会话（旧账号的会话 id 不得留在内存里）
+    await store.load();
+    expect(loadOrCreateSession).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("aiChatStore.openInFilter", () => {
   it("openInFilter 把 filter apply 进 recipeFilter store", () => {
     const store = useAiChatStore();

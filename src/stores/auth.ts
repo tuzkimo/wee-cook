@@ -9,7 +9,7 @@ import { createPinia, defineStore, getActivePinia } from "pinia";
 import { computed, ref } from "vue";
 import * as api from "@/services/api";
 import { deleteRefreshToken, readRefreshToken } from "@/services/tokenStorage";
-import { writeAiSendingEnabled } from "@/services/ai/privacy";
+import { setAiAccount } from "@/services/ai/account";
 import { useAiSettingsStore } from "@/stores/aiSettings";
 import { deleteSetting, readSetting, writeSetting, type SettingLogContext } from "@/services/settingsFile";
 
@@ -96,6 +96,8 @@ const useAuthStoreBase = defineStore("auth", () => {
   function goGuest(): void {
     mode.value = "guest";
     serverUser.value = null;
+    // 账号态跟着会话走（spec §12.1）：没账号就没有 AI 的归属，也读不到任何人的同意
+    setAiAccount(null);
   }
 
   /**
@@ -115,6 +117,8 @@ const useAuthStoreBase = defineStore("auth", () => {
     nickname.value = user.nickname;
     avatarUrl.value = normalizeAvatar(user.avatar_url);
     mode.value = "online";
+    // AI 的会话与 opt-in 属于服务端账号，不属于设备（spec §12.1）
+    setAiAccount(user.id);
   }
 
   async function persistSession(user: api.User, url: string): Promise<void> {
@@ -155,6 +159,8 @@ const useAuthStoreBase = defineStore("auth", () => {
     sessionEpoch++;
     adoptSession(resp.user, normalized);
     await persistSession(resp.user, normalized);
+    // 账号变了，入口状态按新账号重读一次（永不 reject）
+    void useAiSettingsStore().load();
     // 会话刚变在线：认领存量 + 一次全扫推送（spec §9.3）
     triggerPostSessionSync();
   }
@@ -236,7 +242,9 @@ const useAuthStoreBase = defineStore("auth", () => {
       nickname.value = resp.user.nickname;
       avatarUrl.value = normalizeAvatar(resp.user.avatar_url);
       mode.value = "online";
+      setAiAccount(resp.user.id);
       await persistSession(resp.user, url);
+      void useAiSettingsStore().load();
       // 冷启动恢复会话成功同样算「会话变在线」（spec §9.5）
       triggerPostSessionSync();
     } catch (err) {
@@ -290,21 +298,17 @@ const useAuthStoreBase = defineStore("auth", () => {
     // 动态 import 避免 auth→sync→auth 的静态环。
     const { resetSyncTimers } = await import("@/services/sync");
     resetSyncTimers();
+    // AI 的会话与错误文案属于刚退出的账号：只清内存，库里的行一概不动（spec §12.1）。
+    // 同样用动态 import：auth→aiChat→stores/recipe→sync→auth 是静态环。
+    const { useAiChatStore } = await import("@/stores/aiChat");
+    useAiChatStore().reset();
+    // 账号态已经在 goGuest 里清空；这里只清内存，盘上属于该账号的同意原样留着（spec §12.1）。
+    // 放在任何落盘/删盘动作之前：存储失败不能留下一半旧账号的状态。
+    useAiSettingsStore().reset();
     // 兜底：api.clearTokens 按 currentUserId 删，这里再按已知的服务端 user id 删一次
     if (persistedUserId) await deleteRefreshToken(persistedUserId);
     // 设置清理放在凭据之后：deleteSetting 失败会 reject，不能让它挡住退登的凭据清理
     await clearArchivedProfile();
-    // AI 同意落在全局 settings.json 里，不随账号走：退登不关就是下一个人直接继承了上一个人的同意。
-    // shortcut: 开关与聊天历史没有按账号隔离，升级时机：ai_sessions 加 user_id 的同时改成按账号存。
-    try {
-      await writeAiSendingEnabled(false);
-    } catch (e: unknown) {
-      // 存储失败不能挡住退登
-      console.warn("[auth] 关闭 AI 开关失败:", e);
-    }
-    const aiSettings = useAiSettingsStore();
-    aiSettings.sendingEnabled = false;
-    aiSettings.status = null;
     // 刻意不动 settings 里的 server_url 与账号信息：下次登录不用重填地址
   }
 

@@ -36,6 +36,7 @@ export interface AiChatStore {
   load(): Promise<void>;
   send(text: string): Promise<void>;
   clear(): Promise<void>;
+  reset(): void;
   openInFilter(filter: RecipeFilter): void;
 }
 
@@ -129,7 +130,14 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
     useRecipeFilterStore().apply(filter);
   }
 
-  return { messages, sending, error, load, send, clear, openInFilter };
+  /** 退登 / 换号：只清内存，库里的行原样留着（spec §12.1）。 */
+  function reset(): void {
+    messages.value = [];
+    error.value = null;
+    sessionId = null;
+  }
+
+  return { messages, sending, error, load, send, clear, reset, openInFilter };
 });
 
 function newMessage(

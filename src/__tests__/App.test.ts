@@ -3,6 +3,7 @@ import { createPinia } from "pinia";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { defineComponent, h } from "vue";
 import App from "@/App.vue";
+import { setAiAccount } from "@/services/ai/account";
 
 const mocks = vi.hoisted(() => ({
   route: { path: "/", meta: {} as Record<string, unknown> },
@@ -66,6 +67,8 @@ function optIn(): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // 入口门控按账号读 opt-in（spec §12.1）：没账号时 load() 什么都不读，入口也会隐藏
+  setAiAccount("u-A");
   mocks.route = { path: "/", meta: {} };
   mocks.hasBaseUrl.mockReturnValue(false);
   mocks.readAiSendingEnabled.mockResolvedValue(false);
