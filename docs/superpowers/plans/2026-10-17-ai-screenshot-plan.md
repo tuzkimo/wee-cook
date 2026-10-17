@@ -61,7 +61,7 @@
 - Consumes: 无
 - Produces: `ai_sessions` 列为 `(id, user_id, created_at, updated_at, deleted_at)`；`user_id` 可空（老库无主行）
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 追加到 `schema.test.ts`：
 
@@ -82,12 +82,12 @@ it("老库的 ai_sessions 没有 user_id 时，initTables 会补上且可重复�
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `npm run test -- src/db/`
 Expected: FAIL —— `ai_sessions` 的列里没有 `user_id`
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `DDL` 的 `ai_sessions` 改成：
 
@@ -112,12 +112,12 @@ if (!sessionCols.some((c) => c.name === "user_id")) {
 
 注释写明：老库无主行 `user_id` 为 NULL ⇒ 永不匹配、也不再显示；**不删除**（无法判断属于谁）。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `npm run test -- src/db/ src/services/__tests__/sync.test.ts`
 Expected: PASS（含「AI 两张表不进同步」的既有哨兵）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/db/index.ts src/db/__tests__/schema.test.ts src/db/__tests__/migrate.test.ts
@@ -147,7 +147,7 @@ git commit -m "feat(数据): ai_sessions 补 user_id，老库无主会话不再�
   - `useAiSettingsStore` 新增 `reset(): void`（内存置 `sendingEnabled=false`、`status=null`）
   - `useAiChatStore` 新增 `reset(): void`（`messages=[]`、`error=null`、清会话缓存与附件占位，本任务附件还不存在）
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 `privacy.test.ts` 改为（**这是与 §12.1 直接冲突的既有断言，允许改**，commit 里点名）：
 
@@ -208,12 +208,12 @@ it("登录成功 / 恢复会话成功都会设置账号态并重新 load 一次�
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `npm run test -- src/services/ai/__tests__/privacy.test.ts src/stores/__tests__/aiSettings.test.ts src/stores/__tests__/auth.test.ts`
 Expected: FAIL —— `setAiAccount` 不存在 / 键名不符
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `account.ts`（三行 + 注释，注释写明「认证态是模块级唯一状态，与 `api.ts` 的 `baseUrl` 同款」）。
 
@@ -228,12 +228,12 @@ Expected: FAIL —— `setAiAccount` 不存在 / 键名不符
 
 `aiChat.ts`：只加 `reset()`（清 `messages/error` 与内部 `sessionId` 缓存）。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `npm run test -- src/services/ai/ src/stores/ && npm run build`
 Expected: 全绿；`vue-tsc` 无错误
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/services/ai/account.ts src/services/ai/privacy.ts src/stores/auth.ts \
@@ -263,7 +263,7 @@ git commit -m "feat(AI): 会话与 opt-in 按账号隔离（退登不清数据�
   - `ChatMessage` 追加 `image: string | null`
   - `aiChat.send()` 拼历史时用 `historyText(message.text, message.image !== null)`
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 `session.test.ts` 追加（既有用例只需在 `beforeEach` 里 `setAiAccount("u-A")`，断言不动）：
 
@@ -311,12 +311,12 @@ it("拼给模型的历史里，带图那一轮是占位符，本地 messages 仍
 it("有 image 时渲染缩略图，没有时不渲染", () => { /* data-test="ai-bubble-image" */ });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `npm run test -- src/services/ai/__tests__/session.test.ts src/stores/__tests__/aiChat.test.ts`
 Expected: FAIL
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `session.ts`：`loadOrCreateSession` 里的两条 SQL 都加 `user_id = ?`，`INSERT` 写入 `user_id`；`loadMessages` / `clearMessages` 保持按 `session_id`（会话 id 已经按账号隔离，不必再带 uid）。`historyText` 是纯函数。
 
@@ -324,12 +324,12 @@ Expected: FAIL
 
 `ChatBubble.vue`：`message.image !== null` 时在文本上方渲染 `<img :src="message.image" data-test="ai-bubble-image" class="mb-1 max-h-40 rounded-xl object-cover" />`。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `npm run test -- src/services/ai/ src/stores/ src/components/ai/ && npm run build`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/services/ai/session.ts src/stores/aiChat.ts src/components/ai/ChatBubble.vue \
@@ -353,7 +353,7 @@ git commit -m "feat(AI): 会话按账号读写，历史截图轮替换成占位�
   - `AIMessage.Content` 与 `upstreamMessage.Content` 类型改为 `json.RawMessage`，JSON tag 仍是 `content,omitempty`
   - 语义：字符串透传、数组透传（不解析/不重排/不丢字段）、**字面 `null` 归一成「没有这个键」**
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 追加到 `service/ai_test.go`（沿用文件里已有的「假上游捕获原始 JSON」helper）：
 
@@ -374,12 +374,12 @@ func TestAIChatTreatsNullContentAsAbsent(t *testing.T) {
 `handler/ai_test.go:181` 的既有断言 `svc.gotReq.Messages[0].Content != "你好"` 会因类型改动编译失败 —— 改成
 `string(svc.gotReq.Messages[0].Content) != \`"你好"\``（**这是与新规格直接冲突的既有测试，commit 里点名**）。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd backend && go test ./internal/service/ -run TestAI -v`
 Expected: FAIL —— 编译错误 / 数组被当成字符串
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 两个结构体的 `Content` 改 `json.RawMessage`。`upstreamMessages` 里补一步归一：
 
@@ -392,12 +392,12 @@ if len(content) == 0 || string(content) == "null" {
 
 **不要**解析块内容（保持哑管道）。注释写明「透传是语义等价，不保证字节原样（`json.Marshal` 会 compact 与 HTML 转义）」。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cd backend && go test ./... && go vet ./...`
 Expected: PASS（含既有 `TestAIChatForwardsToolCallMessageWithoutContentKey`、`TestAIChatPassesStringContentThrough`、`TestAIChatHandlesNullContent`）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/internal/service/ai.go backend/internal/service/ai_test.go backend/internal/handler/ai_test.go
@@ -441,7 +441,7 @@ export type LayoutResult =
 export function planLongImage(size: { width: number; height: number }): LayoutResult;
 ```
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 ```ts
 it("常量逐字钉死（改了就是换上游，必须连带改看门用例）", () => {
@@ -499,12 +499,12 @@ it("cover 取顶部第一屏，且在整图范围内", () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `npm run test -- src/services/ai/__tests__/longImage.test.ts`
 Expected: FAIL —— 模块不存在
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 按 §5.1 的几何实现。要点（签名与测试已定，只有取舍需要写清）：
 
@@ -514,12 +514,12 @@ Expected: FAIL —— 模块不存在
 - 封面高 `Math.min(outH, Math.round(outW * 4 / 3))`
 - 文件头注释：**这两个尺寸常量是从上游「总像素归一到 1300×1300」反推的**，换供应商要重算，并同步改本文件的看门用例（§5.1 / §6.1）
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `npm run test -- src/services/ai/__tests__/longImage.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/services/ai/longImage.ts src/services/ai/__tests__/longImage.test.ts
@@ -576,7 +576,7 @@ export async function toScreenshot(bytes: Uint8Array, deps: Pick<ScreenshotDeps,
 export async function pickScreenshot(deps?: ScreenshotDeps): Promise<ScreenshotResult | null>;
 ```
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 `attachText.test.ts`：三条 code → 逐字文案；`MSG_*` 常量逐字（这些是用户可见文案，钉住）。
 
@@ -622,12 +622,12 @@ it("pickScreenshot：取消返回 null；读文件失败给「读不到这张图
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `npm run test -- src/services/ai/__tests__/attachText.test.ts src/services/ai/__tests__/image.test.ts`
 Expected: FAIL —— 模块不存在
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `attachText.ts`：常量 + `messageForShareCode` 的三分支（`no_stream → MSG_NO_STREAM`、`read_failed → MSG_READ_FAILED`、`source_too_large → MSG_TOO_LARGE`）。
 
@@ -639,12 +639,12 @@ Expected: FAIL —— 模块不存在
 4. 真实现 `realDeps`：`pick` 用 `open({ filters: [...jpg/jpeg/png/webp/gif], multiple: false })` + `readFile`；`decode` 用 `createImageBitmap`，`render` 按 `Piece.source` 逐段 `drawImage` 到新 canvas，`toDataURL("image/jpeg", SEGMENT_JPEG_QUALITY)`，封面同理；结束后 `bitmap.close()`
 5. 文件头注释写明：**新代码只在本文件收口 canvas 与插件**，`imageStore` 的 1280/0.72 是「落盘封面」的规则，与这里的分段参数是两回事，别合并
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `npm run test -- src/services/ai/ && npm run build`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/services/ai/attachText.ts src/services/ai/image.ts \
@@ -672,7 +672,7 @@ git commit -m "feat(AI): 截图选图与分段编码，含 1MiB/段与段数闸�
   - `AttachmentPreview.vue` props `{ image: string }`，emits `{ remove: [] }`
   - `AiPage` 里 `const imageError = ref("")`（选图失败文案，**不复用** `chat.error`）
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 ```ts
 // ChatComposer
@@ -693,24 +693,24 @@ it("发送开始即清空附件（失败也不把图留着）", ...);
 it("reset() 清掉附件", ...);
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `npm run test -- src/stores/__tests__/aiChat.test.ts src/components/ai/`
 Expected: FAIL
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 - `aiChat.send` 的入口守卫改为 `if (sending.value || (content === "" && attachment.value === null)) return;`，并在 `sending.value = true` 之后立刻 `const shot = attachment.value; attachment.value = null;`
 - user 消息的 payload 用 `{ filter: null, matched: 0, items: [], unresolved: { categories: [], tags: [], ingredients: [] }, image: shot.cover }`（本任务先不把 `shot.segments` 交给 `runAgent`，那是 Task 9；**但要在 `send` 里先把它取到局部变量**，供 Task 9 使用）
 - `ChatComposer`：输入框左侧加一个按钮（`data-test="ai-attach"`，`aria-label="发送截图"`），`blocked || attachment === null ? ...` 不必；按钮受 `blocked` 约束；`attachment !== null` 时在表单上方渲染 `AttachmentPreview`；`submit()` 的空串判断改为 `content === "" && props.attachment === null`
 - `AiPage`：`async function attach()` 调 `pickScreenshot()`；`ok` ⇒ `chat.setAttachment(shot)`；`{ok:false}` ⇒ `imageError = message`；`null` ⇒ 什么都不做。`imageError` 渲染在输入区上方（`data-test="ai-image-error"`），下一次选图或发送时清空
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `npm run test -- src/stores/ src/components/ai/ src/views/__tests__/AiPage.test.ts && npm run build`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/stores/aiChat.ts src/components/ai/AttachmentPreview.vue src/components/ai/ChatComposer.vue \
@@ -761,7 +761,7 @@ export function takeDraft(): RecipeDraft | null;
 export function clearDraft(): void;
 ```
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 ```ts
 it("菜名空 / 不是 JSON / 不是对象 ⇒ ok:false（调用方据此回 tool 错误）", ...);
@@ -774,21 +774,21 @@ it("步骤逐条 trim，空串丢弃；多余字段忽略", ...);
 it("草稿槽：setDraft → takeDraft 读到 → 第二次是 null；clearDraft 后读不到", ...);
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `npm run test -- src/services/ai/__tests__/draft.test.ts`
 Expected: FAIL
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 校验严格按规格 §12.3 的表；`resolveDraft` 复用 `matchId`（精确 → 唯一包含 → 否则 null）。`amount` 只在 `Number.isFinite(n) && n > 0` 时保留。模块级 `let slot: RecipeDraft | null = null`。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `npm run test -- src/services/ai/__tests__/draft.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/services/ai/draft.ts src/services/ai/filter.ts src/services/ai/__tests__/draft.test.ts
@@ -816,7 +816,7 @@ git commit -m "feat(AI): 草稿槽、create_recipe_draft 参数校验与名字�
     - `AgentOutcome` 追加 `draft: RecipeDraft | null`
   - `prompt.ts`：`PROMPT_VERSION = "ai-recipe-v2"`
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 `transport.test.ts` 追加：
 
@@ -863,12 +863,12 @@ it("prompt 提醒截图里的作者名/点赞数/水印/「展开」不是食材
 it("PROMPT_VERSION 升到 ai-recipe-v2", ...);
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `npm run test -- src/services/ai/`
 Expected: FAIL
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 - `agent.ts` 的 `messages` 最后一条改成 `{ role: "user", content: buildUserContent(userText, extra?.images ?? []) }`
 - `applyToolCalls` 改成按名字分派：`search_recipes` / `create_recipe_draft`；只执行**第一个**可识别且未执行过的，其余 `{"error":"skipped"}`；不可识别 ⇒ `{"error":"unknown_tool"}`；参数校验失败 ⇒ `{"error":"bad_arguments"}`（让模型纠正一次）；draft 成功时回 `{"ok":true}` 一句，**不要**把草稿回灌给模型（它已经知道了，回灌只会诱导它复述）
@@ -876,12 +876,12 @@ Expected: FAIL
 - `prompt.ts`：工具段从「一个工具」改成两个；few-shot 至少五条（`找有五花肉的菜`→search、`今晚想吃辣的下饭的`→search、`（长截图）`→draft、`我库里有哪些分类`→直接答、`半小时能做完的`→直说做不到）；补一句截图噪声警告；`PROMPT_VERSION` 改 `ai-recipe-v2`
 - `transport.ts` 仅改类型与注释（注释写明「块数组由 `agent.buildUserContent` 组装，transport 只透传」）
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `npm run test -- src/services/ai/ && npm run build`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/services/ai/transport.ts src/services/ai/agent.ts src/services/ai/prompt.ts \
@@ -906,7 +906,7 @@ git commit -m "feat(AI): create_recipe_draft 工具、图片内容块组装与 p
   - `send()` 的顺序写死：取附件 → 落 user 消息（含 `payload.image`）→ `runAgent(..., { images: shot.segments })` → 落 assistant 消息 → 有 draft 时：先 `saveImageBytes(shot.coverBytes)` 拿 `cover_path`（失败 ⇒ `null`）→ `setDraft({ ...draft, cover_path })` → `draftReady = true`
   - `AiPage`：`watch(() => chat.draftReady, ...)` 为真时 `chat.clearDraftReady()` 后 `router.push("/recipe/new")`
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 ```ts
 // store
@@ -921,22 +921,22 @@ it("draftReady 为真时跳 /recipe/new，且只跳一次", ...);
 it("选图失败显示文案，不清空已有输入", ...);
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `npm run test -- src/stores/__tests__/aiChat.test.ts src/views/__tests__/AiPage.test.ts`
 Expected: FAIL
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 按 Interfaces 的顺序写。`saveImageBytes` 返回 `{ok:false}` 时只 `console.warn`（不打断），`cover_path = null`。
 **`agent` 不接触 store、不接触 router**：它只返回 `draft`，写槽与跳转都在这一层。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `npm run test -- src/stores/ src/views/__tests__/AiPage.test.ts && npm run build`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/stores/aiChat.ts src/views/AiPage.vue src/stores/__tests__/aiChat.test.ts \
@@ -959,7 +959,7 @@ git commit -m "feat(AI): 截图轮跑通到编辑页，草稿只写内存槽、�
   - 未落定行（`ingredient_id === ""`）可点：打开 `RefSheet`（食材单选），选中后只替换 id/name
   - 保存时任何一行 `ingredient_id` 为空 ⇒ 错误文案「这几样食材没对上，点一下选一个」
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 ```ts
 it("有草稿时新建页被预填：菜名/分类/标签/食材/步骤/封面", async () => {
@@ -982,24 +982,24 @@ it("编辑模式不消费草稿槽（只在新建页取）", async () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `npm run test -- src/views/__tests__/RecipeEdit.test.ts`
 Expected: FAIL
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 - `fillDraft(draft: RecipeDraft)`：填 `form`，`labelNames` 用 `draft.category_name` / `draft.tag_names`；食材行 `key: nextKey()`、`ingredient_name: line.name`、`amount`、`unit_id`、`unit_name`
 - `resolvingIndex = ref<number | null>(null)`；食材行在 `line.ingredient_id === ""` 时加 `data-test="ingredient-row-unresolved"`、右侧显示「待选」、整行可点；追加一个 `<RefSheet :visible="resolvingIndex !== null" title="选择食材" :store="ingredientStore" mode="single" :selected-ids="[]" empty-hint="还没有食材，输入名称即可新建" @close="resolvingIndex = null" @select="resolveIngredient" />`。⚠️ 现有的「+ 添加食材」用的 `IngredientSheet` 不动（它负责「选食材 + 数量 + 单位」三步，这里只需要换一个 id）
 - `buildInput()` 在 `cleanAmount` 之前加：`if (line.ingredient_id === "") return { error: "这几样食材没对上，点一下选一个" };`
 - 不给未落定行做「静默新建」：RefSheet 的「+ 创建」是用户显式点的，属于允许路径（§4.4）
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `npm run test -- src/views/__tests__/RecipeEdit.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/views/RecipeEdit.vue src/views/__tests__/RecipeEdit.test.ts
@@ -1025,7 +1025,7 @@ git commit -m "feat(编辑页): 草稿预填与未落定食材行，保存前必
     { "v": 1, "kind": "error", "code": "no_stream" | "read_failed" | "source_too_large", "id": "<uuid>" }
     ```
 
-- [ ] **Step 1: 改 Manifest**
+- [x] **Step 1: 改 Manifest**
 
 给 `.MainActivity` 追加两个 `intent-filter`（各带 `DEFAULT` 分类）：
 
@@ -1044,7 +1044,7 @@ git commit -m "feat(编辑页): 草稿预填与未落定食材行，保存前必
 
 `launchMode="singleTask"` / `exported="true"` **已经是现状，不要动**。
 
-- [ ] **Step 2: 改 `MainActivity.kt`**
+- [x] **Step 2: 改 `MainActivity.kt`**
 
 按分享目标规格 §4 / §6 移植，**去掉它 §4.5 的整套会话记录**（本仓没有自动锁，见规格 §12.4）。必须有的：
 
@@ -1057,7 +1057,7 @@ git commit -m "feat(编辑页): 草稿预填与未落定食材行，保存前必
 7. **不写** `wee-session/`、`session.json`、`reconcileTask()`、`onStop` / `onDestroy` 的记录逻辑
 8. 不写任何用户可见中文：只出 code，文案在 JS
 
-- [ ] **Step 3: 改 capabilities**
+- [x] **Step 3: 改 capabilities**
 
 `src-tauri/capabilities/default.json` 追加：
 
@@ -1067,7 +1067,9 @@ git commit -m "feat(编辑页): 草稿预填与未落定食材行，保存前必
 
 读取**不加权限**：`fs:default` 的 `read-app-specific-dirs-recursive` 已覆盖 `$APPCACHE` 递归读（分享目标规格 §2 已核实）。**不要**顺手加 `$APPCONFIG/*` 之类的宽口径。
 
-- [ ] **Step 4: 验证（本环境只能做到这一步）**
+- [x] **Step 4: 验证（本环境只能做到这一步）**
+
+> 收尾时重跑：三处 grep 均命中，`cargo check` 无输出即通过。Kotlin 编译与真机行为仍留待 Task 14 Step 4（未执行）。
 
 Run:
 ```bash
@@ -1079,7 +1081,7 @@ cd D:/projects/my/wee-cook && grep -n "action.SEND\|share-inbox\|allow-remove" \
 Expected: 三处都能 grep 到；`cargo check` 无错误（Rust 侧未改动，只确认没被带坏）。
 **Kotlin 编译与真机行为在本环境验不了**（rootless Docker 与本机 Android SDK 限制），列为 Task 14 的手动验收项。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src-tauri/gen/android/app/src/main/AndroidManifest.xml \
@@ -1125,7 +1127,7 @@ export async function intakeShare(deps: ShareIntakeDeps): Promise<IntakeOutcome>
 export function startShareIntake(deps: ShareIntakeDeps & { retryDelayMs?: number }): () => void;
 ```
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 ```ts
 it("没有 pending ⇒ \"none\"，readBytes/consume/setAttachment 一次都没调", ...);
@@ -1141,12 +1143,12 @@ it("parsePending 只挑已知键：多一个 id 之外的键不影响结果", ..
 it("startShareIntake：扑空后补一次重拉；补拉仍扑空不再排（不是轮询）", ...);
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `npm run test -- src/services/ai/__tests__/shareIntake.test.ts`
 Expected: FAIL
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `shareIntake.ts` 按分享目标规格 §5.3 / §5.4 移植，**删掉 `isLocked`**（本仓没有锁）：
 
@@ -1158,12 +1160,12 @@ Expected: FAIL
 - `App.vue`：`onMounted` 里 `const stop = startShareIntake({ ...realDeps, pushAi: () => { if (route.path !== "/ai") void router.push("/ai") } })`，`onUnmounted(stop)`
 - `aiChat` 加 `notice: Ref<string | null>` + `setNotice(text)`；`AiPage` 在输入区上方渲染（`data-test="ai-share-notice"`）
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `npm run test -- src/services/ai/ && npm run build`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/services/ai/shareIntake.ts src/App.vue src/stores/aiChat.ts src/views/AiPage.vue \
@@ -1177,7 +1179,7 @@ git commit -m "feat(Android): 分享图的拉取、附加与消费（compare-and
 
 **Files:** 无代码改动（只更新本文件的勾选与 `docs/` 里已有的自托管说明，如与实现不符再改）
 
-- [ ] **Step 1: 全套自动化验证**
+- [x] **Step 1: 全套自动化验证**
 
 ```bash
 npm run test
@@ -1187,11 +1189,13 @@ cd .. && cargo check --manifest-path src-tauri/Cargo.toml
 ```
 Expected: 全绿；`vue-tsc` 无错误；`go vet` 无输出
 
-- [ ] **Step 2: 对着规格 §9 核覆盖**
+- [x] **Step 2: 对着规格 §9 核覆盖**
 
 本刀负责 §9 的 1～10、11～17（后端在 v0.7.0 已覆盖，Task 4 只补 12）、18～24。逐条打勾；缺哪条就在对应任务里补测试，别在收尾里补。
 
 - [ ] **Step 3: 桌面端手动验收（可以本机做）**
+
+> 本环境未执行：本轮只做了自动化验证（Step 1）与规格 §9 覆盖核对（Step 2），六条手动项一条都没跑，留待人工在桌面上过。
 
 `npm run tauri dev` → 「我的」打开 AI → `/ai` 点选图 → 选一张长截图：
 
@@ -1204,6 +1208,8 @@ Expected: 全绿；`vue-tsc` 无错误；`go vet` 无输出
 
 - [ ] **Step 4: Android 真机手动验收（本环境做不了，必须留给真机）**
 
+> 留待真机：本环境无法编译 Kotlin、也无法安装到设备，六条全部未执行。
+
 标记为**手动**，逐条记录结果：
 
 1. 从相册/小红书分享一张长截图到「一起做饭」⇒ 落在 `/ai`，输入区有缩略图（冷启动与热启动各一次）
@@ -1213,7 +1219,7 @@ Expected: 全绿；`vue-tsc` 无错误；`go vet` 无输出
 5. 拍照/相册选图走系统选择器仍正常（`ImagePicker` 未被改动）
 6. `adb logcat -s WeeCook/Share` 能看到落盘/清理日志，且**不含图片 URI 或内容**
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add docs/superpowers/plans/2026-10-17-ai-screenshot-plan.md
