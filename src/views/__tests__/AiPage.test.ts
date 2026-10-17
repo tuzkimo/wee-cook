@@ -148,6 +148,7 @@ function enabledStatus(): AiStatus {
 describe("AiPage 隐私门控", () => {
   it("opt-in 未开启时显示说明与入口，输入区禁用", async () => {
     h.settings.status.value = enabledStatus();
+    h.api.baseUrlReady.value = true;
     const wrapper = await page();
 
     expect(wrapper.find('[data-test="ai-privacy-card"]').exists()).toBe(true);
@@ -160,6 +161,7 @@ describe("AiPage 隐私门控", () => {
 
   it("说明卡里写明聊天记录是明文存在本机的", async () => {
     h.settings.status.value = enabledStatus();
+    h.api.baseUrlReady.value = true;
     const wrapper = await page();
 
     const text = wrapper.get('[data-test="ai-privacy-card"]').text();
@@ -180,24 +182,30 @@ describe("AiPage 隐私门控", () => {
     expect((wrapper.get('[data-test="ai-input"]').element as HTMLInputElement).disabled).toBe(true);
   });
 
-  it("后端 AI_API_KEY 为空时不展示说明卡、也没有开启入口", async () => {
+  it("后端 AI_API_KEY 为空时不展示说明卡、也没有开启入口，输入区禁用并说明原因", async () => {
+    h.settings.sendingEnabled.value = true;
     h.settings.status.value = { enabled: false, model: "", host: "" };
+    h.api.baseUrlReady.value = true;
     const wrapper = await page();
 
+    expect(wrapper.get('[data-test="ai-disabled-hint"]').text()).toBe("服务器的 AI 未启用。");
+    expect(wrapper.find('[data-test="ai-server-hint"]').exists()).toBe(false);
     expect(wrapper.find('[data-test="ai-privacy-card"]').exists()).toBe(false);
     expect(wrapper.find('[data-test="ai-enable"]').exists()).toBe(false);
+    expect((wrapper.get('[data-test="ai-input"]').element as HTMLInputElement).disabled).toBe(true);
   });
 
   it("opt-in 开启且拿到 host 后输入区可用，且不再展示说明卡", async () => {
     h.settings.sendingEnabled.value = true;
     h.settings.status.value = enabledStatus();
+    h.api.baseUrlReady.value = true;
     const wrapper = await page();
 
     expect(wrapper.find('[data-test="ai-privacy-card"]').exists()).toBe(false);
     expect((wrapper.get('[data-test="ai-input"]').element as HTMLInputElement).disabled).toBe(false);
   });
 
-  it("opt-in 开着、地址已配但探活失败时仍能发送", async () => {
+  it("opt-in 开着、地址已配但探活失败时仍能发送，且不误报「先连接服务器」", async () => {
     // status 停在未知态（401 / 断网），但地址是配了的：能发给谁已经确定，不该锁死输入区
     h.settings.sendingEnabled.value = true;
     h.settings.status.value = null;
@@ -205,6 +213,19 @@ describe("AiPage 隐私门控", () => {
     const wrapper = await page();
 
     expect((wrapper.get('[data-test="ai-input"]').element as HTMLInputElement).disabled).toBe(false);
+    expect(wrapper.find('[data-test="ai-server-hint"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="ai-disabled-hint"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("先连接服务器");
+  });
+
+  it("opt-in 开着但地址没配时输入区禁用并提示先连接服务器", async () => {
+    h.settings.sendingEnabled.value = true;
+    h.settings.status.value = null;
+    h.api.baseUrlReady.value = false;
+    const wrapper = await page();
+
+    expect((wrapper.get('[data-test="ai-input"]').element as HTMLInputElement).disabled).toBe(true);
+    expect(wrapper.get('[data-test="ai-server-hint"]').text()).toBe("先连接服务器，才能用 AI 助手。");
   });
 
   it("opt-in 开着但探活失败（未登录 401 / 断网）时不隐藏页面，历史仍在", async () => {
@@ -223,6 +244,7 @@ describe("AiPage 隐私门控", () => {
   it("输入框回车只把文本交给 store.send，不清历史", async () => {
     h.settings.sendingEnabled.value = true;
     h.settings.status.value = enabledStatus();
+    h.api.baseUrlReady.value = true;
     const wrapper = await page();
 
     await wrapper.get('[data-test="ai-input"]').setValue("找有五花肉的菜");
@@ -237,6 +259,7 @@ describe("AiPage 消息流", () => {
   beforeEach(() => {
     h.settings.sendingEnabled.value = true;
     h.settings.status.value = enabledStatus();
+    h.api.baseUrlReady.value = true;
   });
 
   it("发送后消息渲染成气泡，卡片用 RecipeCard", async () => {

@@ -19,9 +19,12 @@ const keyboardInset = useKeyboardInset();
 const listEl = ref<HTMLElement | null>(null);
 const toggleError = ref<string | null>(null);
 
-// 发送只要求 opt-in 已同意 + 地址已配；探活失败（401 / 断网）不算「不能发」——
-// 拿不到 host 只是不许同意，不该锁死已同意的用户。baseUrlReady 是响应式的（裸 hasBaseUrl() 不会重算）。
-const canSend = computed(() => ai.sendingEnabled && (ai.canShowPrivacyCard || baseUrlReady.value));
+// 发送要求 opt-in 已同意 + 地址已配 + 后端确实开了 AI；探活失败（401 / 断网）不算「不能发」——
+// 拿不到 host 只是不许同意，不该锁死已同意的用户。
+// serverReady 留成 ref：地址是异步恢复的，取 .value 存成布尔值会让提示条停在启动那一刻的状态。
+const serverReady = baseUrlReady;
+const backendDisabled = computed(() => ai.status?.enabled === false);
+const canSend = computed(() => ai.sendingEnabled && serverReady.value && !backendDisabled.value);
 
 onMounted(() => {
   // load() 没有 try/catch，别让一次读库失败变成未处理的 rejection
@@ -66,16 +69,24 @@ async function enable(): Promise<void> {
   <div class="flex h-full flex-col">
     <AppHeader title="AI" />
 
-    <!-- 拿不到 host（未配地址 / 探活失败 / 后端没开 AI）一律不给同意入口 -->
+    <!-- 提示条与发送门控同源：说「连不上」就必须真发不出去。探活失败不报文案，交给错误的提示条 -->
     <p
-      v-if="!ai.canShowPrivacyCard"
+      v-if="!serverReady"
       data-test="ai-server-hint"
       class="mx-4 mt-3 rounded-xl bg-surface px-3 py-2.5 text-xs text-text-secondary"
     >
       先连接服务器，才能用 AI 助手。
     </p>
+    <p
+      v-else-if="backendDisabled"
+      data-test="ai-disabled-hint"
+      class="mx-4 mt-3 rounded-xl bg-surface px-3 py-2.5 text-xs text-text-secondary"
+    >
+      服务器的 AI 未启用。
+    </p>
+    <!-- 拿不到 host（探活失败）一律不给同意入口 -->
     <section
-      v-else-if="!ai.sendingEnabled"
+      v-else-if="!ai.sendingEnabled && ai.canShowPrivacyCard"
       data-test="ai-privacy-card"
       class="mx-4 mt-3 rounded-xl bg-surface px-3.5 py-3 text-sm"
     >
