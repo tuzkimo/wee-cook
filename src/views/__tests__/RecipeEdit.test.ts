@@ -773,4 +773,78 @@ describe("RecipeEdit", () => {
     expect(inputValue(wrapper, '[data-test="name"]')).toBe("红烧肉");
     expect(takeDraft()).not.toBeNull();
   });
+
+  it("两行未落定时只能逐行落定：解了第一行仍拦住保存，全落定后两行各带自己的 id", async () => {
+    setDraft(
+      draft({
+        ingredients: [
+          { ingredient_id: "", name: "神秘酱", amount: 2, unit_id: "u1", unit_name: "克" },
+          { ingredient_id: "", name: "神秘粉", amount: 1, unit_id: null, unit_name: null },
+        ],
+      }),
+    );
+    const wrapper = await page();
+
+    const unresolved = () => wrapper.findAll('[data-test="ingredient-row-unresolved"]');
+    expect(unresolved()).toHaveLength(2);
+
+    await unresolved()[0].trigger("click");
+    await flushPromises();
+    await bodyRow("鸡蛋").trigger("click");
+    await flushPromises();
+
+    expect(unresolved()).toHaveLength(1);
+    await save(wrapper);
+    expect(wrapper.get('[data-test="form-error"]').text()).toBe("这几样食材没对上，点一下选一个");
+    expect(mocks.create).not.toHaveBeenCalled();
+
+    await unresolved()[0].trigger("click");
+    await flushPromises();
+    await bodyRow("盐").trigger("click");
+    await flushPromises();
+
+    await save(wrapper);
+
+    expect(mocks.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ingredients: [
+          { ingredient_id: "i1", amount: 2, unit_id: "u1" },
+          { ingredient_id: "i2", amount: 1, unit_id: null },
+        ],
+      }),
+    );
+  });
+
+  it("未落定行上按 Enter 点 ✕ 只删这一行，不开选择面板，后续选择不会写到别的行", async () => {
+    setDraft(
+      draft({
+        ingredients: [
+          { ingredient_id: "", name: "神秘酱", amount: 2, unit_id: "u1", unit_name: "克" },
+          { ingredient_id: "", name: "神秘粉", amount: 1, unit_id: null, unit_name: null },
+        ],
+      }),
+    );
+    const wrapper = await page();
+
+    // 键盘 Enter 打在 ✕ 上：浏览器先发 keydown，再触发按钮自己的 click
+    const removeButton = wrapper.findAll('[data-test="ingredient-row-remove"]')[0];
+    await removeButton.trigger("keydown.enter");
+    await flushPromises();
+    await removeButton.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.findAll('[data-test="ingredient-row-unresolved"]')).toHaveLength(1);
+    // keydown 冒泡不能把选择面板带出来（否则残留的下标会改写别的行）
+    expect(has('[data-test="ref-row"]')).toBe(false);
+
+    // 剩下的行自己落定：名字换掉，它自己的数量不动
+    await wrapper.get('[data-test="ingredient-row-unresolved"]').trigger("click");
+    await flushPromises();
+    await bodyRow("鸡蛋").trigger("click");
+    await flushPromises();
+
+    const line = wrapper.get('[data-test="ingredient-row"]');
+    expect(line.get('[data-test="ingredient-row-name"]').text()).toBe("鸡蛋");
+    expect(line.get('[data-test="ingredient-row-amount"]').text()).toBe("1");
+  });
 });

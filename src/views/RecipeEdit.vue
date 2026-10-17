@@ -214,6 +214,8 @@ function addIngredient(payload: {
 
 function removeIngredient(index: number): void {
   form.value.ingredients.splice(index, 1);
+  // 行都删了，留着旧下标就会把下一次选择写到别的行上
+  resolvingIndex.value = null;
 }
 
 /** 未落定行点开食材单选；已落定的行不响应。 */
@@ -229,7 +231,8 @@ function resolveIngredient(ids: string[]): void {
   resolvingIndex.value = null;
   if (!id || index === null) return;
   const line = form.value.ingredients[index];
-  if (!line) return;
+  // 下标可能早就不指向未落定行了：宁可不写，也不能改写别的行
+  if (!line || line.ingredient_id !== "") return;
   line.ingredient_id = id;
   line.ingredient_name = nameOf(ingredientStore, id);
 }
@@ -455,7 +458,7 @@ onBeforeRouteLeave(() => {
             :class="line.ingredient_id === '' ? 'cursor-pointer ring-1 ring-inset ring-danger/40' : ''"
             :tabindex="line.ingredient_id === '' ? 0 : undefined"
             @click="openResolve(index)"
-            @keydown.enter="openResolve(index)"
+            @keydown.enter.self="openResolve(index)"
           >
             <span
               data-test="ingredient-row-name"
