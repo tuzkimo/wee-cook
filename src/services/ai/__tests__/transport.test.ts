@@ -84,6 +84,24 @@ describe("transport", () => {
     expect(init).toMatchObject({ method: "POST", body: JSON.stringify({ messages, tools }) });
   });
 
+  it("聊天等后端 120s（客户端留 150s 余量），探活仍走 15s 默认", async () => {
+    apiFetchMock.mockResolvedValue({ ok: true, status: 200, data: {} });
+
+    await callAiChat(messages, tools);
+    expect(apiFetchMock.mock.calls[0][2]).toBe(150_000);
+
+    await fetchAiStatus();
+    // 不传 ⇒ apiFetch 的 15000 默认生效：状态探测不该等两分钟
+    expect(apiFetchMock.mock.calls[1][2]).toBeUndefined();
+  });
+
+  it("200 但 body 不是 JSON（data 为 undefined）时归 ai_upstream_error", async () => {
+    apiFetchMock.mockResolvedValue({ ok: true, status: 200, data: undefined });
+
+    await expect(fetchAiStatus()).rejects.toMatchObject({ code: "ai_upstream_error" });
+    await expect(callAiChat(messages, tools)).rejects.toMatchObject({ code: "ai_upstream_error" });
+  });
+
   it("callAiChat 返回归一化结果", async () => {
     apiFetchMock.mockResolvedValue({
       ok: true,

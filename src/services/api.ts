@@ -1,6 +1,6 @@
 // src/services/api.ts
 //
-// 在线服务的网络层：baseUrl、15s 超时兜底、401 → refresh 单飞、以及一组 auth 薄封装。
+// 在线服务的网络层：baseUrl、15s 超时兜底（长任务可按调用方传入覆盖）、401 → refresh 单飞、以及一组 auth 薄封装。
 // 两条贯穿全层的约定：
 //  1. **未配置服务器地址时不得发起任何网络请求**（`getBaseUrl()` 抛错，apiFetch 直接冒泡）。
 //     `hasBaseUrl()` 是唯一的就绪判据，调用方靠 `baseUrlReady` 这个响应式视图决定何时探活。
@@ -171,7 +171,11 @@ export type ApiResult<T> =
  * 而 `apiFetch` 末尾的 `res.json()` 会把 body 读空，二进制就拿不回来了。这两个端点同样是受保护的
  * （spec §10.2），不带头会 401 —— 所以不能退回裸 `fetchWithTimeout`。
  */
-export async function fetchWithAuth(path: string, init: RequestInit = {}): Promise<Response> {
+export async function fetchWithAuth(
+  path: string,
+  init: RequestInit = {},
+  timeoutMs = 15000,
+): Promise<Response> {
   const url = `${getBaseUrl()}${path}`
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -179,11 +183,11 @@ export async function fetchWithAuth(path: string, init: RequestInit = {}): Promi
   }
   if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`
 
-  let res = await fetchWithTimeout(url, { ...init, headers })
+  let res = await fetchWithTimeout(url, { ...init, headers }, timeoutMs)
 
   if (res.status === 401 && refreshToken && (await refreshAccessToken())) {
     headers["Authorization"] = `Bearer ${accessToken}`
-    res = await fetchWithTimeout(url, { ...init, headers })
+    res = await fetchWithTimeout(url, { ...init, headers }, timeoutMs)
   }
 
   return res
@@ -195,10 +199,17 @@ export async function fetchWithAuth(path: string, init: RequestInit = {}): Promi
  *
  * 401 时（且手上有 refresh token）先单飞刷新一次再重试**一次**；重试用的是 `fetchWithTimeout`
  * 而不是递归调 `apiFetch`，否则 401 会无限套娃。
+ *
+ * `timeoutMs` 只在「上游本身就慢」的端点上才需要传（AI 聊天等 120s）：默认 15s 是给普通接口的兜底，
+ * 拿它套长任务会让客户端先撒手、服务端还在烧 token。
  */
-export async function apiFetch<T = unknown>(path: string, init: RequestInit = {}): Promise<ApiResult<T>> {
+export async function apiFetch<T = unknown>(
+  path: string,
+  init: RequestInit = {},
+  timeoutMs = 15000,
+): Promise<ApiResult<T>> {
   // 带凭据与 401 刷新走 fetchWithAuth；差别只在下面多一步解析 JSON
-  const res = await fetchWithAuth(path, init)
+  const res = await fetchWithAuth(path, init, timeoutMs)
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))

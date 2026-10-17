@@ -88,18 +88,24 @@ function toAiError(status: number, code: string): AiError {
   return new AiError("ai_upstream_error");
 }
 
+/** 后端 `AI_TIMEOUT` 默认 120s（视觉推理较慢），客户端多留 30s 余量：
+ * 不能比服务端先撒手，否则用户看到「连不上服务器」、服务端还在等上游。 */
+const AI_CHAT_TIMEOUT_MS = 150_000;
+
 /** 未配地址时一个请求都不发；拿不到 HTTP 响应归 unreachable；服务端答了就按其错误码抛。 */
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, timeoutMs?: number): Promise<T> {
   if (!hasBaseUrl()) throw new AiError("no_server");
 
   let res: ApiResult<T>;
   try {
-    res = await apiFetch<T>(path, init);
+    res = await apiFetch<T>(path, init, timeoutMs);
   } catch {
     throw new AiError("unreachable");
   }
 
   if (!res.ok) throw toAiError(res.status, res.error);
+  // 200 但 body 不是 JSON（代理吐 HTML 等）：apiFetch 的 data 是 undefined，不是空对象
+  if (res.data === undefined) throw new AiError("ai_upstream_error");
   return res.data;
 }
 
@@ -108,10 +114,14 @@ export async function fetchAiStatus(): Promise<AiStatus> {
 }
 
 export async function callAiChat(messages: AiMessage[], tools: AiTool[]): Promise<AiChatResult> {
-  const data = await request<AiChatResult>("/api/v1/ai/chat", {
-    method: "POST",
-    body: JSON.stringify({ messages, tools }),
-  });
+  const data = await request<AiChatResult>(
+    "/api/v1/ai/chat",
+    {
+      method: "POST",
+      body: JSON.stringify({ messages, tools }),
+    },
+    AI_CHAT_TIMEOUT_MS,
+  );
   // 后端 Go 侧 tool_calls 为 nil 时下发 null，其余字段用零值兜底
   return {
     text: data.text ?? "",

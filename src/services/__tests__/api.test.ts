@@ -294,6 +294,26 @@ describe("apiFetch", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("第三参数换掉默认 15s：AI 这类长任务按调用方给的时间撒手", async () => {
+    vi.useFakeTimers();
+    setBaseUrl("http://x:8080");
+    const fetchMock = hangingFetch();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const settled = apiFetch("/api/v1/ai/chat", { method: "POST" }, 150_000).then(
+      () => "resolved",
+      (e: unknown) => e,
+    );
+
+    await vi.advanceTimersByTimeAsync(15000);
+    // 默认值不生效：后端还在等上游，客户端不能先撒手
+    expect((fetchMock.mock.calls[0]![1] as RequestInit).signal?.aborted).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(135_000);
+    expect((fetchMock.mock.calls[0]![1] as RequestInit).signal?.aborted).toBe(true);
+    expect(((await settled) as Error).message).toBe("请求超时");
+  });
+
   it("服务端 500 时不抛异常，返回 {ok:false,status:500}", async () => {
     setBaseUrl("http://x:8080");
     vi.stubGlobal("fetch", vi.fn(async () => res(500, { error: "internal error" })));
