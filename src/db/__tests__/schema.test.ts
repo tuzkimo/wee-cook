@@ -94,6 +94,14 @@ describe("AI 会话与消息表", () => {
     }
   });
 
+  it("ai_sessions 带 user_id，且它不在同步载荷的键集里", async () => {
+    const { db } = await freshTestDb();
+    const cols = (await db.select<{ name: string }[]>("PRAGMA table_info(ai_sessions)")).map(
+      (c) => c.name,
+    );
+    expect(cols).toContain("user_id");
+  });
+
   it("ai_messages 按 session_id 查的索引建出来了", async () => {
     const { db } = await freshTestDb();
     const rows = await db.select<{ name: string }[]>(

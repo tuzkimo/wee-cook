@@ -100,6 +100,7 @@ const DDL = [
   // 带 id/updated_at/deleted_at 是按 AGENTS.md 的业务表规则；同步载荷逐表列举，不会带上它们。
   `CREATE TABLE IF NOT EXISTS ai_sessions (
     id          TEXT PRIMARY KEY,
+    user_id     TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     deleted_at  TEXT
@@ -137,6 +138,13 @@ async function migrateTables(db: Db): Promise<void> {
     await db.execute("ALTER TABLE recipes ADD COLUMN owner_avatar_url TEXT");
   // 旧库（未发布的团队版）留下的列：SQLite 3.35+ 支持 DROP COLUMN，两个运行时都够新
   if (names.has("team_id")) await db.execute("ALTER TABLE recipes DROP COLUMN team_id");
+
+  // 老库的 AI 会话没有归属：user_id 为 NULL ⇒ 永不匹配任何账号、不再显示。
+  // 不删它们：没人知道这些会话属于谁。
+  const sessionCols = await db.select<{ name: string }[]>("PRAGMA table_info(ai_sessions)");
+  if (!sessionCols.some((c) => c.name === "user_id")) {
+    await db.execute("ALTER TABLE ai_sessions ADD COLUMN user_id TEXT");
+  }
 }
 
 export async function initDb(): Promise<void> {

@@ -65,6 +65,21 @@ describe("数据库迁移", () => {
     expect(names).toContain("local_accounts");
   });
 
+  it("老库的 ai_sessions 没有 user_id 时，initTables 会补上且可重复执行", async () => {
+    const { db } = await makeTestDb();
+    // 裸连接建旧结构的 ai_sessions：老库里的会话没有归属
+    await db.execute(
+      `CREATE TABLE ai_sessions (id TEXT PRIMARY KEY, created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL, deleted_at TEXT)`,
+    );
+    await initTables(db);
+    await expect(initTables(db)).resolves.toBeUndefined();
+    const names = (await db.select<{ name: string }[]>("PRAGMA table_info(ai_sessions)")).map(
+      (column) => column.name,
+    );
+    expect(names).toContain("user_id");
+  });
+
   it("迁移不丢存量数据", async () => {
     const { db } = await makeTestDb();
     // 先建旧结构（只有 recipes 的旧列），插一行，再跑 initTables
