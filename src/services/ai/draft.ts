@@ -126,7 +126,8 @@ export function resolveDraft(args: DraftArgs, dict: Dict): RecipeDraft {
         name: line.name.trim(),
         amount: line.amount ?? null,
         unit_id: unitId,
-        unit_name: unitId === null ? null : nameOf(unitId, dict.units),
+        // 没命中的原始单位名不丢：编辑页显示「单位待选」，点一下可用它新建/选择
+        unit_name: unitId === null ? (unit || null) : nameOf(unitId, dict.units),
       };
     }),
     steps: args.steps ?? [],

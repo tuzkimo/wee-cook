@@ -714,6 +714,60 @@ describe("RecipeEdit", () => {
     expect(has('[data-test="ref-row"]')).toBe(false);
   });
 
+  it("未落定食材的建议名可一键新建，不用重新打字", async () => {
+    setDraft(
+      draft({
+        ingredients: [
+          { ingredient_id: "", name: "神秘酱", amount: 2, unit_id: "u1", unit_name: "克" },
+        ],
+      }),
+    );
+    const wrapper = await page();
+
+    await wrapper.get('[data-test="ingredient-row-unresolved"]').trigger("click");
+    await flushPromises();
+
+    const suggested = bodyEl('[data-test="ref-create-suggested"]');
+    expect(suggested.text()).toContain("神秘酱");
+
+    await suggested.trigger("click");
+    await flushPromises();
+
+    expect(mocks.ingredientStore.add).toHaveBeenCalledWith("神秘酱");
+    const resolved = wrapper.get('[data-test="ingredient-row"]');
+    expect(resolved.get('[data-test="ingredient-row-name"]').text()).toBe("神秘酱");
+    expect(resolved.get('[data-test="ingredient-row-amount"]').text()).toContain("2 克");
+  });
+
+  it("未落定单位显示「单位待选」，可一键新建且保留数量", async () => {
+    setDraft(
+      draft({
+        ingredients: [
+          { ingredient_id: "i1", name: "鸡蛋", amount: 2, unit_id: null, unit_name: "把" },
+        ],
+      }),
+    );
+    const wrapper = await page();
+
+    expect(wrapper.get('[data-test="ingredient-row-amount"]').text()).toBe("2");
+    const chip = wrapper.get('[data-test="ingredient-row-unit-unresolved"]');
+    expect(chip.text()).toContain("单位待选");
+
+    await chip.trigger("click");
+    await flushPromises();
+
+    const suggested = bodyEl('[data-test="ref-create-suggested"]');
+    expect(suggested.text()).toContain("把");
+
+    await suggested.trigger("click");
+    await flushPromises();
+
+    expect(mocks.unitStore.add).toHaveBeenCalledWith("把");
+    const row = wrapper.get('[data-test="ingredient-row"]');
+    expect(row.get('[data-test="ingredient-row-amount"]').text()).toContain("2 把");
+    expect(wrapper.find('[data-test="ingredient-row-unit-unresolved"]').exists()).toBe(false);
+  });
+
   it("有未落定行时点保存 → 报「这几样食材没对上，点一下选一个」，store.create 未被调用", async () => {
     setDraft(
       draft({

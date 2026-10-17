@@ -13,6 +13,8 @@ const props = defineProps<{
   mode: "single" | "multiple";
   selectedIds: string[];
   emptyHint: string;
+  /** 外部给的「建议新建名」：显示一键新建行，不塞进搜索框也不过滤列表 */
+  createSuggestion?: string;
 }>();
 
 const emit = defineEmits<{ close: []; select: [string[]] }>();
@@ -51,10 +53,33 @@ const showCreate = computed(() => {
 
 const emptyText = computed(() => (keyword.value.trim() ? "没有匹配的条目" : props.emptyHint));
 
+// 建议创建只在没有完全同名时出现；同名说明字典里已有，选它就好
+const suggestedName = computed(() => (props.createSuggestion ?? "").trim());
+const showSuggestedCreate = computed(() => {
+  const name = suggestedName.value.toLowerCase();
+  return (
+    name !== "" && !toValue(props.store.items).some((item) => item.name.toLowerCase() === name)
+  );
+});
+
 // ---- 内联改名 ----
 const editingId = ref<string | null>(null);
 const formName = ref("");
 const formError = ref("");
+
+/** 一键新建建议名：只由未落定行传入，用户点了才算数（不是静默新建）。 */
+async function createSuggested(): Promise<void> {
+  const name = suggestedName.value;
+  if (!name) return;
+  formError.value = "";
+  try {
+    const created = await props.store.add(name);
+    selected.value = [...selected.value, created.id];
+    if (props.mode === "single") emit("select", [created.id]);
+  } catch (error: unknown) {
+    formError.value = error instanceof Error ? error.message : "创建失败";
+  }
+}
 
 // ---- 删除 ----
 const deleteTarget = ref<Row | null>(null);
@@ -245,6 +270,16 @@ async function confirmDelete(): Promise<void> {
             >
               {{ emptyText }}
             </div>
+
+            <!-- 未落定行带进来的建议名：不打字，一点就建 -->
+            <button
+              v-if="showSuggestedCreate"
+              data-test="ref-create-suggested"
+              class="flex w-full items-center gap-2 rounded-lg px-2 py-2.5 text-left text-sm text-primary transition-colors hover:bg-gray-50"
+              @click="createSuggested"
+            >
+              + 新建「{{ suggestedName }}」
+            </button>
 
             <div
               v-for="item in filtered"

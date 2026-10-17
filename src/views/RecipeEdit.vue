@@ -82,6 +82,18 @@ const showIngredientSheet = ref(false);
 const showLeaveConfirm = ref(false);
 // 正在落定的食材行下标（null = 没在选）；未落定行点一下开食材单选
 const resolvingIndex = ref<number | null>(null);
+// 未落定的单位同理：点「单位待选」开单位单选
+const unitResolvingIndex = ref<number | null>(null);
+
+/** 食材/单位的建议新建名：只来自草稿里 AI 给的名字 */
+const resolveSuggestion = computed(() => {
+  const index = resolvingIndex.value;
+  return index === null ? "" : (form.value.ingredients[index]?.ingredient_name ?? "");
+});
+const unitResolveSuggestion = computed(() => {
+  const index = unitResolvingIndex.value;
+  return index === null ? "" : (form.value.ingredients[index]?.unit_name ?? "");
+});
 
 /** 用来判断「有没有未保存改动」的基线，编辑模式要等详情加载完才定格。 */
 const initial = ref("");
@@ -216,6 +228,7 @@ function removeIngredient(index: number): void {
   form.value.ingredients.splice(index, 1);
   // 行都删了，留着旧下标就会把下一次选择写到别的行上
   resolvingIndex.value = null;
+  unitResolvingIndex.value = null;
 }
 
 /** 未落定行点开食材单选；已落定的行不响应。 */
@@ -235,6 +248,25 @@ function resolveIngredient(ids: string[]): void {
   if (!line || line.ingredient_id !== "") return;
   line.ingredient_id = id;
   line.ingredient_name = nameOf(ingredientStore, id);
+}
+
+/** 未落定单位：点一下开单位单选；已落定的行不响应。 */
+function openUnitResolve(index: number): void {
+  const line = form.value.ingredients[index];
+  if (!line || line.unit_id !== null || line.unit_name === null) return;
+  unitResolvingIndex.value = index;
+}
+
+/** 只换单位，AI 给的数量原样留着。 */
+function resolveUnit(ids: string[]): void {
+  const id = ids[0];
+  const index = unitResolvingIndex.value;
+  unitResolvingIndex.value = null;
+  if (!id || index === null) return;
+  const line = form.value.ingredients[index];
+  if (!line || line.unit_id !== null) return;
+  line.unit_id = id;
+  line.unit_name = nameOf(unitStore, id);
 }
 
 function addStep(): void {
@@ -467,8 +499,20 @@ onBeforeRouteLeave(() => {
               {{ line.ingredient_name }}
             </span>
             <span data-test="ingredient-row-amount" class="shrink-0 text-text-secondary">
-              {{ amountText(line) }}
+              <template v-if="line.unit_id === null && line.unit_name !== null">{{
+                line.amount === null ? "适量" : line.amount
+              }}</template>
+              <template v-else>{{ amountText(line) }}</template>
             </span>
+            <button
+              v-if="line.unit_id === null && line.unit_name !== null"
+              type="button"
+              data-test="ingredient-row-unit-unresolved"
+              class="shrink-0 rounded-full bg-danger/10 px-2 py-0.5 text-xs text-danger"
+              @click.stop="openUnitResolve(index)"
+            >
+              单位待选
+            </button>
             <span
               v-if="line.ingredient_id === ''"
               class="shrink-0 rounded-full bg-danger/10 px-2 py-0.5 text-xs text-danger"
@@ -600,8 +644,20 @@ onBeforeRouteLeave(() => {
       mode="single"
       :selected-ids="[]"
       empty-hint="还没有食材，输入名称即可新建"
+      :create-suggestion="resolveSuggestion"
       @close="resolvingIndex = null"
       @select="resolveIngredient"
+    />
+    <RefSheet
+      :visible="unitResolvingIndex !== null"
+      title="选择单位"
+      :store="unitStore"
+      mode="single"
+      :selected-ids="[]"
+      empty-hint="还没有单位，输入名称即可新建"
+      :create-suggestion="unitResolveSuggestion"
+      @close="unitResolvingIndex = null"
+      @select="resolveUnit"
     />
 
     <ConfirmDialog

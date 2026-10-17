@@ -102,7 +102,8 @@ describe("resolveDraft", () => {
       name: "五花肉",
       amount: 200,
       unit_id: null,
-      unit_name: null,
+      // 未命中时保留 AI 原文，编辑页据此显示「单位待选」并支持一键新建
+      unit_name: "把",
     });
 
     // 命中时收 id 和字典里的名字
