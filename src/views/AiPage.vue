@@ -51,7 +51,7 @@ watch(
   },
 );
 
-// 草稿进槽即跳编辑页：读走即清，跳一次就够
+// 草稿进槽即跳编辑页：读走即清，跳一次就够。immediate 兜住页面不在场时到的草稿（send 在 store 里继续飞）
 watch(
   () => chat.draftReady,
   (ready) => {
@@ -59,6 +59,7 @@ watch(
     chat.clearDraftReady();
     void router.push("/recipe/new");
   },
+  { immediate: true },
 );
 
 function send(text: string): void {

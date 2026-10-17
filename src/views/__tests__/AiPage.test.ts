@@ -409,6 +409,20 @@ describe("AiPage 草稿跳转", () => {
     await flushPromises();
     expect(h.mocks.push).toHaveBeenCalledTimes(1);
   });
+
+  it("挂载时 draftReady 已经是 true：补跳 /recipe/new 且只跳一次", async () => {
+    // 页面在页签切换/进详情时会卸载，而 send() 是 store 里的异步操作：草稿可能在页面
+    // 不在场时到达。回到本页时不能丢掉这份草稿
+    h.chat.draftReady.value = true;
+    await page();
+
+    expect(h.mocks.clearDraftReady).toHaveBeenCalledTimes(1);
+    expect(h.mocks.push).toHaveBeenCalledTimes(1);
+    expect(h.mocks.push).toHaveBeenCalledWith("/recipe/new");
+
+    await flushPromises();
+    expect(h.mocks.push).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("AiPage 消息流", () => {

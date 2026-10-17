@@ -113,6 +113,8 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
     const shot = attachment.value;
     attachment.value = null;
     error.value = null;
+    // 上一轮遗留的跳转标志不能跟着这一发走
+    draftReady.value = false;
     try {
       const id = await ensureSession(start);
       if (id === null) return;

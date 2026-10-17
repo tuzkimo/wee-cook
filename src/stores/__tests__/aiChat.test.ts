@@ -459,6 +459,31 @@ describe("aiChatStore 截图轮：图进请求、草稿进槽、封面落盘", (
     expect(store.messages[0].image).toBeNull();
     expect(saveImageBytes).not.toHaveBeenCalled();
   });
+
+  it("纯文字轮也能带出草稿：不落封面、cover_path 为 null、draftReady 为 true", async () => {
+    const recipe = draft();
+    vi.mocked(runAgent).mockResolvedValue(outcome({ draft: recipe }));
+    const store = useAiChatStore();
+
+    await store.send("红烧肉怎么做");
+
+    // 没图就没有封面可存；草稿照写，编辑页自己选图
+    expect(saveImageBytes).not.toHaveBeenCalled();
+    expect(setDraft).toHaveBeenCalledWith({ ...recipe, cover_path: null });
+    expect(store.draftReady).toBe(true);
+  });
+
+  it("新一发开始即清掉上一轮遗留的 draftReady", async () => {
+    const store = useAiChatStore();
+    vi.mocked(runAgent).mockResolvedValueOnce(outcome({ draft: draft() }));
+    await store.send("红烧肉怎么做");
+    expect(store.draftReady).toBe(true);
+
+    // 上一轮谁都没读走标志（页面不在场），这一轮又没草稿：不能带着旧标志发出去
+    await store.send("再来一次");
+
+    expect(store.draftReady).toBe(false);
+  });
 });
 
 describe("aiChatStore 未登录", () => {
