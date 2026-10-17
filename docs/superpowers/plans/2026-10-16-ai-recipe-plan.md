@@ -1167,6 +1167,7 @@ git commit -m "feat(AI): 聊天页与检索结果卡片"
 
 ## 收尾
 
-- [ ] 跑全套：`npm run test && npm run build && cd backend && go test ./... && go vet ./...`
-- [ ] 对着规格 §9 的 17 条测试清单核一遍覆盖（第 1、5、8~12、14、15、16、17 条属于本计划；其余属第 2 份计划）
-- [ ] 更新 `docs/SELF-HOSTING.md`：确认「启用 AI」一节与最终实现一致
+- [x] 跑全套：`npm run test && npm run build && cd backend && go test ./... && go vet ./...`
+- [x] 对着规格 §9 的 17 条测试清单核一遍覆盖（属于本计划的是第 2、4、9、10、11、13、14、15、16、17 条；第 1、3、5、6、7、8、12 条属后续刀——第 12 条 block-array content 本刀不适用，因为 `AiMessage.content` 仍是 string）
+- [x] 更新 `docs/SELF-HOSTING.md`：确认「启用 AI」一节与最终实现一致
+  - §9.17 的 8 MiB 看门用例已由 `backend/internal/handler/ai_test.go` 覆盖；桌面/真机手动验收（tauri dev）待人工执行
