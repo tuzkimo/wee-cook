@@ -6,6 +6,8 @@ import * as api from "@/services/api";
 import * as tokenStorage from "@/services/tokenStorage";
 import { writeRefreshToken } from "@/services/tokenStorage";
 import { triggerFullPushAndSync } from "@/services/migration";
+import { readAiSendingEnabled } from "@/services/ai/privacy";
+import { useAiSettingsStore } from "@/stores/aiSettings";
 import { useAuthStore } from "@/stores/auth";
 
 // spec §9.5：会话从不在线变在线（登录/注册/恢复成功）要触发一次全扫推送。
@@ -340,6 +342,21 @@ describe("authStore", () => {
     // 地址保留，账号信息也留着做下次登录的默认值
     expect(storedSetting("server_url")).toBe("https://srv");
     expect(storedSetting("server_username")).toBe("alice");
+  });
+
+  it("logout 关掉 AI 开关：换账号不该继承上一个账号的同意", async () => {
+    stubFetch(() => res(200, authBody(user("u1", { username: "alice" }), "access-1", "refresh-1")));
+    const store = useAuthStore();
+    const aiSettings = useAiSettingsStore();
+    await store.login("https://srv", "alice", "pw");
+    await aiSettings.setSendingEnabled(true);
+    aiSettings.status = { enabled: true, model: "deepseek-flash", host: "api.deepseek.com" };
+
+    await store.logout();
+
+    expect(await readAiSendingEnabled()).toBe(false);
+    expect(aiSettings.sendingEnabled).toBe(false);
+    expect(aiSettings.status).toBeNull();
   });
 
   it("logout 期间在途的 refresh 回来不得把已退出的会话写回", async () => {

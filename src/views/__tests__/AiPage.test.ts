@@ -32,6 +32,7 @@ const h = vi.hoisted(() => ({
     canShowPrivacyCard: ComputedRef<boolean>;
   },
   api: {} as { baseUrlReady: Ref<boolean> },
+  auth: {} as { isOnline: Ref<boolean> },
 }));
 
 vi.mock("@/stores/aiChat", async () => {
@@ -66,6 +67,12 @@ vi.mock("@/stores/aiSettings", async () => {
 });
 
 vi.mock("vue-router", () => ({ useRouter: () => ({ push: h.mocks.push }) }));
+// 登录态：默认已登录，只有专测「未登录」的用例在 beforeEach 之后改成 false
+vi.mock("@/stores/auth", async () => {
+  const { computed, reactive, ref } = await import("vue");
+  h.auth.isOnline = ref(true);
+  return { useAuthStore: () => reactive({ isOnline: computed(() => h.auth.isOnline.value) }) };
+});
 // 地址是否已配：页面用它当发送门控的第二条腿（真实现见 services/__tests__/api.test.ts）
 vi.mock("@/services/api", async () => {
   const { computed, ref } = await import("vue");
@@ -88,6 +95,7 @@ beforeEach(() => {
   h.settings.sendingEnabled.value = false;
   h.settings.status.value = null;
   h.api.baseUrlReady.value = false;
+  h.auth.isOnline.value = true;
 });
 
 afterEach(() => {
@@ -228,7 +236,21 @@ describe("AiPage 隐私门控", () => {
     expect(wrapper.get('[data-test="ai-server-hint"]').text()).toBe("先连接服务器，才能用 AI 助手。");
   });
 
-  it("opt-in 开着但探活失败（未登录 401 / 断网）时不隐藏页面，历史仍在", async () => {
+  it("未登录时输入区禁用并提示先登录，不报服务器或 AI 未启用", async () => {
+    // 退登后 opt-in 与地址都可能还在，但没凭据就发不出去，不能装作能用
+    h.auth.isOnline.value = false;
+    h.settings.sendingEnabled.value = true;
+    h.settings.status.value = enabledStatus();
+    h.api.baseUrlReady.value = true;
+    const wrapper = await page();
+
+    expect((wrapper.get('[data-test="ai-input"]').element as HTMLInputElement).disabled).toBe(true);
+    expect(wrapper.get('[data-test="ai-login-hint"]').text()).toBe("请先登录，才能用 AI 助手。");
+    expect(wrapper.find('[data-test="ai-server-hint"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="ai-disabled-hint"]').exists()).toBe(false);
+  });
+
+  it("opt-in 开着但地址没配时提示先连接服务器，历史仍在", async () => {
     // 401 与断网都让 status 停在未知态 null；页面不据此判「没启用」
     // 入口显隐由 tabVisible 决定，见 src/stores/__tests__/aiSettings.test.ts
     h.settings.sendingEnabled.value = true;

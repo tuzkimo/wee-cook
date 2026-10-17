@@ -9,6 +9,8 @@ import { createPinia, defineStore, getActivePinia } from "pinia";
 import { computed, ref } from "vue";
 import * as api from "@/services/api";
 import { deleteRefreshToken, readRefreshToken } from "@/services/tokenStorage";
+import { writeAiSendingEnabled } from "@/services/ai/privacy";
+import { useAiSettingsStore } from "@/stores/aiSettings";
 import { deleteSetting, readSetting, writeSetting, type SettingLogContext } from "@/services/settingsFile";
 
 export type AuthMode = "guest" | "online";
@@ -292,6 +294,17 @@ const useAuthStoreBase = defineStore("auth", () => {
     if (persistedUserId) await deleteRefreshToken(persistedUserId);
     // 设置清理放在凭据之后：deleteSetting 失败会 reject，不能让它挡住退登的凭据清理
     await clearArchivedProfile();
+    // AI 同意落在全局 settings.json 里，不随账号走：退登不关就是下一个人直接继承了上一个人的同意。
+    // shortcut: 开关与聊天历史没有按账号隔离，升级时机：ai_sessions 加 user_id 的同时改成按账号存。
+    try {
+      await writeAiSendingEnabled(false);
+    } catch (e: unknown) {
+      // 存储失败不能挡住退登
+      console.warn("[auth] 关闭 AI 开关失败:", e);
+    }
+    const aiSettings = useAiSettingsStore();
+    aiSettings.sendingEnabled = false;
+    aiSettings.status = null;
     // 刻意不动 settings 里的 server_url 与账号信息：下次登录不用重填地址
   }
 

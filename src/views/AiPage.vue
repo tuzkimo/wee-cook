@@ -10,21 +10,25 @@ import { useKeyboardInset } from "@/composables/useKeyboardInset";
 import { baseUrlReady } from "@/services/api";
 import { useAiChatStore } from "@/stores/aiChat";
 import { useAiSettingsStore } from "@/stores/aiSettings";
+import { useAuthStore } from "@/stores/auth";
 import type { RecipeFilter } from "@/utils/recipeFilter";
 
 const router = useRouter();
 const chat = useAiChatStore();
 const ai = useAiSettingsStore();
+const auth = useAuthStore();
 const keyboardInset = useKeyboardInset();
 const listEl = ref<HTMLElement | null>(null);
 const toggleError = ref<string | null>(null);
 
-// 发送要求 opt-in 已同意 + 地址已配 + 后端确实开了 AI；探活失败（401 / 断网）不算「不能发」——
+// 发送要求 opt-in 已同意 + 已登录 + 地址已配 + 后端确实开了 AI；探活失败（401 / 断网）不算「不能发」——
 // 拿不到 host 只是不许同意，不该锁死已同意的用户。
 // serverReady 留成 ref：地址是异步恢复的，取 .value 存成布尔值会让提示条停在启动那一刻的状态。
 const serverReady = baseUrlReady;
 const backendDisabled = computed(() => ai.status?.enabled === false);
-const canSend = computed(() => ai.sendingEnabled && serverReady.value && !backendDisabled.value);
+const canSend = computed(
+  () => ai.sendingEnabled && serverReady.value && !backendDisabled.value && auth.isOnline,
+);
 
 onMounted(() => {
   // load() 没有 try/catch，别让一次读库失败变成未处理的 rejection
@@ -78,6 +82,13 @@ async function enable(): Promise<void> {
       先连接服务器，才能用 AI 助手。
     </p>
     <p
+      v-else-if="!auth.isOnline"
+      data-test="ai-login-hint"
+      class="mx-4 mt-3 rounded-xl bg-surface px-3 py-2.5 text-xs text-text-secondary"
+    >
+      请先登录，才能用 AI 助手。
+    </p>
+    <p
       v-else-if="backendDisabled"
       data-test="ai-disabled-hint"
       class="mx-4 mt-3 rounded-xl bg-surface px-3 py-2.5 text-xs text-text-secondary"
@@ -91,7 +102,7 @@ async function enable(): Promise<void> {
       class="mx-4 mt-3 rounded-xl bg-surface px-3.5 py-3 text-sm"
     >
       <p class="text-xs text-text-secondary">
-        启用后，你的提问、分类与标签名称、命中的菜谱名称与食材会发送到 {{ ai.status?.host }}。聊天记录以明文保存在这台设备的本机数据库里。可随时在「我的 → 隐私」关闭。
+        启用后，你的提问、分类与标签名称、命中的菜谱名称与食材会发送到 {{ ai.status?.host }}。聊天记录以明文保存在这台设备的本机数据库里。可随时在「我的 → AI 菜谱助手」关闭。
       </p>
       <button
         type="button"
