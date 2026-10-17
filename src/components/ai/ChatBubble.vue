@@ -45,6 +45,14 @@ function continueInFilter(): void {
 
 <template>
   <div class="flex flex-col" :class="message.role === 'user' ? 'items-end' : 'items-start'">
+    <!-- 截图轮的封面缩略图：dataUrl 直接能用，不欠文件系统 -->
+    <img
+      v-if="message.image !== null"
+      :src="message.image"
+      data-test="ai-bubble-image"
+      alt="菜谱截图"
+      class="mb-1 max-h-40 rounded-xl object-cover"
+    />
     <p
       data-test="ai-bubble"
       class="max-w-[85%] whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-sm"

@@ -3,9 +3,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { getDb, setDb } from "@/db";
 import { freshTestDb } from "@/db/__tests__/sqliteTestDb";
+import { setAiAccount } from "@/services/ai/account";
 import {
+  SCREENSHOT_PLACEHOLDER,
   appendMessage,
   clearMessages,
+  historyText,
   loadMessages,
   loadOrCreateSession,
   type MessagePayload,
@@ -67,6 +70,8 @@ function message(overrides: Partial<StoredMessage> = {}): StoredMessage {
 beforeEach(async () => {
   const fresh = await freshTestDb();
   setDb(fresh.db);
+  // 会话按账号归属（spec §12.1）：既有用例都在一个账号下跑，断言不变
+  setAiAccount("u-A");
 });
 
 describe("session", () => {
@@ -108,6 +113,50 @@ describe("session", () => {
     expect(await loadMessages(sessionId)).toEqual([]);
     const rows = await getDb().select<{ n: number }[]>("SELECT COUNT(*) AS n FROM ai_messages");
     expect(rows[0].n).toBe(2);
+  });
+
+  it("两个账号各有一条会话，互不可见", async () => {
+    setAiAccount("u-A");
+    const a = await loadOrCreateSession();
+    await appendMessage(a, message({ role: "user", content: "A 的问题", payload: null }));
+
+    setAiAccount("u-B");
+    const b = await loadOrCreateSession();
+
+    expect(b).not.toBe(a);
+    expect(await loadMessages(b)).toHaveLength(0);
+
+    setAiAccount("u-A");
+    expect(await loadOrCreateSession()).toBe(a);
+    expect((await loadMessages(a)).map((item) => item.content)).toEqual(["A 的问题"]);
+  });
+
+  it("没有账号时不建会话", async () => {
+    setAiAccount(null);
+
+    await expect(loadOrCreateSession()).rejects.toThrow("未登录");
+    const rows = await getDb().select<{ n: number }[]>("SELECT COUNT(*) AS n FROM ai_sessions");
+    expect(rows[0].n).toBe(0);
+  });
+
+  it("历史占位：有图 + 文字 ⇒ 占位符后接原文；有图无文字 ⇒ 只有占位符；无图 ⇒ 原文", () => {
+    expect(historyText("", true)).toBe(SCREENSHOT_PLACEHOLDER);
+    expect(historyText("这个怎么做", true)).toBe(`${SCREENSHOT_PLACEHOLDER} 这个怎么做`);
+    // 只有空白也算「没有文字」，别拼出一个尾随空格
+    expect(historyText("   ", true)).toBe(SCREENSHOT_PLACEHOLDER);
+    expect(historyText("找红烧肉", false)).toBe("找红烧肉");
+  });
+
+  it("payload.image 往返仍然整份相等", async () => {
+    const sessionId = await loadOrCreateSession();
+    const shot = message({
+      role: "user",
+      content: "这个怎么做",
+      payload: { ...payload, image: "data:image/jpeg;base64,x" },
+    });
+    await appendMessage(sessionId, shot);
+
+    expect(await loadMessages(sessionId)).toEqual([shot]);
   });
 
   it("payload 是坏 JSON 时回落 null 而不是抛", async () => {

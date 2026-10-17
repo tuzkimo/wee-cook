@@ -1,15 +1,28 @@
-// AI 对话的本地落库与读回：一张本机唯一会话 + 它的消息列表。
+// AI 对话的本地落库与读回：每个账号一张会话 + 它的消息列表。
 // 按规格 §4.5，这两个表永不参与同步；payload 只是 TEXT(JSON)，坏数据回落 null，不拖垮整个 AI 页。
+// 会话与历史属于服务端账号（规格 §12.1）：没有账号就没有会话。
 import { getDb } from "@/db";
+import { aiAccount } from "@/services/ai/account";
 import type { UnresolvedNames } from "@/services/ai/filter";
 import type { RecipeListItem } from "@/types";
 import type { RecipeFilter } from "@/utils/recipeFilter";
+
+/** 截图轮拼给模型时的替身：原图既不重发，也不让历史里留下图片内容（规格 §12.2） */
+export const SCREENSHOT_PLACEHOLDER = "[用户发过一张菜谱截图]";
+
+/** 只有拼给模型的上下文才替换，本地存储与气泡渲染保留原文 */
+export function historyText(text: string, hasImage: boolean): string {
+  if (!hasImage) return text;
+  return text.trim() === "" ? SCREENSHOT_PLACEHOLDER : `${SCREENSHOT_PLACEHOLDER} ${text}`;
+}
 
 export interface MessagePayload {
   filter: RecipeFilter | null;
   matched: number;
   items: RecipeListItem[];
   unresolved: UnresolvedNames;
+  /** 封面缩略图 dataUrl；没有图的消息不出现这个键（规格 §12.2） */
+  image?: string;
 }
 
 export interface StoredMessage {
@@ -22,20 +35,24 @@ export interface StoredMessage {
   createdAt: string;
 }
 
-/** 取本机唯一会话；没有就建一条。 */
+/** 取当前账号的会话；没有就建一条。没有账号就没得存（规格 §12.1），调用方先门控。 */
 export async function loadOrCreateSession(): Promise<string> {
+  const userId = aiAccount();
+  if (userId === null) throw new Error("未登录");
+
   const db = getDb();
-  // 万一被软删过就再建一条新的；正常路径永远命中同一行
+  // 万一被软删过就再建一条新的；正常路径永远命中同一行。老库的无主行 user_id 为 NULL，永不匹配
   const rows = await db.select<{ id: string }[]>(
-    "SELECT id FROM ai_sessions WHERE deleted_at IS NULL ORDER BY created_at ASC, id ASC LIMIT 1",
+    "SELECT id FROM ai_sessions WHERE user_id = ? AND deleted_at IS NULL ORDER BY created_at ASC, id ASC LIMIT 1",
+    [userId],
   );
   if (rows[0]) return rows[0].id;
 
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
   await db.execute(
-    "INSERT INTO ai_sessions (id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, NULL)",
-    [id, now, now],
+    "INSERT INTO ai_sessions (id, user_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, NULL)",
+    [id, userId, now, now],
   );
   return id;
 }

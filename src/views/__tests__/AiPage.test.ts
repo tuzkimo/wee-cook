@@ -139,6 +139,8 @@ function chatMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
     id: `m-${seq}`,
     role: "assistant",
     text: "找到 1 道",
+    // 截图轮的封面缩略图：与 ChatMessage 新字段对齐，断言不变
+    image: null,
     filter: emptyFilter(),
     items: [],
     matched: 0,

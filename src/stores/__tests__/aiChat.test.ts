@@ -11,12 +11,17 @@ vi.mock("@/services/api", () => ({
 
 vi.mock("@/services/ai/agent", () => ({ runAgent: vi.fn() }));
 
-vi.mock("@/services/ai/session", () => ({
-  loadOrCreateSession: vi.fn(),
-  loadMessages: vi.fn(),
-  appendMessage: vi.fn(),
-  clearMessages: vi.fn(),
-}));
+vi.mock("@/services/ai/session", async (importOriginal) => {
+  // 只替掉落库调用；historyText / SCREENSHOT_PLACEHOLDER 要真身，store 拼历史时用的是它们
+  const actual = await importOriginal<typeof import("@/services/ai/session")>();
+  return {
+    ...actual,
+    loadOrCreateSession: vi.fn(),
+    loadMessages: vi.fn(),
+    appendMessage: vi.fn(),
+    clearMessages: vi.fn(),
+  };
+});
 
 vi.mock("@/services/ai/filter", () => ({ loadDict: vi.fn() }));
 
@@ -28,9 +33,11 @@ const recipeStub = vi.hoisted(() => ({
 vi.mock("@/stores/recipe", () => ({ useRecipeStore: () => recipeStub }));
 
 import { AiError } from "@/services/ai/transport";
+import { setAiAccount } from "@/services/ai/account";
 import { runAgent, type AgentDeps, type AgentOutcome } from "@/services/ai/agent";
 import { loadDict } from "@/services/ai/filter";
 import {
+  SCREENSHOT_PLACEHOLDER,
   appendMessage,
   clearMessages,
   loadMessages,
@@ -103,6 +110,8 @@ const stored: StoredMessage[] = [
 
 beforeEach(() => {
   setActivePinia(createPinia());
+  // 会话按账号归属（spec §12.1）：既有用例都在一个账号下跑，断言不变
+  setAiAccount("u-A");
   vi.clearAllMocks();
   vi.mocked(loadOrCreateSession).mockResolvedValue("s1");
   vi.mocked(loadMessages).mockResolvedValue([]);
@@ -128,6 +137,7 @@ describe("aiChatStore.load", () => {
       id: "m1",
       role: "user",
       text: "有没有快手的红烧菜",
+      image: null,
       filter: null,
       items: [],
       matched: 0,
@@ -137,6 +147,7 @@ describe("aiChatStore.load", () => {
       id: "m2",
       role: "assistant",
       text: "找到 2 道红烧菜",
+      image: null,
       filter,
       items,
       matched: 2,
@@ -192,6 +203,37 @@ describe("aiChatStore.send", () => {
       `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`,
     );
     await expect((deps as AgentDeps).loadItems()).resolves.toBe(items);
+  });
+
+  it("拼给模型的历史里，带图那一轮是占位符，本地 messages 仍是原文", async () => {
+    const shot: StoredMessage = {
+      id: "m-shot",
+      role: "user",
+      content: "这个怎么做",
+      payload: {
+        filter: null,
+        matched: 0,
+        items: [],
+        unresolved: { categories: [], tags: [], ingredients: [] },
+        image: "data:image/jpeg;base64,x",
+      },
+      promptVersion: null,
+      createdAt: "2026-10-16T09:59:00.000Z",
+    };
+    vi.mocked(loadMessages).mockResolvedValue([shot]);
+    const store = useAiChatStore();
+
+    await store.load();
+    await store.send("第二条");
+
+    // 模型只看到一个占位符：截图既不重发也不泄露内容
+    const [, history] = vi.mocked(runAgent).mock.calls[0];
+    expect(history).toEqual([
+      { role: "user", content: `${SCREENSHOT_PLACEHOLDER} 这个怎么做` },
+    ]);
+    // 本地渲染与落库保留原文与缩略图
+    expect(store.messages[0].text).toBe("这个怎么做");
+    expect(store.messages[0].image).toBe("data:image/jpeg;base64,x");
   });
 
   it("sending 期间重复 send 被拒（不并发两次请求）", async () => {
@@ -271,6 +313,47 @@ describe("aiChatStore.reset", () => {
     expect(store.error).toBeNull();
     expect(clearMessages).not.toHaveBeenCalled();
     // 会话缓存也清了：下次 load 重新取会话（旧账号的会话 id 不得留在内存里）
+    await store.load();
+    expect(loadOrCreateSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("load 在途时 reset：晚到的历史不得写进内存", async () => {
+    let release: (value: StoredMessage[]) => void = () => {};
+    vi.mocked(loadMessages).mockReturnValue(
+      new Promise<StoredMessage[]>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const store = useAiChatStore();
+
+    const pending = store.load();
+    await vi.waitFor(() => expect(loadMessages).toHaveBeenCalledTimes(1));
+
+    // 退登：清内存，同时把在飞的这一发读历史作废
+    store.reset();
+    release(stored);
+    await pending;
+
+    expect(store.messages).toEqual([]);
+  });
+
+  it("建会话在途时 reset：上一个账号的会话 id 不得留在内存里", async () => {
+    let release: (value: string) => void = () => {};
+    vi.mocked(loadOrCreateSession).mockReturnValue(
+      new Promise<string>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const store = useAiChatStore();
+
+    const pending = store.load();
+    await vi.waitFor(() => expect(loadOrCreateSession).toHaveBeenCalledTimes(1));
+
+    store.reset();
+    release("s-of-A");
+    await pending;
+    // 晚到的会话 id 被丢掉：下次 load 重新取，拿到的只会是新账号的会话
+    expect(loadMessages).not.toHaveBeenCalled();
     await store.load();
     expect(loadOrCreateSession).toHaveBeenCalledTimes(2);
   });

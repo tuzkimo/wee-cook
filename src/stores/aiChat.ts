@@ -2,12 +2,14 @@
 // recipeFilter store，让用户能在筛选页自己复验。store 不依赖 router，跳转由视图层做。
 import { defineStore } from "pinia";
 import { ref, type Ref } from "vue";
+import { aiAccount } from "@/services/ai/account";
 import { runAgent } from "@/services/ai/agent";
 import { loadDict, type UnresolvedNames } from "@/services/ai/filter";
 import { PROMPT_VERSION } from "@/services/ai/prompt";
 import {
   appendMessage,
   clearMessages,
+  historyText,
   loadMessages,
   loadOrCreateSession,
   type MessagePayload,
@@ -23,6 +25,8 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   text: string;
+  /** 截图轮的封面缩略图 dataUrl；没有图就是 null */
+  image: string | null;
   filter: RecipeFilter | null;
   items: RecipeListItem[];
   matched: number;
@@ -60,34 +64,54 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
   const messages = ref<ChatMessage[]>([]);
   const sending = ref(false);
   const error = ref<string | null>(null);
-  // 本机唯一会话；load / send / clear 共用同一条，避免重复查询
+  // 当前账号的会话；load / send / clear 共用同一条，避免重复查询
   let sessionId: string | null = null;
-  // 退登 / 换号的世代。send 在飞时用户可能已退登，响应回来时不能把上一个账号的内容写回内存。
+  // 退登 / 换号的世代。在飞时用户可能已退登，响应回来时不能把上一个账号的内容写回内存。
   let epoch = 0;
 
-  async function ensureSession(): Promise<string> {
-    if (sessionId === null) sessionId = await loadOrCreateSession();
+  /** 只有世代未变才肯缓存会话：晚到的旧账号会话 id 不得留在内存里 */
+  async function ensureSession(start: number): Promise<string | null> {
+    if (sessionId === null) {
+      const id = await loadOrCreateSession();
+      if (start !== epoch) return null;
+      sessionId = id;
+    }
     return sessionId;
   }
 
   async function load(): Promise<void> {
-    messages.value = (await loadMessages(await ensureSession())).map(toChatMessage);
+    // 未登录的人打开 /ai 什么也不读，更不能丢一个未处理的 rejection（规格 §12.1）
+    if (aiAccount() === null) return;
+    const start = epoch;
+    const id = await ensureSession(start);
+    if (id === null) return;
+    const loaded = await loadMessages(id);
+    if (start !== epoch) return;
+    messages.value = loaded.map(toChatMessage);
   }
 
   async function send(text: string): Promise<void> {
     const content = text.trim();
     if (sending.value || content === "") return;
+    // 未登录不发（也不建会话）：入口本该挡住，这里只是不把未处理的 rejection 丢给上层
+    if (aiAccount() === null) return;
     // 世代采样必须在第一个 await 之前，否则 reset() 发生在等待中时这里已经看不到它
     const start = epoch;
     sending.value = true;
     error.value = null;
     try {
-      const id = await ensureSession();
-      if (start !== epoch) return;
-      // 历史要在插入本轮提问之前取，runAgent 自己会把本轮提问接在后面
+      const id = await ensureSession(start);
+      if (id === null) return;
+      // 历史要在插入本轮提问之前取，runAgent 自己会把本轮提问接在后面。
+      // 截图轮在历史里只留占位符；本地 messages 保留原文与缩略图（规格 §12.2）
       const history = messages.value
-        .filter((message) => message.text !== "")
-        .map((message): AiMessage => ({ role: message.role, content: message.text }));
+        .filter((message) => message.text !== "" || message.image !== null)
+        .map(
+          (message): AiMessage => ({
+            role: message.role,
+            content: historyText(message.text, message.image !== null),
+          }),
+        );
 
       // 用户说的话先落库：AI 挂了也不该丢掉用户的问题
       const userMessage = newMessage("user", content, null);
@@ -130,7 +154,9 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
   }
 
   async function clear(): Promise<void> {
-    await clearMessages(await ensureSession());
+    const id = await ensureSession(epoch);
+    if (id === null) return;
+    await clearMessages(id);
     messages.value = [];
     error.value = null;
   }
@@ -172,6 +198,7 @@ function toChatMessage(message: StoredMessage): ChatMessage {
     id: message.id,
     role: message.role,
     text: message.content,
+    image: message.payload?.image ?? null,
     filter: message.payload?.filter ?? null,
     items: message.payload?.items ?? [],
     matched: message.payload?.matched ?? 0,
