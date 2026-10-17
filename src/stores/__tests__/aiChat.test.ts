@@ -25,6 +25,11 @@ vi.mock("@/services/ai/session", async (importOriginal) => {
 
 vi.mock("@/services/ai/filter", () => ({ loadDict: vi.fn() }));
 
+// 草稿槽是模块级单例：这里只关心「谁在什么时候写进去什么」，槽本身由 draft.test.ts 覆盖
+vi.mock("@/services/ai/draft", () => ({ setDraft: vi.fn() }));
+// 封面落盘要真 Tauri 插件；store 单测只断言调用与结果映射
+vi.mock("@/services/imageStore", () => ({ saveImageBytes: vi.fn() }));
+
 // 菜谱列表在真机上来自 SQLite；store 单测只关心「先 fetchAll 再交给 agent」
 const recipeStub = vi.hoisted(() => ({
   fetchAll: vi.fn(async () => {}),
@@ -33,10 +38,13 @@ const recipeStub = vi.hoisted(() => ({
 vi.mock("@/stores/recipe", () => ({ useRecipeStore: () => recipeStub }));
 
 import type { Screenshot } from "@/services/ai/image";
+import type { RecipeDraft } from "@/services/ai/draft";
 import { AiError } from "@/services/ai/transport";
 import { setAiAccount } from "@/services/ai/account";
 import { runAgent, type AgentDeps, type AgentOutcome } from "@/services/ai/agent";
 import { loadDict } from "@/services/ai/filter";
+import { setDraft } from "@/services/ai/draft";
+import { saveImageBytes } from "@/services/imageStore";
 import {
   SCREENSHOT_PLACEHOLDER,
   appendMessage,
@@ -79,7 +87,7 @@ const items = [item("r1", "红烧肉"), item("r2", "红烧排骨")];
 const filter = { ...emptyFilter(), categoryIds: [CAT.id], tagIds: [TAG.id] };
 const unresolved = { categories: [], tags: ["不存在的标签"], ingredients: [] };
 
-function outcome(overrides: Partial<Omit<AgentOutcome, "draft">> = {}): AgentOutcome {
+function outcome(overrides: Partial<AgentOutcome> = {}): AgentOutcome {
   return {
     text: "找到 2 道红烧菜",
     filter,
@@ -98,6 +106,20 @@ function shot(cover = "data:image/jpeg;base64,cover"): Screenshot {
     coverBytes: new Uint8Array([1, 2, 3]),
     width: 1080,
     height: 1500,
+  };
+}
+
+function draft(overrides: Partial<RecipeDraft> = {}): RecipeDraft {
+  return {
+    name: "红烧肉",
+    category_id: "cat-家常菜",
+    category_name: "家常菜",
+    tag_ids: [],
+    tag_names: [],
+    ingredients: [],
+    steps: ["切块", "小火慢炖"],
+    cover_path: null,
+    ...overrides,
   };
 }
 
@@ -131,6 +153,7 @@ beforeEach(() => {
   vi.mocked(clearMessages).mockResolvedValue(undefined);
   vi.mocked(loadDict).mockResolvedValue({ categories: [], tags: [], ingredients: [], units: [] });
   vi.mocked(runAgent).mockResolvedValue(outcome());
+  vi.mocked(saveImageBytes).mockResolvedValue({ ok: true, name: "cover-1.jpg" });
   recipeStub.recipes = items;
 });
 
@@ -344,6 +367,97 @@ describe("aiChatStore 附件", () => {
 
     expect(store.messages).toEqual([]);
     expect(runAgent).not.toHaveBeenCalled();
+  });
+});
+
+describe("aiChatStore 截图轮：图进请求、草稿进槽、封面落盘", () => {
+  it("有附件时 runAgent 收到 segments，且 user 消息带封面缩略图", async () => {
+    const store = useAiChatStore();
+    store.setAttachment(shot());
+
+    await store.send("这个怎么做");
+
+    const [, , , extra] = vi.mocked(runAgent).mock.calls[0];
+    expect(extra).toEqual({ images: ["data:image/jpeg;base64,seg1"] });
+    expect(store.messages[0]).toMatchObject({
+      role: "user",
+      text: "这个怎么做",
+      image: "data:image/jpeg;base64,cover",
+    });
+    expect(vi.mocked(appendMessage).mock.calls[0][1].payload?.image).toBe(
+      "data:image/jpeg;base64,cover",
+    );
+  });
+
+  it("草稿产生时写进草稿槽、cover_path 来自 saveImageBytes", async () => {
+    const recipe = draft();
+    vi.mocked(runAgent).mockResolvedValue(outcome({ draft: recipe }));
+    const store = useAiChatStore();
+    store.setAttachment(shot());
+
+    await store.send("");
+
+    expect(saveImageBytes).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(saveImageBytes).mock.calls[0][0]).toEqual(new Uint8Array([1, 2, 3]));
+    expect(setDraft).toHaveBeenCalledWith({ ...recipe, cover_path: "cover-1.jpg" });
+    expect(store.draftReady).toBe(true);
+
+    // 读走即清：页面跳转前调一次，再来一次是 false
+    store.clearDraftReady();
+    expect(store.draftReady).toBe(false);
+  });
+
+  it("封面落盘失败：草稿照写、cover_path 为 null、draftReady 仍为 true", async () => {
+    const recipe = draft();
+    vi.mocked(runAgent).mockResolvedValue(outcome({ draft: recipe }));
+    vi.mocked(saveImageBytes).mockResolvedValue({ ok: false, message: "图片保存失败，稍后再试" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const store = useAiChatStore();
+    store.setAttachment(shot());
+
+    await store.send("");
+
+    expect(setDraft).toHaveBeenCalledWith({ ...recipe, cover_path: null });
+    expect(store.draftReady).toBe(true);
+    // 写盘失败不阻断：用户照旧进编辑页自己选图
+    expect(store.error).toBeNull();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("模型没给草稿：不写槽、draftReady 保持 false", async () => {
+    const store = useAiChatStore();
+    store.setAttachment(shot());
+
+    await store.send("这张图不是菜谱");
+
+    expect(setDraft).not.toHaveBeenCalled();
+    // 不在「确认有草稿」之前落盘：否则模型说不是菜谱时那张封面就是孤儿
+    expect(saveImageBytes).not.toHaveBeenCalled();
+    expect(store.draftReady).toBe(false);
+  });
+
+  it("send 抛错时不留半条 assistant 消息，也不写草稿槽", async () => {
+    vi.mocked(runAgent).mockRejectedValue(new AiError("ai_quota_exceeded"));
+    const store = useAiChatStore();
+    store.setAttachment(shot());
+
+    await store.send("这个怎么做");
+
+    expect(store.messages.map((message) => message.role)).toEqual(["user"]);
+    expect(setDraft).not.toHaveBeenCalled();
+    expect(saveImageBytes).not.toHaveBeenCalled();
+    expect(store.draftReady).toBe(false);
+  });
+
+  it("纯文字轮仍是 payload: null，不落封面", async () => {
+    const store = useAiChatStore();
+
+    await store.send("找有五花肉的菜");
+
+    expect(vi.mocked(appendMessage).mock.calls[0][1].payload).toBeNull();
+    expect(store.messages[0].image).toBeNull();
+    expect(saveImageBytes).not.toHaveBeenCalled();
   });
 });
 

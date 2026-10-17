@@ -22,12 +22,14 @@ const h = vi.hoisted(() => ({
     loadSettings: vi.fn(async () => {}),
     setSendingEnabled: vi.fn(async () => {}),
     pickScreenshot: vi.fn(),
+    clearDraftReady: vi.fn(),
   },
   chat: {} as {
     messages: Ref<ChatMessage[]>;
     sending: Ref<boolean>;
     error: Ref<string | null>;
     attachment: Ref<Screenshot | null>;
+    draftReady: Ref<boolean>;
   },
   settings: {} as {
     sendingEnabled: Ref<boolean>;
@@ -44,11 +46,17 @@ vi.mock("@/stores/aiChat", async () => {
   h.chat.sending = ref(false);
   h.chat.error = ref<string | null>(null);
   h.chat.attachment = ref<Screenshot | null>(null);
+  h.chat.draftReady = ref(false);
   const store = reactive({
     ...h.chat,
     load: h.mocks.loadChat,
     send: h.mocks.send,
     clear: h.mocks.clear,
+    // 与真 store 一样读走即清：跳转前的 clearDraftReady 会把标志位清掉
+    clearDraftReady: () => {
+      h.mocks.clearDraftReady();
+      h.chat.draftReady.value = false;
+    },
     setAttachment: (shot: Screenshot | null) => {
       h.chat.attachment.value = shot;
     },
@@ -102,6 +110,7 @@ beforeEach(() => {
   h.chat.sending.value = false;
   h.chat.error.value = null;
   h.chat.attachment.value = null;
+  h.chat.draftReady.value = false;
   h.settings.sendingEnabled.value = false;
   h.settings.status.value = null;
   h.api.baseUrlReady.value = false;
@@ -341,6 +350,64 @@ describe("AiPage 截图附件", () => {
     await wrapper.get('[data-test="ai-input"]').setValue("找有五花肉的菜");
     await wrapper.get("form").trigger("submit");
     expect(wrapper.find('[data-test="ai-image-error"]').exists()).toBe(false);
+  });
+
+  it("选图失败只给文案，不清掉已输入的文本", async () => {
+    h.mocks.pickScreenshot.mockResolvedValue({ ok: false, message: "这张图太长了，截短一点再发" });
+    const wrapper = await page();
+
+    await wrapper.get('[data-test="ai-input"]').setValue("红烧肉怎么做");
+    await wrapper.get('[data-test="ai-attach"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="ai-image-error"]').text()).toBe("这张图太长了，截短一点再发");
+    const input = wrapper.get('[data-test="ai-input"]').element as HTMLInputElement;
+    expect(input.value).toBe("红烧肉怎么做");
+  });
+
+  it("连点截图只开一次选择器", async () => {
+    let release: (value: { ok: true; shot: Screenshot }) => void = () => {};
+    h.mocks.pickScreenshot.mockReturnValue(
+      new Promise<{ ok: true; shot: Screenshot }>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const wrapper = await page();
+
+    const button = wrapper.get('[data-test="ai-attach"]');
+    await button.trigger("click");
+    await button.trigger("click");
+
+    expect(h.mocks.pickScreenshot).toHaveBeenCalledTimes(1);
+
+    const pending: Screenshot = {
+      segments: ["data:image/jpeg;base64,seg1"],
+      cover: "data:image/jpeg;base64,cover",
+      coverBytes: new Uint8Array([1]),
+      width: 1080,
+      height: 1500,
+    };
+    release({ ok: true, shot: pending });
+    await flushPromises();
+    expect(h.chat.attachment.value).toEqual(pending);
+  });
+});
+
+describe("AiPage 草稿跳转", () => {
+  it("draftReady 为真时跳 /recipe/new，且只跳一次", async () => {
+    await page();
+    expect(h.mocks.push).not.toHaveBeenCalled();
+
+    h.chat.draftReady.value = true;
+    await flushPromises();
+
+    expect(h.mocks.clearDraftReady).toHaveBeenCalledTimes(1);
+    expect(h.mocks.push).toHaveBeenCalledTimes(1);
+    expect(h.mocks.push).toHaveBeenCalledWith("/recipe/new");
+
+    // 标志位已被读走：后续重渲染不会再跳一次
+    await flushPromises();
+    expect(h.mocks.push).toHaveBeenCalledTimes(1);
   });
 });
 

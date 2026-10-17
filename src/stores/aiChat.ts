@@ -4,6 +4,7 @@ import { defineStore } from "pinia";
 import { ref, type Ref } from "vue";
 import { aiAccount } from "@/services/ai/account";
 import { runAgent } from "@/services/ai/agent";
+import { setDraft } from "@/services/ai/draft";
 import { loadDict, type UnresolvedNames } from "@/services/ai/filter";
 import type { Screenshot } from "@/services/ai/image";
 import { PROMPT_VERSION } from "@/services/ai/prompt";
@@ -17,6 +18,7 @@ import {
   type StoredMessage,
 } from "@/services/ai/session";
 import { AiError, type AiErrorCode, type AiMessage } from "@/services/ai/transport";
+import { saveImageBytes } from "@/services/imageStore";
 import { useRecipeFilterStore } from "@/stores/recipeFilter";
 import { useRecipeStore } from "@/stores/recipe";
 import type { RecipeListItem } from "@/types";
@@ -40,7 +42,10 @@ export interface AiChatStore {
   error: Ref<string | null>;
   /** 待发送的截图；send 取走即清，reset 也清 */
   attachment: Ref<Screenshot | null>;
+  /** 草稿槽刚写好：视图层据此跳编辑页。读走即清（clearDraftReady） */
+  draftReady: Ref<boolean>;
   setAttachment(shot: Screenshot | null): void;
+  clearDraftReady(): void;
   load(): Promise<void>;
   send(text: string): Promise<void>;
   clear(): Promise<void>;
@@ -69,6 +74,7 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
   const sending = ref(false);
   const error = ref<string | null>(null);
   const attachment = ref<Screenshot | null>(null);
+  const draftReady = ref(false);
   // 当前账号的会话；load / send / clear 共用同一条，避免重复查询
   let sessionId: string | null = null;
   // 退登 / 换号的世代。在飞时用户可能已退登，响应回来时不能把上一个账号的内容写回内存。
@@ -103,7 +109,7 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
     // 世代采样必须在第一个 await 之前，否则 reset() 发生在等待中时这里已经看不到它
     const start = epoch;
     sending.value = true;
-    // 取走即清：图只跟着这一轮，失败也不留在输入区。Task 9 会用 shot.segments 发给模型
+    // 取走即清：图只跟着这一轮，失败也不留在输入区。本轮把 shot.segments 发给模型
     const shot = attachment.value;
     attachment.value = null;
     error.value = null;
@@ -123,14 +129,18 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
           }),
         );
 
-      // 用户说的话先落库：AI 挂了也不该丢掉用户的问题；有图就带上封面缩略图
-      const payload: MessagePayload = {
-        filter: null,
-        matched: 0,
-        items: [],
-        unresolved: { categories: [], tags: [], ingredients: [] },
-        ...(shot === null ? {} : { image: shot.cover }),
-      };
+      // 用户说的话先落库：AI 挂了也不该丢掉用户的问题。有图才带 payload（封面缩略图）；
+      // 纯文字轮的 payload 仍是 null（别的字段本来就是默认值）
+      const payload: MessagePayload | null =
+        shot === null
+          ? null
+          : {
+              filter: null,
+              matched: 0,
+              items: [],
+              unresolved: { categories: [], tags: [], ingredients: [] },
+              image: shot.cover,
+            };
       const userMessage = newMessage("user", content, payload);
       messages.value.push(toChatMessage(userMessage));
       await appendMessage(id, userMessage);
@@ -138,11 +148,16 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
       const dict = await loadDict();
       const recipeStore = useRecipeStore();
       await recipeStore.fetchAll();
-      const result = await runAgent(content, history, {
-        dict,
-        today: localDate(),
-        loadItems: async () => recipeStore.recipes,
-      });
+      const result = await runAgent(
+        content,
+        history,
+        {
+          dict,
+          today: localDate(),
+          loadItems: async () => recipeStore.recipes,
+        },
+        shot === null ? undefined : { images: shot.segments },
+      );
 
       // 退登后回来的这一发属于上一个账号：不落库、不进内存
       if (start !== epoch) return;
@@ -161,6 +176,21 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
       );
       messages.value.push(toChatMessage(assistantMessage));
       await appendMessage(id, assistantMessage);
+
+      // 有草稿才算这一轮跑通：封面在跳转前落盘（模型说「不是菜谱」时不留孤儿图）；
+      // 写盘失败只丢封面，不阻断进编辑页
+      if (result.draft !== null) {
+        let coverPath: string | null = null;
+        if (shot !== null) {
+          const saved = await saveImageBytes(shot.coverBytes);
+          if (saved.ok) coverPath = saved.name;
+          else console.warn(`封面没存下来：${saved.message}`);
+        }
+        // 落盘期间退登 / 换号：这份草稿属于上一个账号
+        if (start !== epoch) return;
+        setDraft({ ...result.draft, cover_path: coverPath });
+        draftReady.value = true;
+      }
     } catch (err) {
       if (start !== epoch) return;
       error.value = err instanceof AiError ? ERROR_TEXT[err.code] : GENERIC_ERROR;
@@ -186,6 +216,11 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
     attachment.value = shot;
   }
 
+  /** 视图层跳转前调一次：读完再读是 false，同一份草稿不会跳两次 */
+  function clearDraftReady(): void {
+    draftReady.value = false;
+  }
+
   /** 退登 / 换号：只清内存，库里的行原样留着（spec §12.1）。 */
   function reset(): void {
     // 在飞的 send 作废：响应回来时世代对不上，既不加消息也不写错误
@@ -193,11 +228,25 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
     messages.value = [];
     error.value = null;
     attachment.value = null;
+    draftReady.value = false;
     sending.value = false;
     sessionId = null;
   }
 
-  return { messages, sending, error, attachment, setAttachment, load, send, clear, reset, openInFilter };
+  return {
+    messages,
+    sending,
+    error,
+    attachment,
+    draftReady,
+    setAttachment,
+    clearDraftReady,
+    load,
+    send,
+    clear,
+    reset,
+    openInFilter,
+  };
 });
 
 function newMessage(

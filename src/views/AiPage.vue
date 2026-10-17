@@ -23,6 +23,8 @@ const listEl = ref<HTMLElement | null>(null);
 const toggleError = ref<string | null>(null);
 // 选图失败自己一条提示：与 AI 失败无关，不能复用 chat.error
 const imageError = ref("");
+// 选图在途：安卓上手快的人会连点两下，不能开两个选择器
+const picking = ref(false);
 
 // 发送要求 opt-in 已同意 + 已登录 + 地址已配 + 后端确实开了 AI；探活失败（401 / 断网）不算「不能发」——
 // 拿不到 host 只是不许同意，不该锁死已同意的用户。
@@ -49,21 +51,37 @@ watch(
   },
 );
 
+// 草稿进槽即跳编辑页：读走即清，跳一次就够
+watch(
+  () => chat.draftReady,
+  (ready) => {
+    if (!ready) return;
+    chat.clearDraftReady();
+    void router.push("/recipe/new");
+  },
+);
+
 function send(text: string): void {
   imageError.value = "";
   void chat.send(text);
 }
 
 async function attach(): Promise<void> {
-  // 重新选图先清上一次的失败文案；取消（null）什么都不做
-  imageError.value = "";
-  const result = await pickScreenshot();
-  if (result === null) return;
-  if (!result.ok) {
-    imageError.value = result.message;
-    return;
+  if (picking.value) return;
+  picking.value = true;
+  try {
+    // 重新选图先清上一次的失败文案；取消（null）什么都不做
+    imageError.value = "";
+    const result = await pickScreenshot();
+    if (result === null) return;
+    if (!result.ok) {
+      imageError.value = result.message;
+      return;
+    }
+    chat.setAttachment(result.shot);
+  } finally {
+    picking.value = false;
   }
-  chat.setAttachment(result.shot);
 }
 
 function openRecipe(id: string): void {
