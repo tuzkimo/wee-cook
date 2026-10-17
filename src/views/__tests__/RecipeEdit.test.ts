@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DOMWrapper, flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { ref } from "vue";
+import ImagePicker from "@/components/ImagePicker.vue";
 import IngredientSheet from "@/components/IngredientSheet.vue";
 import RecipeEdit from "@/views/RecipeEdit.vue";
+import { clearDraft, setDraft, takeDraft, type RecipeDraft } from "@/services/ai/draft";
 import type { RefRow, RefStore } from "@/stores/refStore";
 import type {
   Label,
@@ -107,6 +109,8 @@ const wrappers: VueWrapper[] = [];
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // 草稿槽是模块级单例，用例之间必须清干净
+  clearDraft();
   mocks.leaveGuard = undefined;
   mocks.routeParams = {};
   mocks.routeQuery = {};
@@ -620,5 +624,153 @@ describe("RecipeEdit", () => {
     const wrapper = await page();
     expect(wrapper.html()).not.toContain("safe-area-inset-top");
     expect(wrapper.find('[data-test="cancel"]').exists()).toBe(false);
+  });
+
+  // ---- AI 截图收录：草稿预填 + 未落定食材行 ----
+
+  function draft(extra: Partial<RecipeDraft> = {}): RecipeDraft {
+    return {
+      name: "番茄炒蛋",
+      category_id: "c1",
+      category_name: "家常菜",
+      tag_ids: ["t1"],
+      tag_names: ["家常"],
+      ingredients: [
+        { ingredient_id: "i1", name: "鸡蛋", amount: 3, unit_id: "u2", unit_name: "个" },
+      ],
+      steps: ["打蛋", "下锅"],
+      cover_path: "d.jpg",
+      ...extra,
+    };
+  }
+
+  it("有草稿时新建页被预填：菜名/分类/标签/食材/步骤/封面", async () => {
+    setDraft(draft());
+
+    const wrapper = await page();
+
+    expect(inputValue(wrapper, '[data-test="name"]')).toBe("番茄炒蛋");
+    expect(wrapper.get('[data-test="category-name"]').text()).toBe("家常菜");
+    expect(wrapper.findAll('[data-test="tag-chip-name"]').map((node) => node.text())).toEqual([
+      "家常",
+    ]);
+    const line = wrapper.get('[data-test="ingredient-row"]');
+    expect(line.get('[data-test="ingredient-row-name"]').text()).toBe("鸡蛋");
+    expect(line.get('[data-test="ingredient-row-amount"]').text()).toContain("3");
+    expect(stepTexts(wrapper)).toEqual(["打蛋", "下锅"]);
+    expect(wrapper.findAllComponents(ImagePicker)[0].props("modelValue")).toBe("d.jpg");
+    // 预填发生在定格基线之前：一进页面不该是「有未保存改动」
+    expect(mocks.leaveGuard?.()).toBe(true);
+  });
+
+  it("草稿读走即清：第二次挂载不再预填", async () => {
+    setDraft(draft());
+    const first = await page();
+    expect(inputValue(first, '[data-test="name"]')).toBe("番茄炒蛋");
+
+    const second = await page();
+
+    expect(inputValue(second, '[data-test="name"]')).toBe("");
+    expect(second.findAll('[data-test="ingredient-row"]')).toHaveLength(0);
+    expect(stepTexts(second)).toEqual([]);
+  });
+
+  it("草稿分类没对上时分类留空，不拿 AI 的文字假装已选", async () => {
+    setDraft(draft({ category_id: "", category_name: "神秘菜系" }));
+    const wrapper = await page();
+
+    expect(wrapper.get('[data-test="category-name"]').text()).toBe("未选");
+
+    await save(wrapper);
+
+    expect(wrapper.get('[data-test="form-error"]').text()).toContain("请选择分类");
+  });
+
+  it("未落定食材行显示「待选」，点它开 RefSheet，选中后保留数量与单位", async () => {
+    setDraft(
+      draft({
+        ingredients: [
+          { ingredient_id: "", name: "神秘酱", amount: 2, unit_id: "u1", unit_name: "克" },
+        ],
+      }),
+    );
+    const wrapper = await page();
+
+    const line = wrapper.get('[data-test="ingredient-row-unresolved"]');
+    expect(line.text()).toContain("待选");
+    expect(line.get('[data-test="ingredient-row-amount"]').text()).toContain("2 克");
+
+    await line.trigger("click");
+    await flushPromises();
+    expect(has('[data-test="ref-row"]')).toBe(true);
+
+    await bodyRow("鸡蛋").trigger("click");
+    await flushPromises();
+
+    const resolved = wrapper.get('[data-test="ingredient-row"]');
+    expect(resolved.get('[data-test="ingredient-row-name"]').text()).toBe("鸡蛋");
+    expect(resolved.get('[data-test="ingredient-row-amount"]').text()).toContain("2 克");
+    expect(wrapper.find('[data-test="ingredient-row-unresolved"]').exists()).toBe(false);
+    expect(has('[data-test="ref-row"]')).toBe(false);
+  });
+
+  it("有未落定行时点保存 → 报「这几样食材没对上，点一下选一个」，store.create 未被调用", async () => {
+    setDraft(
+      draft({
+        ingredients: [
+          { ingredient_id: "", name: "神秘酱", amount: 1, unit_id: null, unit_name: null },
+        ],
+      }),
+    );
+    const wrapper = await page();
+
+    await save(wrapper);
+
+    expect(wrapper.get('[data-test="form-error"]').text()).toBe("这几样食材没对上，点一下选一个");
+    expect(mocks.create).not.toHaveBeenCalled();
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it("全部落定后可以正常保存（食材行带 ingredient_id）", async () => {
+    setDraft(
+      draft({
+        ingredients: [
+          { ingredient_id: "", name: "神秘酱", amount: 2, unit_id: "u1", unit_name: "克" },
+        ],
+      }),
+    );
+    const wrapper = await page();
+
+    await wrapper.get('[data-test="ingredient-row-unresolved"]').trigger("click");
+    await flushPromises();
+    await bodyRow("鸡蛋").trigger("click");
+    await flushPromises();
+
+    await save(wrapper);
+
+    expect(mocks.create).toHaveBeenCalledWith({
+      name: "番茄炒蛋",
+      cover_path: "d.jpg",
+      category_id: "c1",
+      is_public: 0,
+      tag_ids: ["t1"],
+      steps: [
+        { text: "打蛋", image_path: null },
+        { text: "下锅", image_path: null },
+      ],
+      ingredients: [{ ingredient_id: "i1", amount: 2, unit_id: "u1" }],
+    });
+    expect(mocks.replace).toHaveBeenCalledWith("/recipe/new-1");
+  });
+
+  it("编辑模式不消费草稿槽（只在新建页取）", async () => {
+    mocks.routeParams = { id: "r1" };
+    setDraft(draft());
+
+    const wrapper = await page();
+
+    // 编辑页照详情填，槽里的草稿还在
+    expect(inputValue(wrapper, '[data-test="name"]')).toBe("红烧肉");
+    expect(takeDraft()).not.toBeNull();
   });
 });

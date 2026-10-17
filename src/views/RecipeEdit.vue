@@ -16,6 +16,7 @@ import { useIngredientStore, useUnitStore } from "@/stores/ingredient";
 import { useLabelStore } from "@/stores/label";
 import { canEdit, useRecipeStore } from "@/stores/recipe";
 import type { RefStore } from "@/stores/refStore";
+import { takeDraft, type RecipeDraft } from "@/services/ai/draft";
 import type { RecipeDetail, RecipeInput } from "@/types";
 import { amountText } from "@/utils/amount";
 
@@ -79,6 +80,8 @@ const showCategorySheet = ref(false);
 const showTagSheet = ref(false);
 const showIngredientSheet = ref(false);
 const showLeaveConfirm = ref(false);
+// 正在落定的食材行下标（null = 没在选）；未落定行点一下开食材单选
+const resolvingIndex = ref<number | null>(null);
 
 /** 用来判断「有没有未保存改动」的基线，编辑模式要等详情加载完才定格。 */
 const initial = ref("");
@@ -138,9 +141,40 @@ onMounted(async () => {
     } catch (loadError: unknown) {
       error.value = loadError instanceof Error ? loadError.message : "菜谱加载失败";
     }
+  } else {
+    // AI 收录的草稿只在新建页取走，读一次就清；编辑页不碰这个槽
+    const draft = takeDraft();
+    if (draft) fillDraft(draft);
   }
+  // 必须在预填之后定格：否则一进页面就是「有未保存改动」
   initial.value = snapshot();
 });
+
+function fillDraft(draft: RecipeDraft): void {
+  form.value = {
+    name: draft.name,
+    cover_path: draft.cover_path,
+    category_id: draft.category_id,
+    is_public: false,
+    tag_ids: [...draft.tag_ids],
+    steps: draft.steps.map((text) => ({ key: nextKey(), text, image_path: null })),
+    ingredients: draft.ingredients.map((line) => ({
+      key: nextKey(),
+      ingredient_id: line.ingredient_id,
+      ingredient_name: line.name,
+      amount: line.amount,
+      unit_id: line.unit_id,
+      unit_name: line.unit_name,
+    })),
+  };
+  const names: Record<string, string> = {};
+  // R12：分类没对上就别写名字，空 id 下塞文字会假装已选中（保存前的「请选择分类」管这一例）
+  if (draft.category_id !== "") names[draft.category_id] = draft.category_name;
+  draft.tag_ids.forEach((id, index) => {
+    names[id] = draft.tag_names[index] ?? "";
+  });
+  labelNames.value = names;
+}
 
 /** RefSheet 单选不自己关窗（R3），由这里把 visible 翻回去。 */
 function selectCategory(ids: string[]): void {
@@ -182,6 +216,24 @@ function removeIngredient(index: number): void {
   form.value.ingredients.splice(index, 1);
 }
 
+/** 未落定行点开食材单选；已落定的行不响应。 */
+function openResolve(index: number): void {
+  if (form.value.ingredients[index]?.ingredient_id !== "") return;
+  resolvingIndex.value = index;
+}
+
+/** 只换 id/name，AI 给的 amount 与单位原样留着。 */
+function resolveIngredient(ids: string[]): void {
+  const id = ids[0];
+  const index = resolvingIndex.value;
+  resolvingIndex.value = null;
+  if (!id || index === null) return;
+  const line = form.value.ingredients[index];
+  if (!line) return;
+  line.ingredient_id = id;
+  line.ingredient_name = nameOf(ingredientStore, id);
+}
+
 function addStep(): void {
   form.value.steps.push({ key: nextKey(), text: "", image_path: null });
 }
@@ -215,6 +267,8 @@ function buildInput(): BuildResult {
 
   const ingredients: RecipeInput["ingredients"] = [];
   for (const line of form.value.ingredients) {
+    // 未落定就拦下：静默新建或丢掉这一行都是数据错误
+    if (line.ingredient_id === "") return { error: "这几样食材没对上，点一下选一个" };
     const amount = cleanAmount(line.amount);
     if (!amount.ok) return { error: "数量要大于 0" };
     ingredients.push({
@@ -396,8 +450,12 @@ onBeforeRouteLeave(() => {
           <li
             v-for="(line, index) in form.ingredients"
             :key="line.key"
-            data-test="ingredient-row"
+            :data-test="line.ingredient_id === '' ? 'ingredient-row-unresolved' : 'ingredient-row'"
             class="flex items-center gap-3 rounded-xl bg-surface px-3 py-2.5 text-sm"
+            :class="line.ingredient_id === '' ? 'cursor-pointer ring-1 ring-inset ring-danger/40' : ''"
+            :tabindex="line.ingredient_id === '' ? 0 : undefined"
+            @click="openResolve(index)"
+            @keydown.enter="openResolve(index)"
           >
             <span
               data-test="ingredient-row-name"
@@ -408,12 +466,18 @@ onBeforeRouteLeave(() => {
             <span data-test="ingredient-row-amount" class="shrink-0 text-text-secondary">
               {{ amountText(line) }}
             </span>
+            <span
+              v-if="line.ingredient_id === ''"
+              class="shrink-0 rounded-full bg-danger/10 px-2 py-0.5 text-xs text-danger"
+            >
+              待选
+            </span>
             <button
               type="button"
               data-test="ingredient-row-remove"
               :aria-label="`删除${line.ingredient_name}`"
               class="shrink-0 text-text-secondary hover:text-danger"
-              @click="removeIngredient(index)"
+              @click.stop="removeIngredient(index)"
             >
               ✕
             </button>
@@ -525,6 +589,16 @@ onBeforeRouteLeave(() => {
       :visible="showIngredientSheet"
       @close="showIngredientSheet = false"
       @add="addIngredient"
+    />
+    <RefSheet
+      :visible="resolvingIndex !== null"
+      title="选择食材"
+      :store="ingredientStore"
+      mode="single"
+      :selected-ids="[]"
+      empty-hint="还没有食材，输入名称即可新建"
+      @close="resolvingIndex = null"
+      @select="resolveIngredient"
     />
 
     <ConfirmDialog
