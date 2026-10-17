@@ -84,6 +84,24 @@ describe("transport", () => {
     expect(init).toMatchObject({ method: "POST", body: JSON.stringify({ messages, tools }) });
   });
 
+  it("块数组 content 原样进 body（不组装、不重排）", async () => {
+    apiFetchMock.mockResolvedValue({ ok: true, status: 200, data: {} });
+    const content: AiMessage["content"] = [
+      { type: "text", text: "看看" },
+      { type: "image_url", image_url: { url: "data:image/jpeg;base64,A" } },
+    ];
+
+    await callAiChat([{ role: "user", content }], []);
+
+    const body = JSON.parse(String(apiFetchMock.mock.calls[0][1]?.body)) as {
+      messages: { content: unknown }[];
+    };
+    expect(body.messages[0].content).toEqual([
+      { type: "text", text: "看看" },
+      { type: "image_url", image_url: { url: "data:image/jpeg;base64,A" } },
+    ]);
+  });
+
   it("聊天等后端 120s（客户端留 150s 余量），探活仍走 15s 默认", async () => {
     apiFetchMock.mockResolvedValue({ ok: true, status: 200, data: {} });
 

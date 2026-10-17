@@ -1,6 +1,7 @@
 // system prompt 组装：只给分类名与标签名，不给 id、不给食材全量。
 import { describe, expect, it } from "vitest";
 import { buildSystemPrompt, PROMPT_VERSION } from "@/services/ai/prompt";
+import { DRAFT_TOOL } from "@/services/ai/agent";
 import type { Dict, DictEntry } from "@/services/ai/filter";
 
 function entry(id: string, name: string): DictEntry {
@@ -67,9 +68,48 @@ describe("buildSystemPrompt", () => {
     expect(p).toContain("番茄"); // 纯检索那条（正向词）
     // 否定条件不能当关键词：教成 keyword:"不放辣椒" 必得 0 条，模型会说「库里没有」
     expect(p).not.toContain("不放辣椒");
-    expect(p).not.toContain("create_recipe_draft"); // 本计划不实现截图收录，prompt 不能提到它
-    expect(p).not.toContain("截图");
     expect(p).toContain("不调用工具"); // 「我库里有哪些分类」直接答
+  });
+
+  it("prompt 里有 create_recipe_draft 的说明与四条 few-shot", () => {
+    const p = buildSystemPrompt(dict, "2026-10-16");
+
+    expect(p).toContain("create_recipe_draft");
+    // 四条：截图 ⇒ 草稿、辣的下饭 ⇒ 检索、库里有啥分类 ⇒ 直接答、半小时 ⇒ 做不到
+    expect(p).toContain("截图");
+    expect(p).toContain("红烧肉");
+    expect(p).toContain("下饭");
+    expect(p).toContain("分类");
+    expect(p).toContain("半小时");
+  });
+
+  it("工具描述写明「不得声称已经收录成功」", () => {
+    expect(DRAFT_TOOL.function.name).toBe("create_recipe_draft");
+    expect(DRAFT_TOOL.function.description).toContain("不得声称已经收录成功");
+    expect(DRAFT_TOOL.function.parameters).toMatchObject({
+      type: "object",
+      required: ["name"],
+    });
+  });
+
+  it("工具 schema 与 DraftArgs 对齐：amount / unit 都可空", () => {
+    const params = DRAFT_TOOL.function.parameters as {
+      properties: { ingredients: { items: { properties: Record<string, { type: unknown }> } } };
+    };
+    const props = params.properties.ingredients.items.properties;
+
+    expect(props.amount.type).toEqual(["number", "null"]);
+    expect(props.unit.type).toEqual(["string", "null"]);
+  });
+
+  it("prompt 提醒截图里的作者名/点赞数/水印/「展开」不是食材", () => {
+    const p = buildSystemPrompt(dict, "2026-10-16");
+
+    expect(p).toContain("作者名");
+    expect(p).toContain("点赞");
+    expect(p).toContain("水印");
+    expect(p).toContain("展开");
+    expect(p).toContain("食材");
   });
 
   it("五段齐全：角色 / 日期 / 字典 / 工具 / 输出约定", () => {
@@ -83,7 +123,7 @@ describe("buildSystemPrompt", () => {
   });
 
   it("版本号留着，改 prompt 时一起改", () => {
-    expect(PROMPT_VERSION).toBe("ai-recipe-v1");
+    expect(PROMPT_VERSION).toBe("ai-recipe-v2");
     expect(buildSystemPrompt(dict, "2026-10-16").length).toBeGreaterThan(0);
   });
 });

@@ -79,12 +79,13 @@ const items = [item("r1", "红烧肉"), item("r2", "红烧排骨")];
 const filter = { ...emptyFilter(), categoryIds: [CAT.id], tagIds: [TAG.id] };
 const unresolved = { categories: [], tags: ["不存在的标签"], ingredients: [] };
 
-function outcome(overrides: Partial<AgentOutcome> = {}): AgentOutcome {
+function outcome(overrides: Partial<Omit<AgentOutcome, "draft">> = {}): AgentOutcome {
   return {
     text: "找到 2 道红烧菜",
     filter,
     resolved: { matched: 2, items },
     unresolved,
+    draft: null,
     messages: [],
     ...overrides,
   };

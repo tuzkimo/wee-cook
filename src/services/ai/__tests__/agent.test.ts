@@ -78,6 +78,12 @@ function lastToolMessage(bundle: number): AiMessage {
   return last;
 }
 
+/** tool 消息的 content 本任务里都是纯文本；块数组不该出现在回包侧 */
+function textOf(message: AiMessage): string {
+  if (typeof message.content !== "string") throw new Error("tool 消息的 content 不是字符串");
+  return message.content;
+}
+
 interface Summary {
   matched: number;
   items: { name: string; category: string; tags: string[]; ingredients: string[] }[];
@@ -125,7 +131,7 @@ describe("runAgent", () => {
     ]);
     const tool = lastToolMessage(1);
     expect(tool.tool_call_id).toBe("c1");
-    const summary = JSON.parse(tool.content) as Summary;
+    const summary = JSON.parse(textOf(tool)) as Summary;
     expect(summary).toEqual({
       matched: 1,
       items: [
@@ -148,12 +154,12 @@ describe("runAgent", () => {
     expect(out.resolved?.matched).toBe(1);
     expect(out.resolved?.items).toHaveLength(1);
     expect(out.filter).toEqual({ keyword: "", categoryIds: [], tagIds: [], ingredientIds: ["i1"] });
-    expect(JSON.parse(lastToolMessage(1).content)).toMatchObject({ matched: 1 });
+    expect(JSON.parse(textOf(lastToolMessage(1)))).toMatchObject({ matched: 1 });
   });
 
   it("工具名不存在时回一条 tool 错误并让模型纠正一次，不抛到界面", async () => {
     vi.mocked(callAiChat)
-      .mockResolvedValueOnce(reply("", [toolCall("create_recipe_draft", "{}")]))
+      .mockResolvedValueOnce(reply("", [toolCall("delete_recipe", "{}")]))
       .mockResolvedValueOnce(reply("我这就用说的"));
 
     const out = await runAgent("帮我把截图存下来", [], deps());
@@ -161,7 +167,7 @@ describe("runAgent", () => {
     expect(out.text).toBe("我这就用说的");
     expect(out.filter).toBeNull();
     expect(callAiChat).toHaveBeenCalledTimes(2);
-    expect(JSON.parse(lastToolMessage(1).content)).toEqual({ error: "unknown_tool" });
+    expect(JSON.parse(textOf(lastToolMessage(1)))).toEqual({ error: "unknown_tool" });
   });
 
   it("arguments 不是合法 JSON 时回一条 tool 错误并让模型纠正一次", async () => {
@@ -174,7 +180,7 @@ describe("runAgent", () => {
     expect(out.text).toBe("我重新组织一下条件");
     expect(out.filter).toBeNull();
     expect(callAiChat).toHaveBeenCalledTimes(2);
-    expect(JSON.parse(lastToolMessage(1).content)).toEqual({ error: "bad_arguments" });
+    expect(JSON.parse(textOf(lastToolMessage(1)))).toEqual({ error: "bad_arguments" });
   });
 
   it("纠正后仍然失败：降级成普通文本，不抛错", async () => {
@@ -202,7 +208,7 @@ describe("runAgent", () => {
     expect(out.filter?.ingredientIds).toEqual([]);
     // 条件没生效 ⇒ 全库都算命中，matched 要说实话
     expect(out.resolved?.matched).toBe(3);
-    const summary = JSON.parse(lastToolMessage(1).content) as Summary;
+    const summary = JSON.parse(textOf(lastToolMessage(1))) as Summary;
     expect(summary.unresolved.ingredients).toEqual(["三层肉"]);
     expect(summary.applied.ingredients).toEqual([]);
   });
@@ -221,6 +227,154 @@ describe("runAgent", () => {
     expect(out.messages[3]).toEqual({ role: "user", content: "这一问" });
   });
 
+  it("无图轮：content 仍是字符串（老路径零回归）", async () => {
+    vi.mocked(callAiChat).mockResolvedValueOnce(reply("好"));
+
+    const out = await runAgent("这一问", [], deps(), { images: [] });
+
+    expect(out.messages[1].content).toBe("这一问");
+    expect(vi.mocked(callAiChat).mock.calls[0][0][1].content).toBe("这一问");
+  });
+
+  it("带图轮：user 消息 content 是块数组，text 块在前、图片块在后", async () => {
+    vi.mocked(callAiChat).mockResolvedValueOnce(reply("好"));
+
+    const out = await runAgent("这个怎么做", [], deps(), {
+      images: ["data:image/jpeg;base64,A", "data:image/jpeg;base64,B"],
+    });
+
+    const expected = [
+      { type: "text", text: "这个怎么做" },
+      { type: "image_url", image_url: { url: "data:image/jpeg;base64,A" } },
+      { type: "image_url", image_url: { url: "data:image/jpeg;base64,B" } },
+    ];
+    expect(out.messages[1].content).toEqual(expected);
+    expect(vi.mocked(callAiChat).mock.calls[0][0][1].content).toEqual(expected);
+  });
+
+  it("带图无文字：不出现空 text 块", async () => {
+    vi.mocked(callAiChat).mockResolvedValueOnce(reply("好"));
+
+    const out = await runAgent("  ", [], deps(), { images: ["data:image/jpeg;base64,A"] });
+
+    expect(out.messages[1].content).toEqual([
+      { type: "image_url", image_url: { url: "data:image/jpeg;base64,A" } },
+    ]);
+  });
+
+  it("历史消息原样进上下文（图片只在当前轮）", async () => {
+    const history: AiMessage[] = [
+      { role: "user", content: "上一问" },
+      { role: "assistant", content: "上一答" },
+    ];
+    vi.mocked(callAiChat).mockResolvedValueOnce(reply("好"));
+
+    const out = await runAgent("看看这张", history, deps(), {
+      images: ["data:image/jpeg;base64,A"],
+    });
+
+    expect(out.messages.slice(1, 3)).toEqual(history);
+    const sent = vi.mocked(callAiChat).mock.calls[0][0];
+    expect(sent.slice(1, 3)).toEqual(history);
+    expect(sent[3].content).toEqual([
+      { type: "text", text: "看看这张" },
+      { type: "image_url", image_url: { url: "data:image/jpeg;base64,A" } },
+    ]);
+  });
+
+  it("模型调 create_recipe_draft：草稿进 outcome，回 {\"ok\":true}，不写库", async () => {
+    const draftArgs = JSON.stringify({
+      name: "红烧肉",
+      category: "家常菜",
+      tags: ["下饭"],
+      ingredients: [{ name: "五花肉", amount: 500, unit: "克" }],
+      steps: ["五花肉切块焯水", "炒糖色后下肉翻炒"],
+    });
+    vi.mocked(callAiChat)
+      .mockResolvedValueOnce(reply("", [toolCall("create_recipe_draft", draftArgs)]))
+      .mockResolvedValueOnce(reply("草稿写好了，确认一下就行"));
+
+    const d = deps();
+    const out = await runAgent("看看这张截图", [], d, { images: ["data:image/jpeg;base64,A"] });
+
+    expect(out.text).toBe("草稿写好了，确认一下就行");
+    expect(out.draft).toEqual({
+      name: "红烧肉",
+      category_id: "c1",
+      category_name: "家常菜",
+      tag_ids: ["t1"],
+      tag_names: ["下饭"],
+      ingredients: [
+        { ingredient_id: "i1", name: "五花肉", amount: 500, unit_id: "u1", unit_name: "克" },
+      ],
+      steps: ["五花肉切块焯水", "炒糖色后下肉翻炒"],
+      cover_path: null,
+    });
+    // 草稿不回灌：回给模型的只有一句 ok，没有菜名（回灌只会诱导它复述）
+    const tool = lastToolMessage(1);
+    expect(JSON.parse(textOf(tool))).toEqual({ ok: true });
+    expect(textOf(tool)).not.toContain("红烧肉");
+    // 本任务不引入 db：deps 仍然只有这三个字段，草稿只在内存里走一趟
+    expect(Object.keys(d)).toEqual(["dict", "today", "loadItems"]);
+    expect(out.filter).toBeNull();
+  });
+
+  it("草稿参数烂：回 tool 错误并给纠正轮一次机会", async () => {
+    vi.mocked(callAiChat)
+      .mockResolvedValueOnce(reply("", [toolCall("create_recipe_draft", "{}")]))
+      .mockResolvedValueOnce(reply("我没看清菜名，能再发一张吗"));
+
+    const out = await runAgent("看看这张截图", [], deps(), { images: ["data:image/jpeg;base64,A"] });
+
+    expect(JSON.parse(textOf(lastToolMessage(1)))).toEqual({ error: "bad_arguments" });
+    expect(out.draft).toBeNull();
+    expect(out.text).toBe("我没看清菜名，能再发一张吗");
+    expect(callAiChat).toHaveBeenCalledTimes(2);
+  });
+
+  it("同轮同时给 search 与 draft：只执行第一个，另一个 skipped，且每个 tool_call 都有回应", async () => {
+    vi.mocked(callAiChat)
+      .mockResolvedValueOnce(
+        reply("", [
+          toolCall("search_recipes", '{"ingredients":["五花肉"]}', "c1"),
+          toolCall("create_recipe_draft", '{"name":"红烧肉"}', "c2"),
+        ]),
+      )
+      .mockResolvedValueOnce(reply("找到 1 道红烧肉"));
+
+    const out = await runAgent("找有五花肉的菜", [], deps());
+
+    const sent = vi.mocked(callAiChat).mock.calls[1][0];
+    const replied = sent.filter((message) => message.role === "tool");
+    expect(replied.map((message) => message.tool_call_id)).toEqual(["c1", "c2"]);
+    expect(JSON.parse(textOf(replied[0]))).toMatchObject({ matched: 1 });
+    expect(JSON.parse(textOf(replied[1]))).toEqual({ error: "skipped" });
+    expect(out.resolved?.matched).toBe(1);
+    expect(out.draft).toBeNull();
+  });
+
+  it("模型嘴上说已收录但没调工具：draft 为 null，text 原样带出（界面不跳转）", async () => {
+    vi.mocked(callAiChat).mockResolvedValueOnce(reply("已经帮你存好了，去编辑页看看"));
+
+    const out = await runAgent("看看这张截图", [], deps(), { images: ["data:image/jpeg;base64,A"] });
+
+    expect(out.draft).toBeNull();
+    expect(out.text).toBe("已经帮你存好了，去编辑页看看");
+    expect(callAiChat).toHaveBeenCalledTimes(1);
+  });
+
+  it("第二轮仍只调工具且已有草稿：text 留空串，草稿照样带出", async () => {
+    vi.mocked(callAiChat)
+      .mockResolvedValueOnce(reply("", [toolCall("create_recipe_draft", '{"name":"红烧肉"}')]))
+      .mockResolvedValueOnce(reply("", [toolCall("search_recipes", "{}", "c2")]));
+
+    const out = await runAgent("看看这张截图", [], deps(), { images: ["data:image/jpeg;base64,A"] });
+
+    expect(out.text).toBe("");
+    expect(out.draft?.name).toBe("红烧肉");
+    expect(callAiChat).toHaveBeenCalledTimes(2);
+  });
+
   it("命中超过 10 条时摘要只带 10 条，matched 仍是真实总数", async () => {
     const many = Array.from({ length: 15 }, (_, i) => recipeItem(`菜${i}`, []));
     vi.mocked(callAiChat)
@@ -231,7 +385,7 @@ describe("runAgent", () => {
 
     expect(out.resolved?.matched).toBe(15);
     expect(out.resolved?.items).toHaveLength(10);
-    const summary = JSON.parse(lastToolMessage(1).content) as Summary;
+    const summary = JSON.parse(textOf(lastToolMessage(1))) as Summary;
     expect(summary.matched).toBe(15);
     expect(summary.items).toHaveLength(10);
   });

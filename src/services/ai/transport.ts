@@ -9,9 +9,14 @@ export interface AiToolCall {
   arguments: string;
 }
 
+/** 块数组由 `agent.buildUserContent` 组装，transport 只透传：不拆、不拼、不重排 */
+export type AiContent =
+  | string
+  | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }>;
+
 export interface AiMessage {
   role: "system" | "user" | "assistant" | "tool";
-  content: string;
+  content: AiContent;
   tool_call_id?: string;
   tool_calls?: AiToolCall[];
 }
