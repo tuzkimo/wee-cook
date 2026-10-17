@@ -139,7 +139,10 @@ func NewAIService(cfg *config.Config) *AIService {
 		baseURL:   strings.TrimRight(cfg.AIBaseURL, "/"),
 		model:     cfg.AIModel,
 		maxTokens: cfg.AIMaxTokens,
-		client:    &http.Client{Timeout: cfg.AITimeout},
+		// Transport 保持 nil ⇒ 用 http.DefaultTransport ⇒ 自动遵循 HTTP_PROXY / HTTPS_PROXY / NO_PROXY。
+		// 自托管时上游常需经代理访问（见 docs/SELF-HOSTING.md）；换成自定义 Transport 且不设 Proxy
+		// 会让代理静默失效，表现为 ai_unreachable。
+		client: &http.Client{Timeout: cfg.AITimeout},
 	}
 }
 

@@ -287,3 +287,17 @@ func TestAIServiceEnabledAndModel(t *testing.T) {
 		t.Error("没配 key 时 Enabled() 应为 false")
 	}
 }
+
+// 哨兵：AI 客户端必须继续用 http.DefaultTransport（即 Transport 为 nil）。
+// 上游常需经代理访问（HTTP_PROXY / HTTPS_PROXY / NO_PROXY），而代理支持的唯一来源就是
+// DefaultTransport 的 Proxy: http.ProxyFromEnvironment。一旦有人换成自定义 Transport 且没设 Proxy，
+// 代理会静默失效 —— 线上表现是 ai_unreachable，很难查。
+//
+// 这里刻意做白盒断言而不是读环境变量做黑盒用例：ProxyFromEnvironment 在进程内只读一次环境，
+// 同包其它用例已经发过真请求，环境变量改了也不会再生效，黑盒用例的结果不可信。
+func TestAIClientKeepsDefaultTransportForProxySupport(t *testing.T) {
+	svc := NewAIService(aiTestConfig("https://api.deepseek.com/v1"))
+	if svc.client.Transport != nil {
+		t.Fatalf("AI 客户端不得自定义 Transport（会让 HTTP_PROXY/HTTPS_PROXY 静默失效），实际 %T", svc.client.Transport)
+	}
+}

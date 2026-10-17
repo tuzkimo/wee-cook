@@ -41,6 +41,10 @@ services:
       AI_TIMEOUT: ${AI_TIMEOUT:-}
       AI_RATE_LIMIT: ${AI_RATE_LIMIT:-}
       AI_DAILY_LIMIT: ${AI_DAILY_LIMIT:-}
+      # 供应商需经代理访问时填；留空 = 直连
+      HTTP_PROXY: ${AI_HTTP_PROXY:-}
+      HTTPS_PROXY: ${AI_HTTPS_PROXY:-}
+      NO_PROXY: ${AI_NO_PROXY:-localhost,127.0.0.1,postgres,redis}
     volumes: [files:/data/files]
     depends_on:
       postgres:
@@ -149,12 +153,29 @@ AI 有两条链路：**聊天检索**（一句话筛本地菜谱）与**长截�
 | `AI_TIMEOUT` | 否 | `120s` | 等待上游回复的超时；长截图视觉推理较慢，不要调小 |
 | `AI_RATE_LIMIT` | 否 | `20` | 每用户**每分钟**请求上限 |
 | `AI_DAILY_LIMIT` | 否 | `200` | 每用户**每天**请求上限 |
+| `AI_HTTP_PROXY` / `AI_HTTPS_PROXY` | 否 | 空（= 直连） | 容器出网代理，映射到容器内的 `HTTP_PROXY` / `HTTPS_PROXY`。本地与线上都可能需要，地址各自填 |
+| `AI_NO_PROXY` | 否 | `localhost,127.0.0.1,postgres,redis` | 不走代理的地址（别把数据库、Redis 也塞进代理） |
 
 > ⚠️ **`AI_MODEL` 必须同时支持 tool calls 与 `image_url` 图片输入**：
 > `deepseek-flash`（V4.1-Flash）两者都支持；`deepseek-chat` **不支持图片**，照抄它会让截图收录一上传就 400。
 > 聊天检索只需要 tool calls，截图收录两条都要。
 
 客户端与后端共识常量（部署端无需配置，但换上游时要核对）：请求体上限 **12 MiB**（后端闸门，超了返 413，客户端没有对应开关）、单段压缩后 **1 MiB**、一次请求最多 **6 段**。
+
+### 上游需要经代理访问时
+
+`api.deepseek.com` 这类域名在部分网络里必须经代理才能访问。后端走的是 Go 默认的 HTTP 传输层，
+它**自动遵循 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`**，所以只要把这三个变量给到进程即可，没有额外开关：
+
+- **容器部署**：在 `.env` 里填 `AI_HTTP_PROXY` / `AI_HTTPS_PROXY` / `AI_NO_PROXY`（`compose.yml` 已把它们映射成容器内的三个标准变量），改完 `docker compose up -d` 重建容器
+- **本地直跑**（要在真机上联调而不经容器时常见）：在启动后端的那个 shell 里设标准变量名，例如
+  PowerShell `$env:HTTPS_PROXY="http://127.0.0.1:7890"`、bash `export HTTPS_PROXY=http://127.0.0.1:7890`；`.env` 里那三个 `AI_*_PROXY` 只对容器生效，对直跑无效
+- **容器要访问宿主机上的代理**：Docker Desktop 用 `http://host.docker.internal:<端口>`；Linux 上 `host.docker.internal` 不可用，填网桥网关或内网代理地址
+- **`NO_PROXY` 别漏**：默认值已含 `postgres` / `redis`，把数据库、Redis 也塞进代理会连不上
+- **改完要重启进程**：Go 只在进程启动时读一次代理环境变量，热改 `.env` 或 shell 变量都不生效
+
+代理不通时的表现是 `502 ai_unreachable` 或 `504 ai_upstream_timeout`（App 里分别是「连不上 AI 服务器」与「AI 等太久了」），
+先查代理地址与 `NO_PROXY`，再查 `AI_BASE_URL` 域名。
 
 ### 限流口径
 

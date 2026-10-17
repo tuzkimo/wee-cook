@@ -22,6 +22,11 @@ services:
       AI_TIMEOUT: ${AI_TIMEOUT:-}
       AI_RATE_LIMIT: ${AI_RATE_LIMIT:-}
       AI_DAILY_LIMIT: ${AI_DAILY_LIMIT:-}
+      # 上游需要经代理访问时填（本地与线上都可能需要，地址各自填）；留空 = 直连。
+      # 映射到容器内的标准变量名，Go 的默认 Transport 据此走代理。
+      HTTP_PROXY: ${AI_HTTP_PROXY:-}
+      HTTPS_PROXY: ${AI_HTTPS_PROXY:-}
+      NO_PROXY: ${AI_NO_PROXY:-localhost,127.0.0.1,postgres,redis}
     volumes: [files:/data/files]
     depends_on:
       postgres:
