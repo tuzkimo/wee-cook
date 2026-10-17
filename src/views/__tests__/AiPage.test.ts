@@ -383,3 +383,28 @@ describe("AiPage 消息流", () => {
     expect(wrapper.find('[data-test="ai-error"]').exists()).toBe(false);
   });
 });
+
+describe("AiPage 等待反馈", () => {
+  it("发送中在消息流末尾显示「正在思考…」，回答到达后消失", async () => {
+    const wrapper = await page();
+    expect(wrapper.find('[data-test="ai-thinking"]').exists()).toBe(false);
+
+    h.chat.sending.value = true;
+    await flushPromises();
+    const thinking = wrapper.get('[data-test="ai-thinking"]');
+    expect(thinking.text()).toContain("正在思考");
+
+    h.chat.sending.value = false;
+    await flushPromises();
+    expect(wrapper.find('[data-test="ai-thinking"]').exists()).toBe(false);
+  });
+
+  it("等待中也能看到最后一条消息（提示条不会把消息挤出可视区）", async () => {
+    h.chat.messages.value = [chatMessage({ text: "早到的回复" })];
+    h.chat.sending.value = true;
+    const wrapper = await page();
+
+    expect(wrapper.text()).toContain("早到的回复");
+    expect(wrapper.find('[data-test="ai-thinking"]').exists()).toBe(true);
+  });
+});

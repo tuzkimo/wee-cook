@@ -36,9 +36,10 @@ onMounted(() => {
   void ai.load();
 });
 
-// 新消息落在可视区外等于没回；每次消息数变化滚到底
+// 新消息落在可视区外等于没回；每次消息数变化、以及「开始等回答」那一刻都滚到底
+// （思考提示是在消息数变化之后才出现的，只盯消息数会把它推到可视区外）
 watch(
-  () => chat.messages.length,
+  () => [chat.messages.length, chat.sending] as const,
   async () => {
     await nextTick();
     if (listEl.value) listEl.value.scrollTop = listEl.value.scrollHeight;
@@ -141,6 +142,11 @@ async function enable(): Promise<void> {
         @open="openRecipe"
         @continue-in-filter="continueInFilter"
       />
+      <!-- 一轮对话在途中的可见反馈：判据是 chat.sending（发送全程为真，finally 收），
+           不是首次读历史的状态。少了这一行，实机形态就是「发完毫无反应，过一会结果一次性弹出」。 -->
+      <p v-if="chat.sending" data-test="ai-thinking" class="text-sm text-text-secondary">
+        正在思考…
+      </p>
     </div>
 
     <!-- 键盘弹出时把输入区顶起来；外壳已补过安全区，这里不再叠 env(safe-area-inset-bottom) -->
