@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import type { ComputedRef, Ref } from "vue";
+import type { Screenshot } from "@/services/ai/image";
 import type { AiStatus } from "@/services/ai/transport";
 import type { ChatMessage } from "@/stores/aiChat";
 import type { Label, LabelKind, Recipe, RecipeListItem } from "@/types";
@@ -20,11 +21,13 @@ const h = vi.hoisted(() => ({
     clear: vi.fn(async () => {}),
     loadSettings: vi.fn(async () => {}),
     setSendingEnabled: vi.fn(async () => {}),
+    pickScreenshot: vi.fn(),
   },
   chat: {} as {
     messages: Ref<ChatMessage[]>;
     sending: Ref<boolean>;
     error: Ref<string | null>;
+    attachment: Ref<Screenshot | null>;
   },
   settings: {} as {
     sendingEnabled: Ref<boolean>;
@@ -40,11 +43,15 @@ vi.mock("@/stores/aiChat", async () => {
   h.chat.messages = ref<ChatMessage[]>([]);
   h.chat.sending = ref(false);
   h.chat.error = ref<string | null>(null);
+  h.chat.attachment = ref<Screenshot | null>(null);
   const store = reactive({
     ...h.chat,
     load: h.mocks.loadChat,
     send: h.mocks.send,
     clear: h.mocks.clear,
+    setAttachment: (shot: Screenshot | null) => {
+      h.chat.attachment.value = shot;
+    },
     // 页面只调 openInFilter，真正的 apply 由 Task 14 的 store 做；这里把两者接起来好断言
     openInFilter: (filter: RecipeFilter) => h.mocks.apply(filter),
   });
@@ -84,6 +91,8 @@ vi.mock("@/services/api", async () => {
 });
 vi.mock("@/services/imageStore", () => ({ imageSrc: (name: string) => `/img/${name}` }));
 vi.mock("@/services/syncFiles", () => ({ ensureLocalImages: async () => new Set<string>() }));
+// 选图要真 Tauri 插件，页面用例只关心接线
+vi.mock("@/services/ai/image", () => ({ pickScreenshot: h.mocks.pickScreenshot }));
 
 const wrappers: VueWrapper[] = [];
 
@@ -92,6 +101,7 @@ beforeEach(() => {
   h.chat.messages.value = [];
   h.chat.sending.value = false;
   h.chat.error.value = null;
+  h.chat.attachment.value = null;
   h.settings.sendingEnabled.value = false;
   h.settings.status.value = null;
   h.api.baseUrlReady.value = false;
@@ -276,6 +286,61 @@ describe("AiPage 隐私门控", () => {
 
     expect(h.mocks.send).toHaveBeenCalledWith("找有五花肉的菜");
     expect(h.mocks.clear).not.toHaveBeenCalled();
+  });
+});
+
+describe("AiPage 截图附件", () => {
+  beforeEach(() => {
+    h.settings.sendingEnabled.value = true;
+    h.settings.status.value = enabledStatus();
+    h.api.baseUrlReady.value = true;
+  });
+
+  it("选图成功把截图交给 store，预览里的 ✕ 让 store 清掉", async () => {
+    const shot: Screenshot = {
+      segments: ["data:image/jpeg;base64,seg1"],
+      cover: "data:image/jpeg;base64,cover",
+      coverBytes: new Uint8Array([1]),
+      width: 1080,
+      height: 1500,
+    };
+    h.mocks.pickScreenshot.mockResolvedValue({ ok: true, shot });
+    const wrapper = await page();
+
+    await wrapper.get('[data-test="ai-attach"]').trigger("click");
+    await flushPromises();
+
+    expect(h.chat.attachment.value).toEqual(shot);
+    expect(wrapper.get('[data-test="ai-attach-preview"] img').attributes("src")).toBe(shot.cover);
+
+    await wrapper.get('[data-test="ai-attachment-remove"]').trigger("click");
+    expect(h.chat.attachment.value).toBeNull();
+  });
+
+  it("选图失败在输入区上方给文案，再选一次（或发送）就清掉", async () => {
+    h.mocks.pickScreenshot.mockResolvedValue({
+      ok: false,
+      message: "这张图太长了，截短一点再发",
+    });
+    const wrapper = await page();
+
+    await wrapper.get('[data-test="ai-attach"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.get('[data-test="ai-image-error"]').text()).toBe("这张图太长了，截短一点再发");
+
+    // 用户取消选图：不报错，也不留下上一次的文案
+    h.mocks.pickScreenshot.mockResolvedValue(null);
+    await wrapper.get('[data-test="ai-attach"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-test="ai-image-error"]').exists()).toBe(false);
+
+    // 发送也把它清掉
+    h.mocks.pickScreenshot.mockResolvedValue({ ok: false, message: "这张图片打不开" });
+    await wrapper.get('[data-test="ai-attach"]').trigger("click");
+    await flushPromises();
+    await wrapper.get('[data-test="ai-input"]').setValue("找有五花肉的菜");
+    await wrapper.get("form").trigger("submit");
+    expect(wrapper.find('[data-test="ai-image-error"]').exists()).toBe(false);
   });
 });
 

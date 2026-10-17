@@ -5,6 +5,7 @@ import { ref, type Ref } from "vue";
 import { aiAccount } from "@/services/ai/account";
 import { runAgent } from "@/services/ai/agent";
 import { loadDict, type UnresolvedNames } from "@/services/ai/filter";
+import type { Screenshot } from "@/services/ai/image";
 import { PROMPT_VERSION } from "@/services/ai/prompt";
 import {
   appendMessage,
@@ -37,6 +38,9 @@ export interface AiChatStore {
   messages: Ref<ChatMessage[]>;
   sending: Ref<boolean>;
   error: Ref<string | null>;
+  /** 待发送的截图；send 取走即清，reset 也清 */
+  attachment: Ref<Screenshot | null>;
+  setAttachment(shot: Screenshot | null): void;
   load(): Promise<void>;
   send(text: string): Promise<void>;
   clear(): Promise<void>;
@@ -64,6 +68,7 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
   const messages = ref<ChatMessage[]>([]);
   const sending = ref(false);
   const error = ref<string | null>(null);
+  const attachment = ref<Screenshot | null>(null);
   // 当前账号的会话；load / send / clear 共用同一条，避免重复查询
   let sessionId: string | null = null;
   // 退登 / 换号的世代。在飞时用户可能已退登，响应回来时不能把上一个账号的内容写回内存。
@@ -92,16 +97,21 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
 
   async function send(text: string): Promise<void> {
     const content = text.trim();
-    if (sending.value || content === "") return;
+    if (sending.value || (content === "" && attachment.value === null)) return;
     // 未登录不发（也不建会话）：入口本该挡住，这里只是不把未处理的 rejection 丢给上层
     if (aiAccount() === null) return;
     // 世代采样必须在第一个 await 之前，否则 reset() 发生在等待中时这里已经看不到它
     const start = epoch;
     sending.value = true;
+    // 取走即清：图只跟着这一轮，失败也不留在输入区。Task 9 会用 shot.segments 发给模型
+    const shot = attachment.value;
+    attachment.value = null;
     error.value = null;
     try {
       const id = await ensureSession(start);
       if (id === null) return;
+      // 退登 / 换号发生在等会话的那一下：这一发不属于任何人，直接作废
+      if (start !== epoch) return;
       // 历史要在插入本轮提问之前取，runAgent 自己会把本轮提问接在后面。
       // 截图轮在历史里只留占位符；本地 messages 保留原文与缩略图（规格 §12.2）
       const history = messages.value
@@ -113,8 +123,15 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
           }),
         );
 
-      // 用户说的话先落库：AI 挂了也不该丢掉用户的问题
-      const userMessage = newMessage("user", content, null);
+      // 用户说的话先落库：AI 挂了也不该丢掉用户的问题；有图就带上封面缩略图
+      const payload: MessagePayload = {
+        filter: null,
+        matched: 0,
+        items: [],
+        unresolved: { categories: [], tags: [], ingredients: [] },
+        ...(shot === null ? {} : { image: shot.cover }),
+      };
+      const userMessage = newMessage("user", content, payload);
       messages.value.push(toChatMessage(userMessage));
       await appendMessage(id, userMessage);
 
@@ -165,17 +182,22 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
     useRecipeFilterStore().apply(filter);
   }
 
+  function setAttachment(shot: Screenshot | null): void {
+    attachment.value = shot;
+  }
+
   /** 退登 / 换号：只清内存，库里的行原样留着（spec §12.1）。 */
   function reset(): void {
     // 在飞的 send 作废：响应回来时世代对不上，既不加消息也不写错误
     epoch++;
     messages.value = [];
     error.value = null;
+    attachment.value = null;
     sending.value = false;
     sessionId = null;
   }
 
-  return { messages, sending, error, load, send, clear, reset, openInFilter };
+  return { messages, sending, error, attachment, setAttachment, load, send, clear, reset, openInFilter };
 });
 
 function newMessage(

@@ -32,6 +32,7 @@ const recipeStub = vi.hoisted(() => ({
 }));
 vi.mock("@/stores/recipe", () => ({ useRecipeStore: () => recipeStub }));
 
+import type { Screenshot } from "@/services/ai/image";
 import { AiError } from "@/services/ai/transport";
 import { setAiAccount } from "@/services/ai/account";
 import { runAgent, type AgentDeps, type AgentOutcome } from "@/services/ai/agent";
@@ -86,6 +87,16 @@ function outcome(overrides: Partial<AgentOutcome> = {}): AgentOutcome {
     unresolved,
     messages: [],
     ...overrides,
+  };
+}
+
+function shot(cover = "data:image/jpeg;base64,cover"): Screenshot {
+  return {
+    segments: ["data:image/jpeg;base64,seg1"],
+    cover,
+    coverBytes: new Uint8Array([1, 2, 3]),
+    width: 1080,
+    height: 1500,
   };
 }
 
@@ -287,6 +298,99 @@ describe("aiChatStore.send", () => {
   });
 });
 
+describe("aiChatStore 附件", () => {
+  it("setAttachment 后 send('')：user 消息 content 为空串、payload.image 是封面 dataUrl", async () => {
+    const store = useAiChatStore();
+    store.setAttachment(shot());
+
+    await store.send("");
+
+    expect(store.messages[0]).toMatchObject({
+      role: "user",
+      text: "",
+      image: "data:image/jpeg;base64,cover",
+      filter: null,
+      matched: 0,
+      items: [],
+      unresolved: { categories: [], tags: [], ingredients: [] },
+    });
+    // 落库的 payload 只在有图时多一个 image 键，其余键与纯文字轮一致
+    expect(vi.mocked(appendMessage).mock.calls[0][1].payload).toEqual({
+      filter: null,
+      matched: 0,
+      items: [],
+      unresolved: { categories: [], tags: [], ingredients: [] },
+      image: "data:image/jpeg;base64,cover",
+    });
+    expect(store.attachment).toBeNull();
+  });
+
+  it("发送开始即清空附件（失败也不把图留着）", async () => {
+    vi.mocked(runAgent).mockRejectedValue(new AiError("ai_quota_exceeded"));
+    const store = useAiChatStore();
+    store.setAttachment(shot());
+
+    await store.send("看看这个");
+
+    expect(store.error).toBe("今日 AI 次数已用完");
+    expect(store.attachment).toBeNull();
+  });
+
+  it("没有附件时空文字仍然不发", async () => {
+    const store = useAiChatStore();
+
+    await store.send("   ");
+
+    expect(store.messages).toEqual([]);
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+});
+
+describe("aiChatStore 未登录", () => {
+  it("未登录时 load 静默返回，不建会话", async () => {
+    setAiAccount(null);
+    const store = useAiChatStore();
+
+    await expect(store.load()).resolves.toBeUndefined();
+
+    expect(loadOrCreateSession).not.toHaveBeenCalled();
+  });
+
+  it("未登录时 send 静默返回，不建会话也不打 agent", async () => {
+    setAiAccount(null);
+    const store = useAiChatStore();
+
+    await expect(store.send("x")).resolves.toBeUndefined();
+
+    expect(loadOrCreateSession).not.toHaveBeenCalled();
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(store.messages).toEqual([]);
+    expect(store.sending).toBe(false);
+  });
+
+  it("send 在建会话在途时 reset：晚到的会话 id 不得让这一发继续落库", async () => {
+    let release: (value: string) => void = () => {};
+    vi.mocked(loadOrCreateSession).mockReturnValue(
+      new Promise<string>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const store = useAiChatStore();
+
+    const pending = store.send("今天吃什么");
+    await vi.waitFor(() => expect(loadOrCreateSession).toHaveBeenCalledTimes(1));
+
+    store.reset();
+    release("s-of-A");
+    await pending;
+
+    expect(store.messages).toEqual([]);
+    expect(appendMessage).not.toHaveBeenCalled();
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(store.sending).toBe(false);
+  });
+});
+
 describe("aiChatStore.clear", () => {
   it("clear 清空 messages 并软删库里的行", async () => {
     vi.mocked(loadMessages).mockResolvedValue(stored);
@@ -307,10 +411,12 @@ describe("aiChatStore.reset", () => {
     await store.load();
     store.error = "AI 暂时用不了，稍后再试";
 
+    store.setAttachment(shot());
     store.reset();
 
     expect(store.messages).toEqual([]);
     expect(store.error).toBeNull();
+    expect(store.attachment).toBeNull();
     expect(clearMessages).not.toHaveBeenCalled();
     // 会话缓存也清了：下次 load 重新取会话（旧账号的会话 id 不得留在内存里）
     await store.load();

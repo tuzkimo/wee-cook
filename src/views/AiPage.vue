@@ -8,6 +8,7 @@ import ChatBubble from "@/components/ai/ChatBubble.vue";
 import ChatComposer from "@/components/ai/ChatComposer.vue";
 import { useKeyboardInset } from "@/composables/useKeyboardInset";
 import { baseUrlReady } from "@/services/api";
+import { pickScreenshot } from "@/services/ai/image";
 import { useAiChatStore } from "@/stores/aiChat";
 import { useAiSettingsStore } from "@/stores/aiSettings";
 import { useAuthStore } from "@/stores/auth";
@@ -20,6 +21,8 @@ const auth = useAuthStore();
 const keyboardInset = useKeyboardInset();
 const listEl = ref<HTMLElement | null>(null);
 const toggleError = ref<string | null>(null);
+// 选图失败自己一条提示：与 AI 失败无关，不能复用 chat.error
+const imageError = ref("");
 
 // 发送要求 opt-in 已同意 + 已登录 + 地址已配 + 后端确实开了 AI；探活失败（401 / 断网）不算「不能发」——
 // 拿不到 host 只是不许同意，不该锁死已同意的用户。
@@ -47,7 +50,20 @@ watch(
 );
 
 function send(text: string): void {
+  imageError.value = "";
   void chat.send(text);
+}
+
+async function attach(): Promise<void> {
+  // 重新选图先清上一次的失败文案；取消（null）什么都不做
+  imageError.value = "";
+  const result = await pickScreenshot();
+  if (result === null) return;
+  if (!result.ok) {
+    imageError.value = result.message;
+    return;
+  }
+  chat.setAttachment(result.shot);
 }
 
 function openRecipe(id: string): void {
@@ -154,7 +170,17 @@ async function enable(): Promise<void> {
       class="shrink-0 border-t border-gray-100"
       :style="keyboardInset > 0 ? { paddingBottom: `${keyboardInset}px` } : undefined"
     >
-      <ChatComposer :disabled="!canSend" :sending="chat.sending" @send="send" />
+      <p v-if="imageError" data-test="ai-image-error" class="mx-4 mb-2 rounded-xl bg-danger/10 px-3 py-2 text-xs text-danger">
+        {{ imageError }}
+      </p>
+      <ChatComposer
+        :disabled="!canSend"
+        :sending="chat.sending"
+        :attachment="chat.attachment?.cover ?? null"
+        @send="send"
+        @attach="attach"
+        @detach="chat.setAttachment(null)"
+      />
     </div>
   </div>
 </template>
