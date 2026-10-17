@@ -7,6 +7,7 @@ import AppHeader from "@/components/AppHeader.vue";
 import ChatBubble from "@/components/ai/ChatBubble.vue";
 import ChatComposer from "@/components/ai/ChatComposer.vue";
 import { useKeyboardInset } from "@/composables/useKeyboardInset";
+import { baseUrlReady } from "@/services/api";
 import { useAiChatStore } from "@/stores/aiChat";
 import { useAiSettingsStore } from "@/stores/aiSettings";
 import type { RecipeFilter } from "@/utils/recipeFilter";
@@ -18,8 +19,9 @@ const keyboardInset = useKeyboardInset();
 const listEl = ref<HTMLElement | null>(null);
 const toggleError = ref<string | null>(null);
 
-// 拿不到 host 时不许同意（说明卡讲不清发给谁），输入区一并锁住
-const canSend = computed(() => ai.sendingEnabled && ai.canShowPrivacyCard);
+// 发送只要求 opt-in 已同意 + 地址已配；探活失败（401 / 断网）不算「不能发」——
+// 拿不到 host 只是不许同意，不该锁死已同意的用户。baseUrlReady 是响应式的（裸 hasBaseUrl() 不会重算）。
+const canSend = computed(() => ai.sendingEnabled && (ai.canShowPrivacyCard || baseUrlReady.value));
 
 onMounted(() => {
   // load() 没有 try/catch，别让一次读库失败变成未处理的 rejection
@@ -51,6 +53,7 @@ function continueInFilter(filter: RecipeFilter): void {
 
 async function enable(): Promise<void> {
   try {
+    toggleError.value = null;
     await ai.setSendingEnabled(true);
   } catch {
     // 落盘失败不能假装已同意：开关仍是关的，明确告诉用户再试

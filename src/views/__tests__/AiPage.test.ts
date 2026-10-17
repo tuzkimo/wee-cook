@@ -31,6 +31,7 @@ const h = vi.hoisted(() => ({
     status: Ref<AiStatus | null>;
     canShowPrivacyCard: ComputedRef<boolean>;
   },
+  api: {} as { baseUrlReady: Ref<boolean> },
 }));
 
 vi.mock("@/stores/aiChat", async () => {
@@ -65,6 +66,15 @@ vi.mock("@/stores/aiSettings", async () => {
 });
 
 vi.mock("vue-router", () => ({ useRouter: () => ({ push: h.mocks.push }) }));
+// 地址是否已配：页面用它当发送门控的第二条腿（真实现见 services/__tests__/api.test.ts）
+vi.mock("@/services/api", async () => {
+  const { computed, ref } = await import("vue");
+  h.api.baseUrlReady = ref(false);
+  return {
+    baseUrlReady: computed(() => h.api.baseUrlReady.value),
+    hasBaseUrl: () => h.api.baseUrlReady.value,
+  };
+});
 vi.mock("@/services/imageStore", () => ({ imageSrc: (name: string) => `/img/${name}` }));
 vi.mock("@/services/syncFiles", () => ({ ensureLocalImages: async () => new Set<string>() }));
 
@@ -77,6 +87,7 @@ beforeEach(() => {
   h.chat.error.value = null;
   h.settings.sendingEnabled.value = false;
   h.settings.status.value = null;
+  h.api.baseUrlReady.value = false;
 });
 
 afterEach(() => {
@@ -186,8 +197,19 @@ describe("AiPage 隐私门控", () => {
     expect((wrapper.get('[data-test="ai-input"]').element as HTMLInputElement).disabled).toBe(false);
   });
 
+  it("opt-in 开着、地址已配但探活失败时仍能发送", async () => {
+    // status 停在未知态（401 / 断网），但地址是配了的：能发给谁已经确定，不该锁死输入区
+    h.settings.sendingEnabled.value = true;
+    h.settings.status.value = null;
+    h.api.baseUrlReady.value = true;
+    const wrapper = await page();
+
+    expect((wrapper.get('[data-test="ai-input"]').element as HTMLInputElement).disabled).toBe(false);
+  });
+
   it("opt-in 开着但探活失败（未登录 401 / 断网）时不隐藏页面，历史仍在", async () => {
-    // 401 与断网都让 status 停在未知态 null；页面不据此判「没启用」，入口仍可用（显隐由 tabVisible 管）
+    // 401 与断网都让 status 停在未知态 null；页面不据此判「没启用」
+    // 入口显隐由 tabVisible 决定，见 src/stores/__tests__/aiSettings.test.ts
     h.settings.sendingEnabled.value = true;
     h.settings.status.value = null;
     h.chat.messages.value = [chatMessage({ role: "user", text: "找有五花肉的菜", filter: null })];
@@ -298,6 +320,13 @@ describe("AiPage 消息流", () => {
     const wrapper = await page();
 
     expect(wrapper.get('[data-test="ai-more"]').text()).toContain("还有 2 道");
+  });
+
+  it("读历史失败不把页面搞崩", async () => {
+    h.mocks.loadChat.mockRejectedValueOnce(new Error("boom"));
+    const wrapper = await page();
+
+    expect(wrapper.get("h1").text()).toBe("AI");
   });
 
   it("失败文案渲染成可关闭的提示条", async () => {
