@@ -154,11 +154,11 @@
 ### 4.3 发给模型的形状
 
 - **文本轮**：`content` 是纯文本（同 M4 §4.2 的无图分支）
-- **截图轮**：同一条 user 消息里，`content` 是内容块数组：
+- **截图轮**：同一条 user 消息里，`content` 是内容块数组（**text 在前，图片块在后**；见 §12.2）：
   ```jsonc
-  [ { "type": "image_url", "image_url": { "url": "data:image/jpeg;base64,..." } },
-    { "type": "image_url", "image_url": { "url": "data:image/jpeg;base64,..." } },   // 分段后的第二块
-    { "type": "text", "text": "<用户随图附的一句话；没有则整个块不出现>" } ]
+  [ { "type": "text", "text": "<用户随图附的一句话；没有则整个块不出现>" },
+    { "type": "image_url", "image_url": { "url": "data:image/jpeg;base64,..." } },
+    { "type": "image_url", "image_url": { "url": "data:image/jpeg;base64,..." } } ]  // 分段后的第二块
   ```
   - **分段是客户端内部行为，用户侧永远只发一张图。** M4「一条消息多张图不做」约束的是**用户输入**，不是发给模型的消息形状
   - 分段的每一块都发在同一轮里，模型能看到跨段上下文（一道菜的做法可能跨段断开）
@@ -183,15 +183,16 @@
 
 ### 4.5 本地会话与图片存储
 
-新增两张本地表（**必须同步改 `migrateTables`，且必须用测试钉住它们不进同步**）：
+新增两张本地表（**必须同步改 `migrateTables`，且必须用测试钉住它们不进同步**；`ai_sessions` 的
+`user_id` 是 2026-10-17 的修订，见 §12.1）：
 
 ```sql
-ai_sessions(id, created_at, updated_at, deleted_at)
+ai_sessions(id, user_id, created_at, updated_at, deleted_at)
 ai_messages(id, session_id, role, content, payload, prompt_version, created_at, updated_at, deleted_at)
 ```
 
 - 按 AGENTS.md 的硬约束，两张表都带 `id / updated_at / deleted_at`；但**永不参与同步**，理由同主规格 §10.5（对话含用户的厨房情况与截图，没有任何理由把它送上服务器）
-- `payload` 是 TEXT(JSON)：截图轮的图片以 dataUrl 存这里，`content` 仍是纯文本（M4 §4.1 的形状，含 `mime / dataUrl / width / height / bytes`）
+- `payload` 是 TEXT(JSON)：截图轮**只存封面那张缩略图的 dataUrl**（不存 6 段原图，理由与形状见 §12.2），`content` 仍是纯文本
 - **图片只在本机 SQLite，绝不进同步**；客户端离线时选中/接收的图**不落库**（发不出去就不留）
 - `prompt_version` 随会话落库（主规格 §7.1 同款），将来改 prompt 后老会话行为可追溯
 
@@ -208,8 +209,11 @@ src/services/ai/
   transport.ts   调 /api/v1/ai/chat，把 ApiResult 映射成正常值/异常
   agent.ts       编排循环、工具分发、错误映射
   session.ts     会话落库/读回 + 历史替换
-  image.ts       选图 + 读字节 + 压缩（plugin-dialog / plugin-fs 在此收口）
-  longImage.ts   纯函数：分段切割 + 封面裁切矩形（无 DOM 依赖，可直测）
+  account.ts     当前 AI 账号（模块级单例，由 auth 写；见 §12.1）
+  draft.ts       草稿槽（内存，读走即清；见 §12.3）
+  attachText.ts  截图/分享链的全部用户可见文案（唯一一份）
+  image.ts       选图 + 读字节 + 分段编码 + 封面（plugin-dialog / plugin-fs 在此收口）
+  longImage.ts   纯函数：缩放/分段/封面裁切矩形 + 段数上限（无 DOM 依赖，可直测）
 src/stores/aiChat.ts
 src/components/ai/{ChatBubble,ChatComposer,AttachmentPreview}.vue
 ```
@@ -218,7 +222,7 @@ src/components/ai/{ChatBubble,ChatComposer,AttachmentPreview}.vue
 - 检索结果卡片**复用现有 `RecipeCard.vue`**，点击进 `/recipe/:id`
 - 结果旁给一个「在筛选页继续改」的入口：把解析后的 `RecipeFilter` `apply()` 进 `recipeFilter` store 再跳 `/` ——**与手点漏斗图标走完全同一条路径**，这是「AI 的结果你能自己验」的核心机制
 - 截图轮结束时 `router.push("/recipe/new")`，`RecipeEdit` 挂载时**消费一次**草稿槽（读走即清，切页回来不再重复预填）
-- **封面**：分段之前，用同一个 canvas 把长截图第一屏裁成宽 `MAX_WIDTH`、高不超过 `MAX_WIDTH × 4/3` 的普通比例图，**在跳转之前**写进 `imageStore`，路径随草稿槽一起带过去填 `cover_path`。裁切或写盘失败 ⇒ 封面留空、**不阻断跳转**（用户可在编辑页自己选图）
+- **封面**：用同一次解码把长截图第一屏裁成宽 `MAX_WIDTH`、高不超过 `MAX_WIDTH × 4/3` 的普通比例图，**在「确认有草稿」之后、跳转之前**写进 `imageStore`（复用 `saveImageBytes`），路径随草稿槽一起带过去填 `cover_path`。裁切或写盘失败 ⇒ 封面留空、**不阻断跳转**（用户可在编辑页自己选图）。⚠️ 不在分段时提前落盘：模型说「这不是菜谱」时那张图就是孤儿（§12.3）
 - 草稿槽被消费后若用户没保存，那张封面文件就是孤儿 —— 与 `ImagePicker` 的既有行为一致（选了图不保存本来就留孤儿），本设计**不新增清理机制**
 - 输入区底部固定 + `useKeyboardInset()`（安卓键盘顶掉输入框是必踩的坑）
 
@@ -230,9 +234,15 @@ src/components/ai/{ChatBubble,ChatComposer,AttachmentPreview}.vue
   段再高就会开始糊：1080 × 3000 会被缩到约 780 × 2160，正是要避的事
 - 每张图在上游封顶 **1024 token**（同上节），与像素尺寸无关 ⇒ 6 段最多约 6k 视觉 token，成本可控（§11.4）
 - ⚠️ 上面两条数字都是**当前上游的行为**，换供应商要重算，见 §6.1
-- 每段单独 JPEG 编码（质量起点 0.8）
-- 纯函数只负责算切割矩形（输入：原始宽高，输出：`{x,y,w,h}[]`），编码在 `image.ts` 里做 —— 这样切割逻辑可以脱离 canvas 直测
-- 极端情况必须处理：宽高为 0 / 1px、纵横比 < 1（横图不该被分段）、段落数为 1 时不分段
+- **缩放到宽度 `MAX_WIDTH`，只缩不放**：`scale = min(1, MAX_WIDTH / 原宽)`，原宽已经 ≤1080 时保持原样（放大不会多出信息，只会多烧 token）
+- 每段单独 JPEG 编码（质量起点 0.8）；**编码后逐段检查 ≤ 1 MiB**，任何一段超限 ⇒ 整张拒绝（不逐段降质，理由见 §8）
+- 纯函数负责**全部几何**（输入：原始宽高，输出：缩放后的整图尺寸 + 封面矩形 + 各段矩形），编码在 `image.ts` 里做 —— 这样切割逻辑可以脱离 canvas 直测
+- 几何（写死，别在实现时另算）：
+  - 输出宽 `outW = round(原宽 × scale)`，输出高 `outH = round(原高 × scale)`
+  - 段**输出**高 ≤ `MAX_SEGMENT_HEIGHT = 1500`，相邻段在**输出坐标**上重叠 `SEGMENT_OVERLAP = 120`
+  - 步长 `step = MAX_SEGMENT_HEIGHT - SEGMENT_OVERLAP = 1380`；段数 `n = 1 + ceil(max(0, outH - MAX_SEGMENT_HEIGHT) / step)`；最后一段可短
+  - 封面矩形为 `{x:0, y:0, w:outW, h:min(outH, round(outW × 4/3))}`，裁切位置取**第一屏（顶部）**
+- 极端情况必须处理：宽高为 0 / 1px、纵横比 < 1（横图不分段，仍然按宽度缩放）、段落数为 1 时不分段
 - **段数上限 6**。超过则拒绝并提示「这张图太长了，截短一点再发」——不做无限分段，一次调用塞十几张图既贵又容易触发上游限制
 
 ---
@@ -259,6 +269,10 @@ src/components/ai/{ChatBubble,ChatComposer,AttachmentPreview}.vue
 | AI handler 的读写超时 | 用 `http.NewResponseController(w)` 在**该 handler 内**解除 `ReadDeadline` / `WriteDeadline` | 全局 `ReadTimeout: 15s` / `WriteTimeout: 60s` 会掐断 120s 的上游等待，也会掐断移动网络下的 8 MiB 上传。**不动全局值**——那是给所有路由的，为 AI 放宽等于给全部端点放宽 |
 | 模型配置 | **一个键**：`AI_MODEL`，默认 **`deepseek-flash`** | `deepseek-flash`（V4.1-Flash）**同时支持视觉与工具调用**，一条链路一个模型就够。⚠️ 不要照抄主规格的默认 `deepseek-chat`——它**不接受 `image_url` 内容块**，截图这条路会开箱即 400（单测钉住，§9.16） |
 | 上游硬限制（供常量校验） | body 48 MiB；单图 32 MiB；单边 ≤8192 px；每条消息 ≤600 图；图片仅限 `user` 消息 | 我们自己的 12 MiB / 1 MiB / 1080px / 6 段全部宽松落在这几条之内，没有一条会先撞上游 |
+
+**本刀唯一新增的后端行为**：`AIMessage.Content` / `upstreamMessage.Content` 从 `string` 改 `json.RawMessage`
+（字符串与内容块数组都透传、`null` 视同缺键、`content` 为空时不多出键）。不新增路由、不改 schema、不动同步协议。
+细节与断言见 §12.2 与 §9 第 12 条。
 
 `GET /ai/status` **沿用入口规格的 `{ enabled, model, host }`，不加 `vision_enabled`**：只有一个模型键，客户端无从判断它支不支持视觉，
 而做能力探测要多一次请求。模型不支持时就走 §8 里上游 400 那条文案路径（M4 §8 同款），不在客户端预判。
@@ -345,9 +359,13 @@ few-shot 至少四条：`找有五花肉的菜` → `search_recipes`；`今晚�
 | 截图段数 > 6 | 拒绝，不进入输入区 | 这张图太长了，截短一点再发 |
 | 单段压缩后 > 1 MiB | 拒绝 | 图片太大，换一张或先裁剪 |
 | 选中的不是图片 | 拒绝（按魔数判定，不按扩展名；上游也是按内容判类型，M4 §9.7） | 只支持 JPEG / PNG / WebP / GIF 图片 |
+| 读文件失败（权限 / 分享链的图不见了） | 拒绝 / 不进输入区 | 读不到这张图片，请重试 |
+| 解码失败（字节对、图是坏的） | 拒绝 | 这张图片打不开 |
 | 选中了动图（GIF） | **接受，只取首帧** | 客户端本来就要用 canvas 重编码为 JPEG，首帧是自然结果；为此写一条拒绝分支反而是多余的代码 |
 | 上游 400 且这轮带图 | 按 M2 映射（判在 `agent.ts`） | 这条没发出去：可能是当前模型不支持图片 |
 | 模型看不出这是菜谱 | 正常回答，**不跳转编辑页** | 由模型说明 |
+| 模型的 `create_recipe_draft` 参数不合格（菜名空 / 不是 JSON） | 回一条 tool 错误让模型纠正一次；仍失败则不写草稿槽、不跳转 | 由模型的纠正轮说人话 |
+| 草稿的封面图落盘失败 | 照常跳转到编辑页，封面留空 | ——（编辑页自己选） |
 | 识别出的菜谱有未落定食材 | 跳转编辑页，未落定行拦住保存 | 这几样食材没对上，点一下选一个 |
 | 取消 / 超时 / 429 / 日配额 | 沿用主规格 §6.6 | 沿用 |
 | 搜索无结果 | 不跳转，卡片区给空态 | 库里没找到，去社区逛逛？ |
@@ -372,7 +390,7 @@ few-shot 至少四条：`找有五花肉的菜` → `search_recipes`；`今晚�
 **后端（Go）**
 
 11. 键集哨兵：`role`+`tool_calls` 的消息到上游时**不得多出 `content` 键**（M4 §9.1 同款）
-12. 字符串 `content` 与块数组 `content` 都原样透传（不解析、不重排）
+12. 字符串 `content` 与块数组 `content` 都**语义等价**地透传（不解析、不重排、不丢字段）；`content: null` 视同缺键（M4 §5.1：`json.Marshal` 会 compact 空白与 HTML 转义，所以**不钉字节**）
 13. 超过 `maxAIBodyBytes` ⇒ **413**（不是 400）
 14. 限流中间件顺序：分钟级在外、日配额在内；`/ai/status` 不吃日配额
 15. `AI_API_KEY` 为空 ⇒ `/ai/chat` 返回 **503** `ai_disabled`
@@ -380,6 +398,16 @@ few-shot 至少四条：`找有五花肉的菜` → `search_recipes`；`今晚�
 17. 合法的 6 段请求体（≈8 MiB）**不触发** 413 —— 这是 §6 三个体积常量算平的看门测试
 
 **不测**：Android 分享目标的真机行为、上游模型的识别质量。
+
+**第 3、4 刀补上的用例（编号接上）**
+
+18. `create_recipe_draft` 参数校验：菜名空 / 不是 JSON / `amount` 为 0 或负数或字符串 / 空名字的食材行 / 多余字段
+19. 草稿槽：写入 → `takeDraft()` 读到 → 再取一次为 `null`（读走即清）
+20. 草稿的封面落盘失败 ⇒ `cover_path` 为 `null` 且不影响草稿本身
+21. 分享 intake：无 pending ⇒ 不读不消费；`kind:image` ⇒ 附加 + 消费；三个错误 code 各自文案；坏 JSON / 未知版本 ⇒ 消费 + 文案（防死循环）；同一份原文不重复处理
+22. 历史快照：截图轮拼给模型是 `[用户发过一张菜谱截图]` + 原文字，**本地存储与气泡渲染未被替换**
+23. 账号隔离：A 的会话与开关对 B 不可见；退登不删除也不改写 A 的数据；换回 A 全部恢复（§12.1）
+24. 截图像素看门：每个段的**输出像素数** ≤ 1300×1300 = 1,690,000（`MAX_WIDTH × MAX_SEGMENT_HEIGHT = 1,620,000`）；四个常量在测试里逐字钉死
 
 ---
 
@@ -416,3 +444,114 @@ few-shot 至少四条：`找有五花肉的菜` → `search_recipes`；`今晚�
    那个默认值可能已经失效。值得回那边单独核一次，**本设计不改别的项目的文件**
 9. **检索能力有天花板**：菜谱表没有时长 / 难度 / 人数，所以「半小时能做的」这类条件天然筛不了（§7.1）。用户第一次这么问会觉得 AI 笨；由模型直说做不到，比悄悄丢条件好
 10. **收藏来的社区菜谱搜不到**：自己截图收进来的菜谱能搜到，社区里收藏别人的**不在本地 `recipes` 里**，AI 搜不到（§7.2）。这是有意划的边界，界面上用「去逛社区」补上
+
+---
+
+## 12. 修订（2026-10-17）：账号归属、内容块协议与第 3/4 刀的落地细节
+
+本节是**约束性修订**，与上文冲突时以本节为准。§10 的第 1、2 刀已发布（v0.7.0）；
+第 3、4 刀按本节执行。
+
+### 12.1 会话与 opt-in 的账号归属（修订 §4.5、§7.3）
+
+**问题**：现状 `ai_sessions` 只有一张按设备的会话，opt-in 是 `settings.json` 里的全局键。
+同设备换账号后，B 能读到 A 的聊天；退登只有 `auth.ts` 里「顺手把开关关掉」的一段补丁。
+截图进来后这条问题放大成「B 看到 A 的厨房截图」。
+
+**归属口径**：AI 的会话与同意属于**服务端账号**（server user id），不属于设备。
+未登录（guest / 离线恢复失败）时 AI 不可用（既有 `canSend` 已要求 `auth.isOnline`），
+所以「没有账号」不是一个需要存数据的态。
+
+- `ai_sessions` 加 `user_id TEXT`：走 `migrateTables`（先 `PRAGMA table_info` 再 `ALTER`）。
+  老库的无主行 `user_id` 为 NULL，**永不匹配、也不再显示**（不删除：无法判断属于谁，删是破坏）
+- 会话查询一律 `WHERE user_id = ? AND deleted_at IS NULL`；`loadOrCreateSession()` 为每个账号各建一条
+- opt-in 键改成 `aiSendingEnabled:<user id>`，仍在 `settings.json` 里（不另开存储）。
+  **旧的全局键 `aiSendingEnabled` 不迁移**：没有账号归属的同意不能算数，升级后需重新同意一次
+- 账号态的真相源是一个**模块级单例**（`src/services/ai/account.ts` 的 `setAiAccount` / `aiAccount`），
+  由 `auth` 在 `adoptSession` / `restoreSession` 成功时写入、在 `goGuest` / `logout` 时清空。
+  理由与 `api.ts` 的 `baseUrl` 同款：认证态本来就是模块级唯一状态，塞进每个 store 只会多出几份会漂移的副本
+
+**退登语义（写死，实现时不要另发明）**：
+
+| 动作 | 盘上的数据 | 内存 |
+| --- | --- | --- |
+| 退登 / 会话失效（`goGuest`） | **不动**该账号的会话行与 `aiSendingEnabled:<uid>` | 清空账号态；`aiChat` 的 messages / 附件 / 会话缓存 / error 清空；`aiSettings.sendingEnabled=false`、`status=null` |
+| 换另一个账号登录 | 新账号按自己的 `user_id` 读会话与开关（没有 ⇒ 空历史 + 默认关闭） | 同上，再按新账号读一次 |
+| 同一账号重新登录 | 历史与本账号的同意**原样恢复** | —— |
+| `AI_API_KEY` 为空 / 探活失败 | 不动 | 入口三态照旧（§7.3） |
+
+- 「不动」不等于「不隐藏」：隐藏由 `aiAccount() === null` + 按 uid 读到的开关共同决定，
+  所以 B 在 B 的账号下**既看不到 A 的历史，也继承不到 A 的同意**
+- 退登**不再**顺手 `writeAiSendingEnabled(false)`：那会改写「A 的同意」，让 A 下次登录重新同意；
+  按账号隔离之后 B 根本读不到 A 的键，这一步没有存在的必要
+
+### 12.2 content 协议放宽（修订 §4.3、§6）
+
+客户端 `AiMessage.content` 与后端 `service.AIMessage.Content` 都从「纯字符串」放宽到
+**字符串或内容块数组**（OpenAI 兼容）。后端是哑管道：不解析块、不重排、不改字段。
+
+- 块的形状与顺序（v1 固定）：`[{type:"text",text}]` 在最前（**有文字才出现**），其后是 0..6 个
+  `{type:"image_url",image_url:{url:"data:image/jpeg;base64,..."}}`。
+  ⚠️ §4.3 的旧示例把 text 放最后，与 M4 §4.2 相反；**以本节为准：text 在前**
+- 无图轮**仍然发字符串**（老路径零回归）；`role` 为 `assistant` / `tool` 的消息**永远不发块**
+- `content: null` 视同缺键：后端 `json.RawMessage` 收到字面 `null` 必须归一成「没有这个键」
+  （否则上游收到 `content:null` 会被判非法）；`role + tool_calls` 的消息**不得多出 content 键**
+- 透传是**语义等价**，不保证字节原样（`json.Marshal` 会 compact 空白并做 HTML 转义）——
+  测试只断语义与键集，不断字节（M4 §5.1 的实测结论）
+- 历史里的截图轮替换成 `[用户发过一张菜谱截图]`（有文字则后接原文字），**替换只发生在拼给模型的上下文里**；
+  本地存储与页面渲染保留原文与缩略图
+
+**本地存什么（修订 §4.5 的 payload 说法）**：截图轮**不存 6 段原图**。6 段 base64 ≈ 8 MiB，
+一条消息一行 TEXT，除了把库撑大没有任何用处（历史替换后永不重发）。只存**封面那张缩略图**
+（1080 宽、JPEG，通常 100–300 KB）用于历史气泡回显：
+
+```ts
+// MessagePayload 追加（其余字段不变）
+image?: string   // dataUrl，封面缩略图；没有图的消息不出现这个键
+```
+
+### 12.3 草稿槽与未落定食材（修订 §4.2、§4.4、§5）
+
+- **草稿槽归属**：新增 `src/services/ai/draft.ts`，模块级单例，三个函数
+  `setDraft(draft)` / `takeDraft()`（读走即清）/ `clearDraft()`。**不落库、不进 Pinia**：
+  它的一生只有「写入 → 编辑页挂载时读走」一次，转成响应式状态只会多一处要清的地方
+- `create_recipe_draft` 的参数校验（模型给的一律当不可信输入）：
+
+  | 字段 | 规则 | 不合格时 |
+  | --- | --- | --- |
+  | `name` | trim 后非空 | 回 `tool` 错误 `{"error":"bad_arguments"}`，**不写槽、不跳转** |
+  | `category` / `tags` | 字符串数组；分类只取唯一精确/包含命中，标签只取命中 | 未命中 ⇒ 分类留空、标签丢弃（不产生未落定项，§4.4） |
+  | `ingredients[].amount` | 有限数且 `> 0` | 退化为 `null`（=「适量」，**不是 0**） |
+  | `ingredients[].unit` | 字符串；精确/唯一包含命中单位 | 退化为 `null` |
+  | `ingredients[].name` | trim 后非空 | 该行丢弃（空名字无法落定，也不该留一行空白） |
+  | `steps` | 字符串数组，逐条 trim，空串丢弃 | —— |
+  | 多余字段 | 忽略 | —— |
+
+- 一轮里有多个 `tool_calls`：**每个都必须回一条 `tool` 消息**（否则上游判整条请求非法）；
+  只执行**第一个**可识别的工具，其余回 `{"error":"skipped"}`
+- **未落定食材行**的交互（唯一动到 `RecipeEdit` 的地方）：该行 `ingredient_id === ""`，
+  显示 AI 给的原始名字 + 一个「待选」标记；**点这一行**打开已有的 `RefSheet`（食材单选，带搜索与「+ 创建」），
+  选中后**只替换 `ingredient_id` / `ingredient_name`，保留 AI 给的数量与单位**。
+  保存前校验：任何一行 `ingredient_id` 为空 ⇒ 报「这几样食材没对上，点一下选一个」，不写库
+- **封面落盘时机（修订 §5）**：封面在**收到草稿之后、`router.push("/recipe/new")` 之前**写进 `imageStore`
+  （复用 `saveImageBytes`）。§5 写的「分段之前」只是说跟分段用同一次解码，不是要提前写盘 ——
+  提前写会在「模型说这不是菜谱」时留下一个没人引用的孤儿文件。写盘失败 ⇒ `cover_path = null`，**不阻断跳转**
+
+### 12.4 移植分享目标时要**删掉**的部分
+
+分享目标规格（wee-count）里有一整套「会话记录 + task id 判据 + 自动锁窗口」的 Kotlin/JS 契约（其 §4.5）。
+**本仓没有自动锁**（没有 `useAutoLock` / `sessionLock` / `UnlockPage`），所以：
+
+- **不移植** `wee-session/`、`session.json`、`authenticated` 标记、`reconcileTask()`、
+  `onStop` / `onDestroy` 的写记录、以及前端 `decideBootLock`
+- 其余照抄：`pending.json` 的形状与原子写、`sweepOrphanBinaries`、8 MiB 源上限、latest wins、
+  compare-and-delete 消费、`id` 去重字段、单线程池后台拷贝、指纹去重（`onSaveInstanceState`）
+- 前端拉取点去掉「锁定时不做 IO」，保留：首次挂载、`visibilitychange`、`tauri://resumed`、
+  扑空后补一次延迟重拉、单飞
+
+### 12.5 本节同时确认/推翻的其它细节
+
+1. 短边为 1px、横图、1:20 长图都必须给出确定结果（缩放/单段/拒绝），不许出现 0 边 canvas
+2. §9.12 的「原样透传」改为「语义等价透传」（见 §12.2）
+3. 段几何写死在 §5.1：只缩不放、步长 1380、封面取顶部第一屏
+4. `create_recipe_draft` 只写内存草稿槽，**绝不写库**；菜谱落库仍然只发生在 `RecipeEdit` 的保存按钮上
