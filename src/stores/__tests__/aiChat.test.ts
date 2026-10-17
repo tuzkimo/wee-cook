@@ -128,7 +128,7 @@ beforeEach(() => {
   vi.mocked(loadMessages).mockResolvedValue([]);
   vi.mocked(appendMessage).mockResolvedValue(undefined);
   vi.mocked(clearMessages).mockResolvedValue(undefined);
-  vi.mocked(loadDict).mockResolvedValue({ categories: [], tags: [], ingredients: [] });
+  vi.mocked(loadDict).mockResolvedValue({ categories: [], tags: [], ingredients: [], units: [] });
   vi.mocked(runAgent).mockResolvedValue(outcome());
   recipeStub.recipes = items;
 });

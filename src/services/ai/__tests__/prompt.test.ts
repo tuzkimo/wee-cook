@@ -12,6 +12,7 @@ const dict: Dict = {
   categories: [entry("cat-1", "家常菜")],
   tags: [entry("tag-1", "下饭")],
   ingredients: [entry("ing-1", "土豆")],
+  units: [entry("unit-1", "克")],
 };
 
 describe("buildSystemPrompt", () => {

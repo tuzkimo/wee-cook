@@ -15,6 +15,7 @@ export interface Dict {
   categories: DictEntry[];
   tags: DictEntry[];
   ingredients: DictEntry[];
+  units: DictEntry[];
 }
 
 export interface SearchRecipesArgs {
@@ -86,6 +87,7 @@ export async function loadDict(): Promise<Dict> {
     ingredients: await entries(
       `SELECT id, name FROM ingredients WHERE deleted_at IS NULL ORDER BY name`,
     ),
+    units: await entries(`SELECT id, name FROM units WHERE deleted_at IS NULL ORDER BY name`),
   };
 }
 
@@ -117,7 +119,7 @@ function collect(
   }
 }
 
-function matchId(name: string, entries: DictEntry[]): string | null {
+export function matchId(name: string, entries: DictEntry[]): string | null {
   const wanted = name.trim();
   if (wanted === "") return null;
 

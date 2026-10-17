@@ -16,6 +16,7 @@ const DICT: Dict = {
     { id: "i1", name: "五花肉" },
     { id: "i2", name: "肉末" },
   ],
+  units: [{ id: "u1", name: "克" }],
 };
 
 function label(id: string, name: string, kind: Label["kind"]): Label {

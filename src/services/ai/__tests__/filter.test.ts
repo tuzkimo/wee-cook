@@ -13,7 +13,7 @@ import {
 const NOW = "2026-10-16T00:00:00Z";
 
 function dictOf(parts: Partial<Dict> = {}): Dict {
-  return { categories: [], tags: [], ingredients: [], ...parts };
+  return { categories: [], tags: [], ingredients: [], units: [], ...parts };
 }
 
 function entry(id: string, name: string): DictEntry {
