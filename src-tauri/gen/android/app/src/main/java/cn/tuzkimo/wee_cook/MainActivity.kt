@@ -26,9 +26,6 @@ import java.util.concurrent.Executors
  * ⚠️ 日志不打图片 URI 与字节，只打数量/字节数/结果。
  */
 class MainActivity : TauriActivity() {
-  /** 分享的拷贝串行执行：多次分享按顺序写盘 ⇒ latest wins 语义不变 */
-  private val inboxExecutor = Executors.newSingleThreadExecutor()
-
   /** 已经投递过的分享指纹（跨 Activity 重建保留，见 `onSaveInstanceState`）。 */
   private var handledShare: String? = null
 
@@ -81,24 +78,35 @@ class MainActivity : TauriActivity() {
   private fun shareFingerprint(intent: Intent?): String? {
     val action = intent?.action ?: return null
     if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return null
-    val first: Uri? = if (action == Intent.ACTION_SEND_MULTIPLE) {
-      IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
-        ?.firstOrNull()
-    } else {
-      IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
-    }
+    val first = streamUris(intent).firstOrNull()
     return "$action|${intent.type}|${first ?: ""}"
+  }
+
+  /**
+   * 分享意图里的图片 URI 列表，两处（指纹与拷贝）共用，且**绝不抛**。
+   *
+   * 为什么必须兜：`IntentCompat.getParcelableArrayListExtra` 在 API<34 是**未检查转换**，
+   * 发送方把单个 `Uri` 或 `Parcelable[]` 放进 `ACTION_SEND_MULTIPLE` 的 `EXTRA_STREAM` 时，
+   * 调用点会抛 `ClassCastException` —— 指纹发生在 `onCreate`（主线程），拷贝在后台线程，
+   * 任一线程的未捕获异常都会直接杀进程。畸形 extra 一律按“没有 stream”处理。
+   */
+  private fun streamUris(rawIntent: Intent?): List<Uri> {
+    val intent = rawIntent ?: return emptyList()
+    return runCatching {
+      when (intent.action) {
+        Intent.ACTION_SEND_MULTIPLE ->
+          IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+            ?.filterNotNull()
+        Intent.ACTION_SEND ->
+          listOfNotNull(IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java))
+        else -> null
+      }
+    }.getOrNull().orEmpty()
   }
 
   /** 把分享进来的图片拷进 inbox（在后台线程执行）。 */
   private fun captureSharedImage(intent: Intent) {
-    val action = intent.action
-
-    val uris: List<Uri> = if (action == Intent.ACTION_SEND_MULTIPLE) {
-      IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
-    } else {
-      listOfNotNull(IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java))
-    }
+    val uris = streamUris(intent)
     if (uris.isEmpty()) {
       Log.w(TAG, "分享里没有 stream ⇒ no_stream")
       writeErrorPayload(CODE_NO_STREAM)
@@ -199,6 +207,15 @@ class MainActivity : TauriActivity() {
   private fun shareDir(): File = File(cacheDir, SHARE_DIR).apply { mkdirs() }
 
   private companion object {
+    /**
+     * 分享的拷贝串行执行：多次分享按顺序写盘 ⇒ latest wins 语义不变。
+     * 必须放在 companion（进程级）而不是实例字段：Activity 重建（旋转/深色模式/分屏/字体
+     * 变化，`TauriActivity` 未声明 `configChanges`）时旧实例的线程还在跑，两个池就是两个线程
+     * 同时写同一份 `pending.json.tmp`（`writeText` 会截断，rename 可能发布出半截内容）。
+     * 全局一个池同时让旧实例不再泄漏、线程不会滞留。
+     */
+    val inboxExecutor = Executors.newSingleThreadExecutor()
+
     /** Logcat tag：本任务无单测，真机验收靠它定位。 */
     const val TAG = "WeeCook/Share"
 
