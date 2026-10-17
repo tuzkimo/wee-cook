@@ -114,6 +114,12 @@ caddy reload --config /etc/caddy/Caddyfile   # 或 systemctl reload caddy
 
 三个 job 依次变绿 ✓（test → build-push → deploy）即成功。deploy 里那条 `curl` 返回成功，说明线上 API 真在应答。
 
+> ⏱ **首次部署很慢，不要当成卡死**。实测服务器到 `ghcr.io` 只有 ~13 KB/s，一个镜像层要十几分钟；
+> 所以 workflow 里把 `command_timeout` 提到了 **45m**（默认 10m 会在拉取中途把 SSH 会话掉断，报错是 `Run Command Timeout`）。
+> 后面同镜像的层已缓存在服务器上，日常部署只传变动的小层，快得多。
+> 这条链路本身没有好办法提速：Docker 的 `registry-mirrors` 只作用于 Docker Hub，不适用于 ghcr，
+> 真要加快只能给服务器挂代理。
+
 然后验证：
 
 ```bash

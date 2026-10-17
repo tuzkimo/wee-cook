@@ -70,10 +70,14 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           port: ${{ secrets.DEPLOY_PORT }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
+          # 服务器到 ghcr.io 的链路实测约 13 KB/s，拉一个镜像层就要十几分钟；
+          # 默认 10 分钟会在拉取中途把 SSH 会话掉断（"Run Command Timeout"）。
+          command_timeout: 45m
           script: |
             set -e
             cd "${{ secrets.DEPLOY_PATH }}"
-            docker compose pull api
+            # --quiet：进度日志能刷几千行，把真正的报错顶出视野。
+            docker compose pull --quiet api
             # --no-build：compose 里有 build: ./backend，不加这个可能在服务器上现场编译一遍。
             docker compose up -d --no-build
             # 容器起来就崩（迁移失败、配置写错）时 compose 的退出码仍是 0，
