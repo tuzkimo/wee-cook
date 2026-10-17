@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mount, type VueWrapper } from "@vue/test-utils";
-import AiPage from "@/views/AiPage.vue";
 import MePage from "@/views/MePage.vue";
 
 const wrappers: VueWrapper[] = [];
@@ -10,19 +9,14 @@ afterEach(() => {
   wrappers.length = 0;
 });
 
-function page(component: typeof AiPage): VueWrapper {
+function page(component: typeof MePage): VueWrapper {
   const wrapper = mount(component);
   wrappers.push(wrapper);
   return wrapper;
 }
 
 describe("占位页", () => {
-  it("AI 页有顶栏与说明文字", () => {
-    const wrapper = page(AiPage);
-    expect(wrapper.get("h1").text()).toBe("AI");
-    expect(wrapper.text()).toContain("还在做");
-  });
-
+  // AI 页已实现为聊天页，其占位断言随实现移除（AiPage.test.ts 接管）
   it("我的页有顶栏与说明文字", () => {
     const wrapper = page(MePage);
     expect(wrapper.get("h1").text()).toBe("我的");
