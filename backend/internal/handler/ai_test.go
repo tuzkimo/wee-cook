@@ -151,6 +151,23 @@ func TestAIChatBodyTooLargeReturns413(t *testing.T) {
 	}
 }
 
+// 默认 12 MiB 上限必须放行一个 8 MiB 的合法请求（规格 §9.17）：只有「调小后 413」盖不住这一半，
+// 上限、MaxBytesReader 与解码器三者任一错位都会在小 body 用例下静默通过。
+func TestAIChatDefaultBodyLimitAllows8MiB(t *testing.T) {
+	svc := &fakeAIService{enabled: true, chatResp: &service.AIChatResponse{Text: "ok"}}
+	h := NewAIHandler(svc)
+	body := `{"messages":[{"role":"user","content":"` + strings.Repeat("x", 8<<20) + `"}]}`
+	rec := httptest.NewRecorder()
+	h.Chat(rec, aiChatRequest(body))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("默认上限下 8 MiB 合法请求: got %d, want 200；body: %s", rec.Code, rec.Body.String())
+	}
+	if len(svc.gotReq.Messages) != 1 {
+		t.Errorf("传给 service 的请求 = %d 条消息, want 1", len(svc.gotReq.Messages))
+	}
+}
+
 // 正常请求：请求体解码进 service.AIChatRequest，成功响应原样写回。
 func TestAIChatSuccessWritesNormalizedResponse(t *testing.T) {
 	svc := &fakeAIService{enabled: true, chatResp: &service.AIChatResponse{Text: "hi", FinishReason: "stop"}}

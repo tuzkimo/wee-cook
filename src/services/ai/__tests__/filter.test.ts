@@ -97,6 +97,11 @@ describe("filter", () => {
     expect(resolveFilter({ ingredients: ["五花肉", "五花肉"] }, dict).filter.ingredientIds).toEqual(
       ["i1"],
     );
+    // 未落定的同名也只报一次，且保持首次出现的顺序
+    expect(resolveFilter({ ingredients: ["洋蓟", "三层肉", "洋蓟"] }, dict).unresolved.ingredients).toEqual([
+      "洋蓟",
+      "三层肉",
+    ]);
   });
 
   it("trim 与全角空格都要吃掉", () => {

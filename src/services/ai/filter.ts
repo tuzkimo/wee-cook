@@ -110,8 +110,10 @@ function collect(
 ): void {
   for (const name of names ?? []) {
     const id = matchId(name, entries);
-    if (id === null) missed.push(name);
-    else if (!ids.includes(id)) ids.push(id);
+    // 去重但保留首次出现的顺序：模型重复给同一个名字时，界面不能显示「没找到：五花肉片、五花肉片」
+    if (id === null) {
+      if (!missed.includes(name)) missed.push(name);
+    } else if (!ids.includes(id)) ids.push(id);
   }
 }
 

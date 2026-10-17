@@ -54,6 +54,8 @@ describe("buildSystemPrompt", () => {
     expect(p).toContain("难度");
     expect(p).toContain("三人份");
     expect(p).toContain("做不到");
+    // 否定条件（「不要香菜」）也要直说不支持，不能塞进 keyword 换一个假阴性
+    expect(p).toContain("否定条件");
   });
 
   it("prompt 里有 search_recipes 的 few-shot", () => {
@@ -61,7 +63,9 @@ describe("buildSystemPrompt", () => {
 
     expect(p).toContain("search_recipes");
     expect(p).toContain("五花肉"); // 「找有五花肉的菜」
-    expect(p).toContain("不放辣椒"); // 纯检索那条
+    expect(p).toContain("番茄"); // 纯检索那条（正向词）
+    // 否定条件不能当关键词：教成 keyword:"不放辣椒" 必得 0 条，模型会说「库里没有」
+    expect(p).not.toContain("不放辣椒");
     expect(p).not.toContain("create_recipe_draft"); // 本计划不实现截图收录，prompt 不能提到它
     expect(p).not.toContain("截图");
     expect(p).toContain("不调用工具"); // 「我库里有哪些分类」直接答

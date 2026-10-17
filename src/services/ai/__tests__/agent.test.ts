@@ -235,6 +235,16 @@ describe("runAgent", () => {
     expect(summary.items).toHaveLength(10);
   });
 
+  it("第一轮就空答（没工具也没正文）时给兜底文案，不渲染空气泡", async () => {
+    vi.mocked(callAiChat).mockResolvedValueOnce(reply("   "));
+
+    const out = await runAgent("嗯", [], deps());
+
+    expect(out.text).toBe(FALLBACK_TEXT);
+    expect(out.filter).toBeNull();
+    expect(callAiChat).toHaveBeenCalledTimes(1);
+  });
+
   it("第二轮仍只调工具不答话：text 留空串，只渲染卡片", async () => {
     vi.mocked(callAiChat)
       .mockResolvedValueOnce(reply("", [toolCall("search_recipes", '{"ingredients":["五花肉"]}')]))

@@ -93,7 +93,12 @@ export async function runAgent(
 
   for (let round = 0; round < ROUNDS; round++) {
     const reply = await callAiChat(messages, [SEARCH_TOOL]);
-    if (reply.tool_calls.length === 0) return outcome(reply.text, found, messages);
+    if (reply.tool_calls.length === 0) {
+      // 第一轮就空答（既没工具也没正文）：空气泡比兜底文案更糟。
+      // 第二轮的空 text 是「只渲染卡片」的既有语义，不能改成兜底。
+      const empty = round === 0 && reply.text.trim() === "";
+      return outcome(empty ? FALLBACK_TEXT : reply.text, found, messages);
+    }
 
     messages.push({ role: "assistant", content: reply.text, tool_calls: reply.tool_calls });
     const searched = await applyToolCalls(reply.tool_calls, deps, messages);
