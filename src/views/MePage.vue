@@ -64,6 +64,13 @@ async function toggleAiSending(): Promise<void> {
     aiError.value = "开关没保存成功，再试一次";
   }
 }
+
+// 拿不到 host 时的文案三态：已开着（只允许关）、地址已配但探活失败、地址未配。
+// 「暂时连不上」与「先连接服务器」不能混用，否则用户会去重填一个已经对的地址。
+const aiPrivacyHint = computed(() => {
+  if (ai.sendingEnabled) return "连不上服务器，只能关闭 AI 助手";
+  return configured.value ? "暂时连不上服务器，稍后再试" : "先连接服务器，才能开启 AI 助手";
+});
 </script>
 
 <template>
@@ -164,13 +171,14 @@ async function toggleAiSending(): Promise<void> {
                 开启后，你的提问与菜谱名称、食材会发送到 {{ ai.status?.host }}。可随时在这里关闭。
               </p>
               <p v-else data-test="ai-privacy-hint" class="mt-1 text-xs text-text-secondary">
-                {{ ai.sendingEnabled ? "连不上服务器，暂时改不了开关" : "先连接服务器，才能开启 AI 助手" }}
+                {{ aiPrivacyHint }}
               </p>
             </div>
             <!-- 拿不到 host 只禁「开启」；已开着时始终允许关掉（否则断网会把用户锁在同意里） -->
             <button
               type="button"
               role="switch"
+              aria-label="AI 菜谱助手"
               data-test="ai-sending-toggle"
               :aria-checked="ai.sendingEnabled"
               :disabled="!ai.canShowPrivacyCard && !ai.sendingEnabled"

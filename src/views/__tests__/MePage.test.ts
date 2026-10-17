@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { clearTokens } from "@/services/api";
 import { writeRefreshToken } from "@/services/tokenStorage";
 import { useAuthStore } from "@/stores/auth";
+import { useAiSettingsStore } from "@/stores/aiSettings";
 import MePage from "@/views/MePage.vue";
 
 // 用**真** store（而不是 mock）：本条覆盖的是 restoreSession 与 MePage 的三态联动，
@@ -205,6 +206,61 @@ describe("MePage 同步卡", () => {
     await flushPromises();
 
     expect(wrapper.get('[data-test="sync-dot"]').classes()).toContain("bg-danger");
+  });
+});
+
+describe("MePage AI 开关", () => {
+  // 已登录（refresh 成功），但 /ai/status 探活失败 ⇒ 拿不到 host
+  async function noHostPage(): Promise<VueWrapper> {
+    seedSetting("server_url", "https://srv");
+    seedSetting("server_user_id", "u1");
+    await writeRefreshToken("u1", "refresh-1");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) =>
+        url.includes("/ai/status")
+          ? Promise.reject(new Error("network down"))
+          : Promise.resolve(
+              response(200, {
+                user: {
+                  id: "u1",
+                  username: "alice",
+                  nickname: "阿丽",
+                  avatar_url: null,
+                  created_at: NOW,
+                  updated_at: NOW,
+                },
+                access_token: "access-new",
+                refresh_token: "refresh-new",
+              }),
+            ),
+      ),
+    );
+    return page();
+  }
+
+  it("拿不到 host 时不得允许开启：开关 disabled 且说明稍后再试", async () => {
+    const wrapper = await noHostPage();
+
+    // 规格硬要求：拿不到 host 就不许同意（说不清数据发给谁）
+    expect(wrapper.get('[data-test="ai-sending-toggle"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.get('[data-test="ai-sending-toggle"]').attributes("aria-checked")).toBe("false");
+    // 地址是配了的：不能叫用户去「先连接服务器」
+    expect(wrapper.get('[data-test="ai-privacy-hint"]').text()).toBe("暂时连不上服务器，稍后再试");
+    // 状态是「开关」而不是只有「已开启/未开启」，可访问名要说清是哪个开关
+    expect(wrapper.get('[data-test="ai-sending-toggle"]').attributes("aria-label")).toBe(
+      "AI 菜谱助手",
+    );
+  });
+
+  it("拿不到 host 但已开着：只允许关闭，文案说清是「只能关闭」", async () => {
+    const wrapper = await noHostPage();
+    const ai = useAiSettingsStore();
+    ai.sendingEnabled = true;
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="ai-sending-toggle"]').attributes("disabled")).toBeUndefined();
+    expect(wrapper.get('[data-test="ai-privacy-hint"]').text()).toBe("连不上服务器，只能关闭 AI 助手");
   });
 });
 
