@@ -75,12 +75,18 @@ cd wee-cook
 cp .env.example .env
 ```
 
-编辑 `.env`，除了必填的三个密码，**这两行是这次部署的关键**：
+编辑 `.env`，除了必填的三个密码，**这三段是这次部署的关键**：
 
 ```env
 # 只绑本机回环，公网连 8081 都摸不到，只有 Caddy 能进。
 # 必须与 .github/workflows/deploy-backend.yml 的 API_ADDR 一致。
 API_ADDR=127.0.0.1:8081
+
+# postgres / redis 的宿主侧端口要错开：wee-count 已经占着 5432 / 6379，
+# 不换会报 "Bind for 127.0.0.1:6379 failed: port is already allocated"。
+# 容器内部互相走服务名，这两个值只影响从宿主机连它们。
+POSTGRES_ADDR=127.0.0.1:15432
+REDIS_ADDR=127.0.0.1:16379
 
 # 在 Caddy 之后：限流才会按真实客户端 IP 计，否则全世界共用一个配额。
 TRUST_PROXY=true
@@ -195,5 +201,6 @@ cd /home/tuzkimo/wee-cook && docker compose up -d
 | 部署目录 | `/home/tuzkimo/wee-count/backend` | `/home/tuzkimo/wee-cook`（compose 在仓库根） |
 | 分支 | `master` | `main` |
 | 公网端口 | 宿主 `8080` 直连 | 宿主 `127.0.0.1:8081` + Caddy |
+| postgres / redis 宿主端口 | `5432` / `6379` | `15432` / `16379`（避开 wee-count） |
 | 密钥 | `~/.ssh/wee-count-deploy` | `~/.ssh/wee-cook-deploy` |
 | 健康检查 | 无 | 有（`/api/v1/healthz`） |
