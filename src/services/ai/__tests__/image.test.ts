@@ -67,14 +67,14 @@ describe("toScreenshot", () => {
     });
   });
 
-  it("段数 > 6 ⇒ 拒绝并提示太长了", async () => {
-    expectFailure(await toScreenshot(PNG, { decode: async () => fakeDecoded(1080, 9000) }), MSG_TOO_LONG);
+  it("段数 > 7 ⇒ 拒绝并提示太长了", async () => {
+    expectFailure(await toScreenshot(PNG, { decode: async () => fakeDecoded(1080, 9800) }), MSG_TOO_LONG);
   });
 
   it("位图每条退出路径都释放：布局被拒、渲染抛错、成功都不漏", async () => {
     const closed = { tooLong: 0, renderErr: 0, ok: 0 };
     await toScreenshot(PNG, {
-      decode: async () => ({ ...fakeDecoded(1080, 9000), close: () => void (closed.tooLong += 1) }),
+      decode: async () => ({ ...fakeDecoded(1080, 9800), close: () => void (closed.tooLong += 1) }),
     });
     await toScreenshot(PNG, {
       decode: async () => ({

@@ -19,12 +19,12 @@ function okLayout(size: { width: number; height: number }): LongImageLayout {
 
 describe("长图几何", () => {
   it("常量逐字钉死（改了就是换上游，必须连带改看门用例）", () => {
-    expect([MAX_WIDTH, MAX_SEGMENT_HEIGHT, SEGMENT_OVERLAP, MAX_SEGMENTS]).toEqual([1080, 1500, 120, 6]);
+    expect([MAX_WIDTH, MAX_SEGMENT_HEIGHT, SEGMENT_OVERLAP, MAX_SEGMENTS]).toEqual([1080, 1500, 120, 7]);
     expect(MAX_SEGMENT_BYTES).toBe(1048576);
   });
 
   it("任意一段的输出像素数都不超过上游归一阈值 1300×1300", () => {
-    const layout = okLayout({ width: 1080, height: 8400 }); // 恰好 6 段的边界
+    const layout = okLayout({ width: 1080, height: 9780 }); // 恰好 7 段的边界
     for (const p of layout.segments) {
       expect(p.width * p.height).toBeLessThanOrEqual(1_690_000);
     }
@@ -57,9 +57,11 @@ describe("长图几何", () => {
     }
   });
 
-  it("第 7 段触发拒绝：too_long", () => {
-    expect(planLongImage({ width: 1080, height: 8401 })).toEqual({ ok: false, reason: "too_long" });
-    expect(planLongImage({ width: 1080, height: 8400 })).toMatchObject({ ok: true });
+  it("第 8 段触发拒绝：too_long", () => {
+    expect(planLongImage({ width: 1080, height: 9781 })).toEqual({ ok: false, reason: "too_long" });
+    expect(planLongImage({ width: 1080, height: 9780 })).toMatchObject({ ok: true });
+    // 用户实际长截图：7 段可收
+    expect(planLongImage({ width: 1080, height: 8835 })).toMatchObject({ ok: true });
   });
 
   it("极端纵横比与 1px 短边不出现 0 边", () => {

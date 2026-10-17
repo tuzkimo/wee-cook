@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // 底部输入区：只管「有没有可发的内容」与不可用态，选图/移除都由页面接给 store。
 import { computed, ref } from "vue";
+import { ImagePlus } from "lucide-vue-next";
 import AttachmentPreview from "@/components/ai/AttachmentPreview.vue";
 
 const props = defineProps<{
@@ -40,7 +41,7 @@ function submit(): void {
         class="shrink-0 rounded-xl border border-gray-200 px-3 py-2.5 text-sm text-text-secondary transition-colors hover:bg-gray-50 disabled:opacity-50"
         @click="emit('attach')"
       >
-        截图
+        <ImagePlus class="h-4 w-4" aria-hidden="true" />
       </button>
       <input
         v-model="text"

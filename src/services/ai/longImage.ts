@@ -7,7 +7,9 @@
 export const MAX_WIDTH = 1080;
 export const MAX_SEGMENT_HEIGHT = 1500;
 export const SEGMENT_OVERLAP = 120;
-export const MAX_SEGMENTS = 6;
+// 7 = 6 段（8400px）之上再放宽一段：1080×8835 这类长截图能整张收录；
+// 7 MiB 原始字节 → base64 ≈9.4 MiB，仍落在后端 12 MiB 闸门内。
+export const MAX_SEGMENTS = 7;
 export const MAX_SEGMENT_BYTES = 1 << 20;
 /** 上游二次归一的像素阈值；段像素数不得超过它（§5.1 的看门） */
 export const UPSTREAM_NORMALIZE_PIXELS = 1300 * 1300;
