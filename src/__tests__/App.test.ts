@@ -4,9 +4,12 @@ import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { defineComponent, h } from "vue";
 import App from "@/App.vue";
 import { setAiAccount } from "@/services/ai/account";
+import type { Screenshot } from "@/services/ai/image";
+import type { ShareIntakeDeps } from "@/services/ai/shareIntake";
 
 const mocks = vi.hoisted(() => ({
   route: { path: "/", meta: {} as Record<string, unknown> },
+  push: vi.fn(),
   // App.vue 的 onMounted 会调 aiSettings.load()：这三处不 mock 就会去读 settings.json、发真请求。
   // 默认站在「没配服务器地址」一侧，一个请求都不发；要测「开启后可见」的用例自己 optIn()。
   hasBaseUrl: vi.fn(() => false),
@@ -19,6 +22,30 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/services/api", () => ({ hasBaseUrl: mocks.hasBaseUrl }));
+
+// 分享链的拉取点：生产实现由 Task 13 的 shareIntake 用例覆盖，这里只测 App 的接线。
+const intake = vi.hoisted(() => ({
+  start: vi.fn<(deps: ShareIntakeDeps & { retryDelayMs?: number }) => () => void>(),
+  stop: vi.fn(),
+  realDeps: {
+    readPending: vi.fn(),
+    readBytes: vi.fn(),
+    consume: vi.fn(),
+    toScreenshot: vi.fn(),
+  },
+  setAttachment: vi.fn<(shot: Screenshot) => void>(),
+  setNotice: vi.fn<(text: string) => void>(),
+}));
+
+vi.mock("@/services/ai/shareIntake", () => ({
+  startShareIntake: intake.start,
+  realDeps: intake.realDeps,
+}));
+
+// 真 store 已由 store 层用例覆盖；App 只负责把附件/提示交给它。
+vi.mock("@/stores/aiChat", () => ({
+  useAiChatStore: () => ({ setAttachment: intake.setAttachment, setNotice: intake.setNotice }),
+}));
 
 // 保留真身（AiError 等），只换 fetchAiStatus。
 vi.mock("@/services/ai/transport", async (importOriginal) => {
@@ -35,6 +62,7 @@ vi.mock("vue-router", async () => {
   const { defineComponent, h } = await import("vue");
   return {
     useRoute: () => mocks.route,
+    useRouter: () => ({ push: mocks.push }),
     RouterView: defineComponent({
       name: "RouterView",
       render: () => h("div", { "data-test": "page" }),
@@ -67,6 +95,7 @@ function optIn(): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  intake.start.mockReturnValue(intake.stop);
   // 入口门控按账号读 opt-in（spec §12.1）：没账号时 load() 什么都不读，入口也会隐藏
   setAiAccount("u-A");
   mocks.route = { path: "/", meta: {} };
@@ -77,6 +106,48 @@ beforeEach(() => {
 afterEach(() => {
   for (const wrapper of wrappers) wrapper.unmount();
   wrappers.length = 0;
+});
+
+describe("App 分享入口", () => {
+  it("挂载时注册拉取点，卸载时兜底注销", () => {
+    const wrapper = mountApp();
+    expect(intake.start).toHaveBeenCalledTimes(1);
+
+    wrapper.unmount();
+    // afterEach 里还会再 unmount 一次（同一个 wrapper）：这里已经从列表里摘掉
+    wrappers.length = 0;
+    expect(intake.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("拉到的东西直接进 aiChat store", () => {
+    mountApp();
+    const deps = intake.start.mock.calls[0][0];
+    const shot: Screenshot = {
+      segments: ["data:image/jpeg;base64,seg1"],
+      cover: "data:image/jpeg;base64,cover",
+      coverBytes: new Uint8Array([1]),
+      width: 1080,
+      height: 1500,
+    };
+
+    deps.setAttachment(shot);
+    deps.setNotice("一次只能收一张，已用第一张");
+
+    expect(intake.setAttachment).toHaveBeenCalledWith(shot);
+    expect(intake.setNotice).toHaveBeenCalledWith("一次只能收一张，已用第一张");
+  });
+
+  it("pushAi 只在不在 /ai 时跳转（已在页面上就不堆历史栈）", () => {
+    mountApp();
+    const deps = intake.start.mock.calls[0][0];
+
+    deps.pushAi();
+    expect(mocks.push).toHaveBeenCalledWith("/ai");
+
+    mocks.route.path = "/ai";
+    deps.pushAi();
+    expect(mocks.push).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("App 外壳", () => {

@@ -42,9 +42,12 @@ export interface AiChatStore {
   error: Ref<string | null>;
   /** 待发送的截图；send 取走即清，reset 也清 */
   attachment: Ref<Screenshot | null>;
+  /** 分享链的一句话提示（「一次只能收一张」/「读不到这张图片」）；空串/ null = 不渲染 */
+  notice: Ref<string | null>;
   /** 草稿槽刚写好：视图层据此跳编辑页。读走即清（clearDraftReady） */
   draftReady: Ref<boolean>;
   setAttachment(shot: Screenshot | null): void;
+  setNotice(text: string): void;
   clearDraftReady(): void;
   load(): Promise<void>;
   send(text: string): Promise<void>;
@@ -74,6 +77,7 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
   const sending = ref(false);
   const error = ref<string | null>(null);
   const attachment = ref<Screenshot | null>(null);
+  const notice = ref<string | null>(null);
   const draftReady = ref(false);
   // 当前账号的会话；load / send / clear 共用同一条，避免重复查询
   let sessionId: string | null = null;
@@ -218,6 +222,11 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
     attachment.value = shot;
   }
 
+  /** 不复用 error（助手回答语义），也不复用页面里的选图提示（选图语义）：这条只说分享 */
+  function setNotice(text: string): void {
+    notice.value = text;
+  }
+
   /** 视图层跳转前调一次：读完再读是 false，同一份草稿不会跳两次 */
   function clearDraftReady(): void {
     draftReady.value = false;
@@ -230,6 +239,7 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
     messages.value = [];
     error.value = null;
     attachment.value = null;
+    notice.value = null;
     draftReady.value = false;
     sending.value = false;
     sessionId = null;
@@ -240,8 +250,10 @@ export const useAiChatStore = defineStore("aiChat", (): AiChatStore => {
     sending,
     error,
     attachment,
+    notice,
     draftReady,
     setAttachment,
+    setNotice,
     clearDraftReady,
     load,
     send,

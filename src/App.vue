@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
-import { RouterView, useRoute } from "vue-router";
+import { computed, onMounted, onUnmounted } from "vue";
+import { RouterView, useRoute, useRouter } from "vue-router";
 import { BookOpen, Sparkles, User } from "lucide-vue-next";
+import { realDeps, startShareIntake } from "@/services/ai/shareIntake";
+import { useAiChatStore } from "@/stores/aiChat";
 import { useAiSettingsStore } from "@/stores/aiSettings";
 
 const route = useRoute();
+const router = useRouter();
 const aiSettings = useAiSettingsStore();
+const aiChat = useAiChatStore();
 
 // AI 项按 aiSettings.tabVisible 过滤（opt-in + 后端状态的三态），菜谱 / 我的两项不动。
 const TABS = computed(() => [
@@ -21,8 +25,25 @@ function isActive(path: string): boolean {
 }
 
 // 读本地 opt-in 开关 + 探一次 /ai/status（永不 reject；探不到保持未知态、不隐藏入口）。
+// 系统分享进来的截图也在这里接：外壳只挂载一次，拉取点全交给 startShareIntake。
+let stopIntake: (() => void) | null = null;
+
 onMounted(() => {
   void aiSettings.load();
+  stopIntake = startShareIntake({
+    ...realDeps,
+    setAttachment: (shot) => aiChat.setAttachment(shot),
+    setNotice: (text) => aiChat.setNotice(text),
+    // 已在 AI 页就不推：免得历史栈里堆一串重复条目
+    pushAi: () => {
+      if (route.path !== "/ai") void router.push("/ai");
+    },
+  });
+});
+
+onUnmounted(() => {
+  stopIntake?.();
+  stopIntake = null;
 });
 </script>
 

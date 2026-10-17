@@ -192,6 +192,14 @@ async function enable(): Promise<void> {
       <p v-if="imageError" data-test="ai-image-error" class="mx-4 mb-2 rounded-xl bg-danger/10 px-3 py-2 text-xs text-danger">
         {{ imageError }}
       </p>
+      <!-- 分享链的提示（上一张图怎么了）：只被下一次分享覆盖，不定时、不自动消失 -->
+      <p
+        v-if="chat.notice"
+        data-test="ai-share-notice"
+        class="mx-4 mb-2 rounded-xl bg-surface px-3 py-2 text-xs text-text-secondary"
+      >
+        {{ chat.notice }}
+      </p>
       <ChatComposer
         :disabled="!canSend"
         :sending="chat.sending"

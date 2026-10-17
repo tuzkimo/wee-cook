@@ -29,6 +29,7 @@ const h = vi.hoisted(() => ({
     sending: Ref<boolean>;
     error: Ref<string | null>;
     attachment: Ref<Screenshot | null>;
+    notice: Ref<string | null>;
     draftReady: Ref<boolean>;
   },
   settings: {} as {
@@ -46,6 +47,7 @@ vi.mock("@/stores/aiChat", async () => {
   h.chat.sending = ref(false);
   h.chat.error = ref<string | null>(null);
   h.chat.attachment = ref<Screenshot | null>(null);
+  h.chat.notice = ref<string | null>(null);
   h.chat.draftReady = ref(false);
   const store = reactive({
     ...h.chat,
@@ -110,6 +112,7 @@ beforeEach(() => {
   h.chat.sending.value = false;
   h.chat.error.value = null;
   h.chat.attachment.value = null;
+  h.chat.notice.value = null;
   h.chat.draftReady.value = false;
   h.settings.sendingEnabled.value = false;
   h.settings.status.value = null;
@@ -390,6 +393,20 @@ describe("AiPage 截图附件", () => {
     release({ ok: true, shot: pending });
     await flushPromises();
     expect(h.chat.attachment.value).toEqual(pending);
+  });
+});
+
+describe("AiPage 分享提示", () => {
+  it("notice 渲染在输入区上方，清空后消失", async () => {
+    h.chat.notice.value = "一次只能收一张，已用第一张";
+    const wrapper = await page();
+
+    const notice = wrapper.get('[data-test="ai-share-notice"]');
+    expect(notice.text()).toBe("一次只能收一张，已用第一张");
+
+    h.chat.notice.value = "";
+    await flushPromises();
+    expect(wrapper.find('[data-test="ai-share-notice"]').exists()).toBe(false);
   });
 });
 
