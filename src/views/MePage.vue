@@ -5,8 +5,6 @@ import { ChevronRight, RefreshCw } from "lucide-vue-next";
 import AppHeader from "@/components/AppHeader.vue";
 import UserAvatar from "@/components/UserAvatar.vue";
 import { requestSyncNow, syncInFlight } from "@/services/sync";
-import { keepScreenOn } from "@/services/voice/keepAwake";
-import { startSpeech, type SpeechHandle } from "@/services/voice/speech";
 import { useAiSettingsStore } from "@/stores/aiSettings";
 import { useAuthStore } from "@/stores/auth";
 
@@ -14,19 +12,6 @@ const router = useRouter();
 const auth = useAuthStore();
 const ai = useAiSettingsStore();
 const aiError = ref("");
-
-// 临时自检（Task 3 删除）：真机验证 EXTRA_SECURE 与常亮屏
-const smokeText = ref("");
-const smokeHandle = ref<SpeechHandle | null>(null);
-async function voiceSmoke(): Promise<void> {
-  if (smokeHandle.value) {
-    await smokeHandle.value.stop();
-    smokeHandle.value = null;
-    return;
-  }
-  await keepScreenOn(true);
-  smokeHandle.value = await startSpeech((text) => (smokeText.value = text), console.warn);
-}
 
 // 冷启动后恢复会话；未配置地址时 store 内部直接返回，不发任何请求。
 // 会话恢复完再探一次 AI 状态（拿不到 host 就不能让用户同意）；未登录时服务端只会回 401，不白探。
@@ -92,8 +77,6 @@ const aiPrivacyHint = computed(() => {
   <div class="flex h-full flex-col">
     <AppHeader title="我的" />
     <div class="flex flex-1 flex-col gap-4 overflow-auto px-4 py-4">
-      <button type="button" data-test="voice-smoke" @click="voiceSmoke">语音自检</button>
-      <p data-test="voice-smoke-text">{{ smokeText }}</p>
       <button
         type="button"
         data-test="me-user-card"

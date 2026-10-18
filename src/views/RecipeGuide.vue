@@ -42,6 +42,8 @@ let handle: SpeechHandle | null = null;
 let restartCount = 0;
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
 let lastAnswer: { text: string; at: number } | null = null;
+// 卸载后所有在飞的异步（getDetail / 权限 / startSpeech）都靠它刹车，否则会把麦留在后台
+let disposed = false;
 
 const hasSteps = computed(() => steps.value.length > 0);
 const currentText = computed(() => steps.value[currentStep.value]?.text ?? "");
@@ -68,12 +70,15 @@ onMounted(async () => {
   }
 
   await keepScreenOn(true);
+  if (disposed) return;
   await listen();
+  if (disposed) return;
   // 播报与识别互不依赖：识别不可用也照报当前步
   if (currentText.value) await speak(currentText.value);
 });
 
 onUnmounted(() => {
+  disposed = true;
   if (restartTimer !== null) {
     clearTimeout(restartTimer);
     restartTimer = null;
@@ -87,12 +92,22 @@ onUnmounted(() => {
 
 async function listen(): Promise<void> {
   if (!(await isSpeechAvailable())) {
-    listening.value = false;
-    micError.value = "这台设备没有可用的语音识别，可以手动翻步";
-    micErrorRetryable.value = false;
+    unavailable("这台设备没有可用的语音识别，可以手动翻步", false);
     return;
   }
+  if (disposed) return;
+
+  // 旧会话先停：重试时直接覆盖 handle 会永久多出一对监听器，回调被重复触发
+  const previous = handle;
+  handle = null;
+  await previous?.stop();
+
   handle = await startSpeech(handleResult, handleError);
+  if (disposed) {
+    await handle.stop();
+    handle = null;
+    return;
+  }
   listening.value = true;
 }
 
@@ -108,6 +123,8 @@ function handleResult(transcript: string): void {
   const now = Date.now();
   if (lastAnswer && lastAnswer.text === answer.text && now - lastAnswer.at < DEDUPE_MS) return;
   lastAnswer = { text: answer.text, at: now };
+  // 听得见就说明会话是活的：计数归零，否则一堂菜下来总共只给 3 次重试
+  restartCount = 0;
 
   if (answer.step !== undefined) currentStep.value = answer.step;
   qa.value = [{ question: transcript, answer: answer.text }, ...qa.value].slice(0, MAX_QA);
@@ -117,35 +134,34 @@ function handleResult(transcript: string): void {
 function handleError(kind: SpeechErrorKind, _message: string): void {
   if (kind === "permission") {
     // 永久拒绝：不重试，否则用户看到的是一个永远在失败的红条
-    listening.value = false;
-    micError.value = "需要麦克风权限，请在系统设置里允许";
-    micErrorRetryable.value = false;
+    unavailable("需要麦克风权限，请在系统设置里允许", false);
     return;
   }
-  if (kind === "transient") {
-    restartCount += 1;
-    if (restartCount < MAX_RESTARTS) {
-      scheduleRestart();
-      return;
-    }
+  if (kind === "unavailable") {
+    unavailable("这台设备没有可用的语音识别，可以手动翻步", false);
+    return;
   }
+  restartCount += 1;
+  if (restartCount < MAX_RESTARTS) {
+    listening.value = false;
+    scheduleRestart();
+    return;
+  }
+  unavailable("语音识别暂时不可用，点这里重试", true);
+}
+
+function unavailable(text: string, retryable: boolean): void {
   listening.value = false;
-  micError.value = "语音识别暂时不可用，点这里重试";
-  micErrorRetryable.value = true;
+  micError.value = text;
+  micErrorRetryable.value = retryable;
 }
 
 function scheduleRestart(): void {
   if (restartTimer !== null) clearTimeout(restartTimer);
   restartTimer = setTimeout(() => {
     restartTimer = null;
-    void restartListening();
+    void listen();
   }, RESTART_DELAY_MS);
-}
-
-async function restartListening(): Promise<void> {
-  await handle?.stop();
-  handle = await startSpeech(handleResult, handleError);
-  listening.value = true;
 }
 
 /** 点提示条重试：手动路径不看重试次数，直接清零重来 */
@@ -170,7 +186,7 @@ function goStep(target: number): void {
         <button
           type="button"
           data-test="guide-end"
-          class="shrink-0 rounded-full px-3 py-1 text-sm font-medium text-primary hover:bg-gray-100"
+          class="min-h-10 shrink-0 rounded-full px-4 py-2 text-sm font-medium text-primary hover:bg-gray-100"
           @click="router.back()"
         >
           结束指导
@@ -219,7 +235,7 @@ function goStep(target: number): void {
           type="button"
           data-test="guide-prev"
           :disabled="!hasSteps || currentStep === 0"
-          class="rounded-full border border-gray-200 px-4 py-2 text-sm text-text disabled:opacity-40"
+          class="min-h-12 rounded-full border border-gray-200 px-4 py-3 text-sm text-text disabled:opacity-40"
           @click="goStep(currentStep - 1)"
         >
           ‹ 上一步
@@ -228,7 +244,7 @@ function goStep(target: number): void {
           type="button"
           data-test="guide-next"
           :disabled="!hasSteps || currentStep >= steps.length - 1"
-          class="rounded-full border border-gray-200 px-4 py-2 text-sm text-text disabled:opacity-40"
+          class="min-h-12 rounded-full border border-gray-200 px-4 py-3 text-sm text-text disabled:opacity-40"
           @click="goStep(currentStep + 1)"
         >
           下一步 ›
@@ -241,6 +257,11 @@ function goStep(target: number): void {
           <p class="text-text">答：{{ item.answer }}</p>
         </li>
       </ul>
+
+      <!-- 规格 §3 / §8.5 要求把音频去向写在页面上：不落盘不上传本服务，厂商服务联网与否不由我们定 -->
+      <p data-test="guide-privacy" class="border-t border-gray-100 px-4 py-2 text-[11px] leading-snug text-text-secondary">
+        音频不落盘、不上传本服务；系统识别服务是否联网由手机厂商决定。
+      </p>
     </template>
   </div>
 </template>

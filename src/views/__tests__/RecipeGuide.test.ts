@@ -242,6 +242,83 @@ describe("RecipeGuide", () => {
     expect(wrapper.get('[data-test="guide-qa"]').text()).toContain("低筋面粉，200 克");
   });
 
+  it("识别服务不存在时提示不可重试，点提示条也不会再起麦", async () => {
+    const wrapper = await page();
+
+    mocks.onError?.("unavailable", "not available");
+    await flushPromises();
+
+    const bar = wrapper.get('[data-test="guide-mic-error"]');
+    expect(bar.text()).toContain("没有可用的语音识别");
+    await bar.trigger("click");
+    await flushPromises();
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
+  });
+
+  it("点重试前先停掉旧会话，不留重复监听", async () => {
+    vi.useFakeTimers();
+    const wrapper = mount(RecipeGuide);
+    wrappers.push(wrapper);
+    await vi.advanceTimersByTimeAsync(10);
+
+    mocks.onError?.("transient", "no speech");
+    await vi.advanceTimersByTimeAsync(1500);
+    mocks.onError?.("transient", "no speech");
+    await vi.advanceTimersByTimeAsync(1500);
+    mocks.onError?.("transient", "no speech");
+    await vi.advanceTimersByTimeAsync(10);
+    mocks.stop.mockClear();
+
+    await wrapper.get('[data-test="guide-mic-error"]').trigger("click");
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(mocks.stop).toHaveBeenCalled();
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(4);
+  });
+
+  it("成功识别一次后重启计数清零（不是整场只给 3 次）", async () => {
+    vi.useFakeTimers();
+    const wrapper = mount(RecipeGuide);
+    wrappers.push(wrapper);
+    await vi.advanceTimersByTimeAsync(10);
+
+    mocks.onError?.("transient", "no speech");
+    await vi.advanceTimersByTimeAsync(1500);
+    mocks.onError?.("transient", "no speech");
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(3);
+
+    // 中途听到一句：计数器必须归零，否则一堂菜下来总共只给 3 次重试
+    mocks.onResult?.("小厨");
+    await vi.advanceTimersByTimeAsync(10);
+    mocks.onError?.("transient", "no speech");
+    await vi.advanceTimersByTimeAsync(1500);
+
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(4);
+  });
+
+  it("卸载后才返回的详情不会再开麦（异步竞态不留后台监听）", async () => {
+    let resolveDetail: (value: RecipeDetail) => void = () => {};
+    mocks.getDetail.mockReturnValue(
+      new Promise<RecipeDetail>((resolve) => {
+        resolveDetail = resolve;
+      }),
+    );
+
+    const wrapper = mount(RecipeGuide);
+    wrapper.unmount();
+    resolveDetail(detail());
+    await flushPromises();
+
+    expect(mocks.startSpeech).not.toHaveBeenCalled();
+  });
+
+  it("页面上说明音频去向（不落盘、不上传本服务，厂商识别服务是否联网由其决定）", async () => {
+    const wrapper = await page();
+
+    expect(wrapper.get('[data-test="guide-privacy"]').text()).toContain("不落盘");
+  });
+
   it("卸载时调用 stop()、stopSpeaking()、keepScreenOn(false)", async () => {
     const wrapper = await page();
 

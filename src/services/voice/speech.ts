@@ -5,6 +5,7 @@ import {
   isAvailable,
   onError,
   onResult,
+  requestPermission,
   startListening,
   stopListening,
 } from "tauri-plugin-stt-api";
@@ -46,6 +47,14 @@ export async function startSpeech(
   };
 
   try {
+    // 插件在缺 RECORD_AUDIO 时只会 reject + 弹系统框，授权后**不会自己开麦**。
+    // 所以先显式申请：首次使用时用户点了「允许」就直接在听，不需要再点一次重试。
+    const permission = await requestPermission();
+    if (permission.microphone !== "granted") {
+      onErrorKind("permission", "麦克风权限未开启");
+      return { stop };
+    }
+
     // 先订阅再启动：启动瞬间出的错误不能漏
     unlistenResult = await onResult((result) => {
       if (result.isFinal) onResultText(result.transcript);
@@ -56,13 +65,25 @@ export async function startSpeech(
     await startListening({ language: "zh-CN", continuous: true, interimResults: false });
   } catch (err) {
     await stop();
-    onErrorKind("unavailable", err instanceof Error ? err.message : String(err));
+    onErrorKind(kindOfFailure(err), messageOf(err));
   }
 
   return { stop };
 }
 
-/** 权限被拒不能重试，其余可重试（NO_SPEECH / TIMEOUT 等）。 */
+/** 启动失败一律是 reject 出来的字符串，只能按文案分流（插件没有错误码）。 */
+function kindOfFailure(err: unknown): SpeechErrorKind {
+  const message = messageOf(err);
+  if (/permission/i.test(message)) return "permission";
+  if (/not available|no recognition|install google/i.test(message)) return "unavailable";
+  return "transient";
+}
+
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** error 事件的码表。权限被拒不能重试，其余可重试（NO_SPEECH / TIMEOUT 等）。 */
 function kindOf(code: string): SpeechErrorKind {
   switch (code) {
     case "PERMISSION_DENIED":

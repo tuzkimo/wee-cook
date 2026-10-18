@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   isAvailable: vi.fn(),
   startListening: vi.fn(),
   stopListening: vi.fn(),
+  requestPermission: vi.fn(),
   onResultHandler: undefined as ((result: { transcript: string; isFinal: boolean }) => void) | undefined,
   onErrorHandler: undefined as ((error: { code: string; message: string }) => void) | undefined,
   unlistenResult: vi.fn(),
@@ -15,6 +16,7 @@ vi.mock("tauri-plugin-stt-api", () => ({
   isAvailable: mocks.isAvailable,
   startListening: mocks.startListening,
   stopListening: mocks.stopListening,
+  requestPermission: mocks.requestPermission,
   onResult: async (handler: typeof mocks.onResultHandler) => {
     mocks.onResultHandler = handler;
     return mocks.unlistenResult;
@@ -37,6 +39,7 @@ beforeEach(() => {
   mocks.isAvailable.mockResolvedValue({ available: true });
   mocks.startListening.mockResolvedValue(undefined);
   mocks.stopListening.mockResolvedValue(undefined);
+  mocks.requestPermission.mockResolvedValue({ microphone: "granted", speechRecognition: "granted" });
   mocks.onResultHandler = undefined;
   mocks.onErrorHandler = undefined;
 });
@@ -99,5 +102,44 @@ describe("speech", () => {
     expect(mocks.stopListening).toHaveBeenCalledTimes(1);
     expect(mocks.unlistenResult).toHaveBeenCalledTimes(1);
     expect(mocks.unlistenError).toHaveBeenCalledTimes(1);
+  });
+
+  it("启动前先申请麦克风权限：首次使用时授权即开麦，不用用户再点一次", async () => {
+    await startSpeech(vi.fn(), vi.fn());
+
+    expect(mocks.requestPermission).toHaveBeenCalledTimes(1);
+    expect(mocks.startListening).toHaveBeenCalledTimes(1);
+  });
+
+  it("权限被拒时报 permission，且不启动识别", async () => {
+    mocks.requestPermission.mockResolvedValue({ microphone: "permanently_denied", speechRecognition: "denied" });
+    const onError = vi.fn<(kind: SpeechErrorKind, message: string) => void>();
+
+    await startSpeech(vi.fn(), onError);
+
+    expect(onError).toHaveBeenCalledWith("permission", expect.any(String));
+    expect(mocks.startListening).not.toHaveBeenCalled();
+  });
+
+  it("startListening 因权限被 reject 时报 permission（不能是可重试的 unavailable）", async () => {
+    mocks.startListening.mockRejectedValue(
+      new Error("Microphone permission required. Please grant permission and try again."),
+    );
+    const onError = vi.fn<(kind: SpeechErrorKind, message: string) => void>();
+
+    await startSpeech(vi.fn(), onError);
+
+    expect(onError).toHaveBeenCalledWith("permission", expect.any(String));
+  });
+
+  it("startListening 因设备没有识别服务被 reject 时报 unavailable", async () => {
+    mocks.startListening.mockRejectedValue(
+      new Error("Speech recognition not available on this device. Please install Google app."),
+    );
+    const onError = vi.fn<(kind: SpeechErrorKind, message: string) => void>();
+
+    await startSpeech(vi.fn(), onError);
+
+    expect(onError).toHaveBeenCalledWith("unavailable", expect.any(String));
   });
 });
