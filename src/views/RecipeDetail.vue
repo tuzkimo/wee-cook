@@ -1,10 +1,10 @@
 <script setup lang="ts">
 // 只读详情页（规格 §6.4）：食材清单在前、字号偏大 —— 这是做菜时真正要看的那一段；
 // 步骤在后，带序号与可选插图。「编辑」与「删除」都在顶栏右上角。
-// ⚠️ 不做计时器 / 防熄屏 / 逐步高亮，那是下一轮的跟做模式，别在这里加。
+// ⚠️ 计时器 / 防熄屏 / 逐步高亮 属于指导模式，已在 `RecipeGuide.vue` 里做，别在这里加。
 import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { Pencil, Star, Trash2, UserCheck, UserPlus } from "lucide-vue-next";
+import { Pencil, PhoneCall, Star, Trash2, UserCheck, UserPlus } from "lucide-vue-next";
 import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import UserAvatar from "@/components/UserAvatar.vue";
@@ -197,6 +197,15 @@ async function confirmDelete(): Promise<void> {
           </h1>
         </template>
         <template #action>
+          <button
+            type="button"
+            data-test="guide"
+            aria-label="指导模式"
+            class="flex h-8 w-8 items-center justify-center rounded-full hover:bg-gray-100"
+            @click="router.push(`/recipe/${recipeId}/guide`)"
+          >
+            <PhoneCall :size="18" class="text-text-secondary" />
+          </button>
           <!-- 收藏只对别人的菜谱可见（spec §9.3）：图标按钮放顶栏，正文不再占一行 -->
           <button
             v-if="!canEdit(detail.recipe)"

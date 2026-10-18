@@ -352,6 +352,14 @@ describe("RecipeDetail", () => {
     });
   });
 
+  it("点顶栏电话图标进指导模式", async () => {
+    const wrapper = await page();
+
+    await wrapper.get('[data-test="guide"]').trigger("click");
+
+    expect(mocks.push).toHaveBeenCalledWith("/recipe/r1/guide");
+  });
+
   it("点「删除」弹 ConfirmDialog，确认后调 store.remove 并跳回列表", async () => {
     const wrapper = await page();
 

@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from "vue-router";
 import RecipeList from "@/views/RecipeList.vue";
 import RecipeEdit from "@/views/RecipeEdit.vue";
 import RecipeDetail from "@/views/RecipeDetail.vue";
+import RecipeGuide from "@/views/RecipeGuide.vue";
 import FilterPage from "@/views/FilterPage.vue";
 import AiPage from "@/views/AiPage.vue";
 import MePage from "@/views/MePage.vue";
@@ -18,6 +19,7 @@ export default createRouter({
     // 静态段排在参数段之前：不依赖 vue-router 的打分规则更稳
     { path: "/recipe/filter", name: "recipe-filter", component: FilterPage, meta: { hideTab: true } },
     { path: "/recipe/:id/edit", name: "recipe-edit", component: RecipeEdit, meta: { hideTab: true } },
+    { path: "/recipe/:id/guide", name: "recipe-guide", component: RecipeGuide, meta: { hideTab: true } },
     { path: "/recipe/:id", name: "recipe-detail", component: RecipeDetail, meta: { hideTab: true } },
     { path: "/ai", name: "ai", component: AiPage },
     { path: "/me", name: "me", component: MePage },
