@@ -33,6 +33,8 @@ const steps = ref<RecipeStep[]>([]);
 const ingredients = ref<RecipeIngredientRow[]>([]);
 const currentStep = ref(0);
 const qa = ref<{ question: string; answer: string }[]>([]);
+/** 上一句听到的原文：识别得到的但不带唤醒词时也得让用户知道它听到了 */
+const lastHeard = ref("");
 const loadError = ref("");
 const micError = ref("");
 const micErrorRetryable = ref(false);
@@ -49,7 +51,7 @@ const hasSteps = computed(() => steps.value.length > 0);
 const currentText = computed(() => steps.value[currentStep.value]?.text ?? "");
 const statusText = computed(() => {
   if (micError.value) return "语音不可用，步骤照常可看可翻";
-  return listening.value ? "正在聆听 · 说「小厨」开头" : "准备中…";
+  return listening.value ? "正在聆听 · 说「小厨」开头" : "重新连接中…";
 });
 
 onMounted(async () => {
@@ -112,6 +114,10 @@ async function listen(): Promise<void> {
 }
 
 function handleResult(transcript: string): void {
+  // 只要能拿到一句识别结果，就说明麦和识别服务都活着：重启计数归零
+  restartCount = 0;
+  lastHeard.value = transcript;
+
   const answer = answerQuestion(transcript, {
     ingredients: ingredients.value,
     steps: steps.value,
@@ -123,15 +129,13 @@ function handleResult(transcript: string): void {
   const now = Date.now();
   if (lastAnswer && lastAnswer.text === answer.text && now - lastAnswer.at < DEDUPE_MS) return;
   lastAnswer = { text: answer.text, at: now };
-  // 听得见就说明会话是活的：计数归零，否则一堂菜下来总共只给 3 次重试
-  restartCount = 0;
 
   if (answer.step !== undefined) currentStep.value = answer.step;
   qa.value = [{ question: transcript, answer: answer.text }, ...qa.value].slice(0, MAX_QA);
   void speak(answer.text);
 }
 
-function handleError(kind: SpeechErrorKind, _message: string): void {
+function handleError(kind: SpeechErrorKind, message: string): void {
   if (kind === "permission") {
     // 永久拒绝：不重试，否则用户看到的是一个永远在失败的红条
     unavailable("需要麦克风权限，请在系统设置里允许", false);
@@ -141,13 +145,21 @@ function handleError(kind: SpeechErrorKind, _message: string): void {
     unavailable("这台设备没有可用的语音识别，可以手动翻步", false);
     return;
   }
+  if (kind === "silence") {
+    // 插件内部已连着重启 3 次，这次是它放弃了（做菜时安静太正常）。
+    // 不计入重试额度，直接接上：把安静当成故障，一分钟就会自己变红条。
+    listening.value = false;
+    scheduleRestart();
+    return;
+  }
   restartCount += 1;
   if (restartCount < MAX_RESTARTS) {
     listening.value = false;
     scheduleRestart();
     return;
   }
-  unavailable("语音识别暂时不可用，点这里重试", true);
+  // 把插件给的原因带上：只有「暂时不可用」一句话，等于没法排查也看不出是哪一步坏的
+  unavailable(`语音识别暂时不可用（${message}），点这里重试`, true);
 }
 
 function unavailable(text: string, retryable: boolean): void {
@@ -208,6 +220,10 @@ function goStep(target: number): void {
           aria-hidden="true"
         />
         {{ statusText }}
+      </p>
+
+      <p v-if="lastHeard" data-test="guide-heard" class="px-4 pb-1 text-xs text-text-secondary">
+        听到：{{ lastHeard }}
       </p>
 
       <button

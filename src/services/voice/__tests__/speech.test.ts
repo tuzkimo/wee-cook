@@ -66,13 +66,32 @@ describe("speech", () => {
     expect(onError).toHaveBeenCalledWith("permission", "没有麦克风权限");
   });
 
-  it("插件 error code 为 NO_SPEECH 时报 transient", async () => {
+  it("插件 error code 为 NO_SPEECH 时报 silence（正常安静，不是故障）", async () => {
     const onError = vi.fn<(kind: SpeechErrorKind, message: string) => void>();
     await startSpeech(vi.fn(), onError);
 
     error("NO_SPEECH");
 
-    expect(onError).toHaveBeenCalledWith("transient", "boom");
+    expect(onError).toHaveBeenCalledWith("silence", "boom");
+  });
+
+  it("插件 TIMEOUT 同样算 silence", async () => {
+    const onError = vi.fn<(kind: SpeechErrorKind, message: string) => void>();
+    await startSpeech(vi.fn(), onError);
+
+    error("TIMEOUT");
+
+    expect(onError).toHaveBeenCalledWith("silence", "boom");
+  });
+
+  it("插件自己报错停下后，stop() 不再调 stopListening（避免紧接着的启动被拒 BUSY）", async () => {
+    const handle = await startSpeech(vi.fn(), vi.fn());
+
+    error("NO_SPEECH");
+    await handle.stop();
+
+    expect(mocks.unlistenResult).toHaveBeenCalledTimes(1);
+    expect(mocks.stopListening).not.toHaveBeenCalled();
   });
 
   it("插件 error code 为 NOT_AVAILABLE 时报 unavailable", async () => {

@@ -10,7 +10,7 @@ import {
   stopListening,
 } from "tauri-plugin-stt-api";
 
-export type SpeechErrorKind = "permission" | "unavailable" | "transient";
+export type SpeechErrorKind = "permission" | "unavailable" | "silence" | "transient";
 
 export interface SpeechHandle {
   stop(): Promise<void>;
@@ -33,13 +33,23 @@ export async function startSpeech(
   let unlistenResult: UnlistenFn | null = null;
   let unlistenError: UnlistenFn | null = null;
   let stopped = false;
+  // 插件自己报错就停下了（isListening=false）。这时再调 stopListening 是多余的，
+  // 反而会让紧接着的 startListening 被识别服务拒成 BUSY。
+  let dead = false;
+
+  const detach = (): void => {
+    unlistenResult?.();
+    unlistenError?.();
+    unlistenResult = null;
+    unlistenError = null;
+  };
 
   const stop = async (): Promise<void> => {
     if (stopped) return;
     stopped = true;
+    detach();
+    if (dead) return;
     try {
-      unlistenResult?.();
-      unlistenError?.();
       await stopListening();
     } catch {
       // 已经停了再停、或插件不在，都当成功
@@ -60,6 +70,7 @@ export async function startSpeech(
       if (result.isFinal) onResultText(result.transcript);
     });
     unlistenError = await onError((err) => {
+      dead = true;
       onErrorKind(kindOf(err.code), err.message);
     });
     await startListening({ language: "zh-CN", continuous: true, interimResults: false });
@@ -83,7 +94,7 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** error 事件的码表。权限被拒不能重试，其余可重试（NO_SPEECH / TIMEOUT 等）。 */
+/** error 事件的码表。权限被拒不能重试，其余可重试（BUSY / AUDIO_ERROR 等）。 */
 function kindOf(code: string): SpeechErrorKind {
   switch (code) {
     case "PERMISSION_DENIED":
@@ -92,6 +103,10 @@ function kindOf(code: string): SpeechErrorKind {
     case "NOT_AVAILABLE":
     case "LANGUAGE_NOT_SUPPORTED":
       return "unavailable";
+    // 插件只在连续 3 次静音后把它抛上来：做菜时没人说话是常态，不是故障
+    case "NO_SPEECH":
+    case "TIMEOUT":
+      return "silence";
     default:
       return "transient";
   }

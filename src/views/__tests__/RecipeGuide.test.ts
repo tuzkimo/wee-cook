@@ -319,6 +319,48 @@ describe("RecipeGuide", () => {
     expect(wrapper.get('[data-test="guide-privacy"]').text()).toContain("不落盘");
   });
 
+  it("连续多次静音（没人说话）不消耗重试额度，一直保持可用", async () => {
+    vi.useFakeTimers();
+    const wrapper = mount(RecipeGuide);
+    wrappers.push(wrapper);
+    await vi.advanceTimersByTimeAsync(10);
+
+    // 做菜时安静是常态：每 3 次静音插件自己放弃一次，我们接上，不能因此变红条
+    for (let i = 0; i < 6; i++) {
+      mocks.onError?.("silence", "No speech detected");
+      await vi.advanceTimersByTimeAsync(1500);
+    }
+
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(7);
+    expect(wrapper.find('[data-test="guide-mic-error"]').exists()).toBe(false);
+  });
+
+  it("听到不带唤醒词的句子时只显示听到了什么，不出声", async () => {
+    const wrapper = await page();
+    mocks.speak.mockClear();
+
+    mocks.onResult?.("今天天气不错");
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="guide-heard"]').text()).toContain("今天天气不错");
+    expect(mocks.speak).not.toHaveBeenCalled();
+    expect(wrapper.find('[data-test="guide-qa"]').exists()).toBe(false);
+  });
+
+  it("放弃时把插件给的原因带进提示条（否则只能看到笼的统一句）", async () => {
+    vi.useFakeTimers();
+    const wrapper = mount(RecipeGuide);
+    wrappers.push(wrapper);
+    await vi.advanceTimersByTimeAsync(10);
+
+    for (let i = 0; i < 3; i++) {
+      mocks.onError?.("transient", "Client side error");
+      await vi.advanceTimersByTimeAsync(1500);
+    }
+
+    expect(wrapper.get('[data-test="guide-mic-error"]').text()).toContain("Client side error");
+  });
+
   it("卸载时调用 stop()、stopSpeaking()、keepScreenOn(false)", async () => {
     const wrapper = await page();
 
