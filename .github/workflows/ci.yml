@@ -36,11 +36,13 @@ jobs:
           cache: npm
 
       # tauri crate 在 Linux 上靠 pkg-config 找 webkit2gtk，缺这些 -sys 包会在 cargo check 阶段就报错。
+      # libspeechd-dev：tauri-plugin-tts → tts → speech-dispatcher-sys 的 build.rs 用 bindgen 读
+      # speech-dispatcher/libspeechd.h，缺头文件在 check 阶段就 panic（不链接，所以开发库够用）。
       - name: 安装 Tauri 的 Linux 前置库
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
-            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libspeechd-dev
 
       - uses: dtolnay/rust-toolchain@stable
 
