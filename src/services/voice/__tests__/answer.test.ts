@@ -67,6 +67,21 @@ describe("answerQuestion", () => {
     expect(answerQuestion("", ctx())).toBeNull();
   });
 
+  it("「扫除」当成唤醒词（实机头号的听错法：小厨 → 扫除）", () => {
+    expect(answerQuestion("扫除，面粉多少", ctx())?.text).toBe("低筋面粉，200 克");
+    expect(answerQuestion("扫除下一步", ctx())?.step).toBe(1);
+  });
+
+  it("同音字也能当唤醒词（小橱 / 小初 / 小除）", () => {
+    expect(answerQuestion("小橱，面粉多少", ctx())?.text).toBe("低筋面粉，200 克");
+    expect(answerQuestion("小初，面粉多少", ctx())?.text).toBe("低筋面粉，200 克");
+    expect(answerQuestion("小除，面粉多少", ctx())?.text).toBe("低筋面粉，200 克");
+  });
+
+  it("只喊唤醒词（哪怕是听错的）也回一句「在」", () => {
+    expect(answerQuestion("扫除", ctx())?.text).toContain("在");
+  });
+
   it("只喊唤醒词时回一句「在」", () => {
     const answer = answerQuestion("小厨", ctx());
 

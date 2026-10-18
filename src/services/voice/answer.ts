@@ -20,6 +20,13 @@ const NO_STEPS = "这道菜没有步骤";
 const FALLBACK = "这个我菜谱里没写。可以问，面粉多少，或者，第三步是什么。";
 const MAX_INGREDIENTS = 3;
 
+/**
+ * 唤醒词。「小厨」(xiǎo chú) 的实机头号错法是「扫除」(sǎo chú)，
+ * 其余是 小 + chú 音的常见同音字。放进来的代价：家人说「大扫除」时会回一句「在，问吧。」
+ * —— 规格 §8.6 已接受这类误触发；「消除」之类日常词故意不收，那会真吵。
+ */
+const WAKE_WORD = /小[厨橱刍除初处楚雛础]|扫除/;
+
 const CN_NUMERALS: Record<string, number> = {
   一: 1,
   二: 2,
@@ -43,7 +50,7 @@ const DURATION = /\d+\s*(分钟|分|秒|小时|钟头)/;
 
 /** null = 不是在叫它（无唤醒词 / 空文本） */
 export function answerQuestion(transcript: string, ctx: AnswerContext): Answer | null {
-  if (!transcript.includes("小厨")) return null;
+  if (!WAKE_WORD.test(transcript)) return null;
 
   const text = stripWakeWord(transcript);
   if (text === "") return { text: "在，问吧。" };
@@ -67,7 +74,10 @@ export function answerQuestion(transcript: string, ctx: AnswerContext): Answer |
 }
 
 function stripWakeWord(raw: string): string {
-  return raw.replace(/小厨/g, "").replace(/^[\s，。！？、,.!?;；:：…—-]+|[\s，。！？、,.!?;；:：…—-]+$/g, "");
+  const global = new RegExp(WAKE_WORD.source, "g");
+  return raw
+    .replace(global, "")
+    .replace(/^[\s，。！？、,.!?;；:：…—-]+|[\s，。！？、,.!?;；:：…—-]+$/g, "");
 }
 
 function clamp(currentStep: number, stepCount: number): number {

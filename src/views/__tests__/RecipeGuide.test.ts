@@ -397,10 +397,10 @@ describe("RecipeGuide", () => {
     expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
     mocks.speak.mockClear();
 
-    mocks.onResult?.("扫除下一步");
+    mocks.onResult?.("今天天气不错");
     await flushPromises();
 
-    expect(wrapper.get('[data-test="guide-heard"]').text()).toContain("扫除下一步");
+    expect(wrapper.get('[data-test="guide-heard"]').text()).toContain("今天天气不错");
     // 告诉用户是「听错了」而不是「没听到」
     expect(wrapper.get('[data-test="guide-heard"]').text()).toContain("没听清「小厨」");
     expect(mocks.speak).not.toHaveBeenCalled();
