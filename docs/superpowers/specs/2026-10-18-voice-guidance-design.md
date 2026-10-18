@@ -199,7 +199,11 @@ export async function stopSpeaking(): Promise<void>;
 - **朗读与识别互斥**：`announce()` = 停麦 → `speakAndWait` → 300ms 尾音静默 → 再开麦。不关麦会把朗读听回去形成回声循环
 - 页面顶部显示「听到：<原文>」；没叫醒它时另行语音提示（8 秒冷却）
 - 离开页面（`onUnmounted` / 返回 / 结束指导）：`stopSpeaking` → `handle.stop()` → `keepScreenOn(false)`。**顺序不能反**（先关麦再停朗读会听到半句话被切断后又恢复）
-- 收到 `onError` 且用户没点结束：1.5s 后自动重启，最多 3 次；仍失败 → `unavailable` 提示条
+- 收到 `onError` 且用户没点结束：
+  - `noise`（插件的假 `ERROR_CLIENT`）→ 丢弃，不计数、不重启
+  - `silence` → 300ms 后接上，不计数（做菜时安静是常态）
+  - 其它可重试错误 → 1.5s 后重启，累计 3 次仍失败 → `unavailable` 提示条（带插件给的原因）
+- 息屏 / 切后台回来（`visibilitychange` → visible）自动重连：插件在后台会停麦
 - `code === "PERMISSION_DENIED"` → 直接进 `unavailable`，文案指向系统设置的麦克风权限，**不重试**
 - 没有步骤的菜谱（steps 为空）：页面显示「这道菜没有步骤」，语音只答食材用量
 
@@ -208,8 +212,8 @@ export async function stopSpeaking(): Promise<void>;
 ## 7. 依赖与配置（实现时必须核对的清单）
 
 1. 依赖：`tauri-plugin-stt` + `tauri-plugin-stt-api`、`tauri-plugin-tts` + `tauri-plugin-tts-api`。**版本钉死到当前小版本**（单作者 0.2.x，允许自动升级等于允许半夜自己坏掉）
-2. `src-tauri/src/lib.rs`：注册两个插件
-3. `src-tauri/capabilities/default.json`：加 `stt:default`、`tts:default`（**以各自 README 为准**，`tauri-plugin-tts` 的 `allow-register-listener` 容易漏，漏了 `onSpeechEvent` 会静默不触发）。权限标识写错会在构建期直接报错，不是静默失败
+2. `src-tauri/src/lib.rs`：注册插件（`tts` 全平台、`stt` 仅移动端 `#[cfg(mobile)]`、`keep-awake` 仅 Android）
+3. 权限：`tts:default` 放 `capabilities/default.json`；`stt:default` 与 `keep-awake:default` 放 `capabilities/mobile.json`（`platforms: ["android","iOS"]`）——桌面端没有 `stt` 的 ACL 清单，写在桌面 capability 里构建期就报错。`tauri-plugin-tts` 的 `allow-register-listener` 容易漏，漏了 `onSpeechEvent` 会静默不触发
 4. `RECORD_AUDIO` 由 `tauri-plugin-stt` 的 manifest 合并进来，**不手改** `src-tauri/gen/android/app/src/main/AndroidManifest.xml`；实现后用 merged manifest 确认（`src-tauri/gen/android/app/build/intermediates/merged_manifest/`）
 5. 常亮屏：新增 `src-tauri/gen/android/app/src/main/java/cn/tuzkimo/wee_cook/KeepAwakePlugin.kt`（`@TauriPlugin` + `@Command start/stop`）。**Tauri 2 没有 `MainActivity.registerPlugin`**：Kotlin 插件由 Rust 侧 `src-tauri/src/keep_awake.rs` 用 `PluginApi::register_android_plugin` 实例化；纯 Kotlin 插件没有自己的 crate，ACL 清单在 `build.rs` 里用 `tauri_build::InlinedPlugin` 生成。JS 直接 `invoke("plugin:keep-awake|start")`
 6. 后台行为：指导模式**不做前台服务**，锁屏或切后台即停麦。这是刻意的：不做常驻就不需要一套通知 + 唤醒锁 + 生命周期管理
@@ -241,7 +245,7 @@ export async function stopSpeaking(): Promise<void>;
 ## 10. 测试
 
 - **`src/services/voice/__tests__/answer.test.ts`（重点，≥ 20 条）**：中文数字、步骤越界、多食材命中、无唤醒词返回 null、菜谱外问题走兜底、时间抽取成功/失败、ASR 少字（「低筋面粉」听成「面粉」）、空 steps、空 transcript
-- **`src/views/__tests__/RecipeGuide.test.ts`**：mock `speech.ts` / `tts.ts`，断言进入即 start、离开即 stop、`onError` 触发 watchdog 重试、语音不可用时页面不白屏且步骤仍可手动翻
+- **`src/views/__tests__/RecipeGuide.test.ts`**：mock `speech.ts` / `tts.ts`，断言进入即开麦、念答案期间停麦、`noise` 不计数、可重试错误按 3 次上限、卸载即停麦（含念到一半卸载）、语音不可用时页面不白屏且步骤仍可手动翻
 - **不写 E2E**；真机手测清单（识别可用性、朗读回声、唤醒词听错率、熄屏与切后台行为）写在实施计划里 + 见 §11
 
 ---

@@ -14,23 +14,21 @@ const END_EVENTS = ["speech:finish", "speech:error", "speech:cancel"] as const;
 /** 朗读到结束（或失败/超时）才 resolve，调用方据此决定何时恢复识别 */
 export async function speakAndWait(text: string): Promise<void> {
   const unlisteners: UnlistenFn[] = [];
-  let timer: ReturnType<typeof setTimeout> | null = null;
+  let resolveFinished: () => void = () => {};
+  const finished = new Promise<void>((resolve) => {
+    resolveFinished = resolve;
+  });
+  const timer = setTimeout(resolveFinished, SPEAK_TIMEOUT_MS);
 
   try {
-    const finished = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, SPEAK_TIMEOUT_MS);
-      const done = (): void => resolve();
-      void (async () => {
-        for (const type of END_EVENTS) {
-          // 事件 API 拿不到就只靠超时兜底：听不见回执也不能把页面卡死
-          try {
-            unlisteners.push(await onSpeechEvent(type, done));
-          } catch {
-            continue;
-          }
-        }
-      })();
-    });
+    // 先订阅再念：念得很短时 finish 可能早于订阅；订阅失败就只靠超时兜底
+    for (const type of END_EVENTS) {
+      try {
+        unlisteners.push(await onSpeechEvent(type, resolveFinished));
+      } catch {
+        continue;
+      }
+    }
 
     await pluginSpeak({ text, language: "zh-CN" });
     await finished;
@@ -38,7 +36,7 @@ export async function speakAndWait(text: string): Promise<void> {
   } catch (err) {
     console.warn("朗读失败", err);
   } finally {
-    if (timer !== null) clearTimeout(timer);
+    clearTimeout(timer);
     for (const off of unlisteners) off();
   }
 }

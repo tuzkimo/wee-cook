@@ -21,7 +21,7 @@ const MAX_RESTARTS = 3;
 const RESTART_DELAY_MS = 1500;
 /** 静音后的续听要快：真故障才该等 1.5s */
 const SILENCE_RESTART_MS = 300;
-/** 同一句答案 5 秒内只应答一次（朗读回灌不暂停识别，见规格 §3） */
+/** 同一句答案 5 秒内只应答一次（重启/重投可能把同一句 final 送两遍） */
 const DEDUPE_MS = 5000;
 /**
  * 没叫醒它时要能听见。提示语**故意不含「小厨」**：这段声音会被自己的麦克风听回去，
@@ -55,6 +55,11 @@ let restartCount = 0;
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
 let lastAnswer: { text: string; at: number } | null = null;
 let lastWakePromptAt = 0;
+/**
+ * 停麦 / 朗读 / 开麦必须串行：并发跑会各开一个会话，后开的把前一个 handle 覆盖掉，
+ * 那个会话就再也没人能停（麦克风关不掉）。所有入口都排进这条队列。
+ */
+let taskQueue: Promise<void> = Promise.resolve();
 // 卸载后所有在飞的异步（getDetail / 权限 / startSpeech）都靠它刹车，否则会把麦留在后台
 let disposed = false;
 
@@ -84,15 +89,19 @@ onMounted(async () => {
 
   await keepScreenOn(true);
   if (disposed) return;
-  if (currentText.value) {
-    await announce(currentText.value);
-  } else {
-    await listen();
-  }
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  await enqueue(async () => {
+    if (currentText.value) {
+      await speakThenListen(currentText.value);
+    } else {
+      await listen();
+    }
+  });
 });
 
 onUnmounted(() => {
   disposed = true;
+  document.removeEventListener("visibilitychange", onVisibilityChange);
   if (restartTimer !== null) {
     clearTimeout(restartTimer);
     restartTimer = null;
@@ -114,13 +123,30 @@ async function listen(): Promise<void> {
   // 旧会话先停：重试时直接覆盖 handle 会永久多出一对监听器，回调被重复触发
   await pauseListening();
 
-  handle = await startSpeech(handleResult, handleError);
+  // 权限被拒 / 启动失败时 startSpeech 会在返回前就回调 onError：这时不能显示「正在聆听」
+  let failedBeforeStart = false;
+  handle = await startSpeech(handleResult, (kind, message) => {
+    failedBeforeStart = true;
+    handleError(kind, message);
+  });
   if (disposed) {
     await handle.stop();
     handle = null;
     return;
   }
-  listening.value = true;
+  listening.value = !failedBeforeStart;
+}
+
+function enqueue(task: () => Promise<void>): Promise<void> {
+  taskQueue = taskQueue.then(task).catch(() => undefined);
+  return taskQueue;
+}
+
+/** 息屏 / 切后台后插件会停麦，回到前台自己接上（用户不必手动点重试） */
+function onVisibilityChange(): void {
+  if (document.visibilityState !== "visible" || disposed) return;
+  if (micError.value) return;
+  void enqueue(listen);
 }
 
 function handleResult(transcript: string): void {
@@ -154,7 +180,11 @@ function handleResult(transcript: string): void {
  * 念一句：先关麦 → 念完（含尾音静默，见 tts.ts）→ 再开麦。
  * 不关麦的话识别会把朗读内容听回去，再当成一句话处理，形成回声循环（实机确认）。
  */
-async function announce(text: string): Promise<void> {
+function announce(text: string): void {
+  void enqueue(() => speakThenListen(text));
+}
+
+async function speakThenListen(text: string): Promise<void> {
   await pauseListening();
   await speakAndWait(text);
   if (disposed) return;
@@ -191,7 +221,7 @@ function handleError(kind: SpeechErrorKind, message: string): void {
     return;
   }
   if (kind === "silence") {
-    // 一句话一个会话（见 speech.ts）：插件不会自己续听，静音就是我们续听的信号。
+    // 插件自己放弃时才抛 silence（它内部已连着重启 3 次），这次由我们接上。
     // 不计入重试额度，且间隔要短——安静时每 ~4s 就会来一次，等 1.5s 等于三成时间听不见。
     listening.value = false;
     scheduleRestart(SILENCE_RESTART_MS);
@@ -217,16 +247,21 @@ function scheduleRestart(delay: number): void {
   if (restartTimer !== null) clearTimeout(restartTimer);
   restartTimer = setTimeout(() => {
     restartTimer = null;
-    void listen();
+    void enqueue(listen);
   }, delay);
 }
 
 /** 点提示条重试：手动路径不看重试次数，直接清零重来 */
 async function retry(): Promise<void> {
   if (!micErrorRetryable.value) return;
+  // 手动重试优先：清掉还在排队的自动重启，否则会连着开两个会话
+  if (restartTimer !== null) {
+    clearTimeout(restartTimer);
+    restartTimer = null;
+  }
   micError.value = "";
   restartCount = 0;
-  await listen();
+  await enqueue(listen);
 }
 
 /** 手动翻步与语音跳步共用一个入口，越界一律夹回合法范围 */

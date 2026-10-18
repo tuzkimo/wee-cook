@@ -26,7 +26,7 @@ const MAX_INGREDIENTS = 3;
  * 放进来的代价：家人说到这些词时会回一句「在，问吧。」
  * —— 规格 §8.6 已接受这类误触发。
  */
-const WAKE_WORD = /小[厨橱刍除初处楚雛础]|扫除|消除/;
+const WAKE_WORD = /小[厨橱刍除初处楚雏雛础]|扫除|消除/;
 
 const CN_NUMERALS: Record<string, number> = {
   一: 1,

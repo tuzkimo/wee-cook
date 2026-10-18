@@ -78,6 +78,10 @@ describe("answerQuestion", () => {
     expect(answerQuestion("小除，面粉多少", ctx())?.text).toBe("低筋面粉，200 克");
   });
 
+  it("简体「雏」也认（spec 写的是简体）", () => {
+    expect(answerQuestion("小雏，面粉多少", ctx())?.text).toBe("低筋面粉，200 克");
+  });
+
   it("「消除」也当唤醒词（实机还会这么听错）", () => {
     expect(answerQuestion("消除，面粉多少", ctx())?.text).toBe("低筋面粉，200 克");
   });

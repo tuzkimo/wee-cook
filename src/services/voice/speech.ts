@@ -41,9 +41,6 @@ export async function startSpeech(
   let unlistenResult: UnlistenFn | null = null;
   let unlistenError: UnlistenFn | null = null;
   let stopped = false;
-  // 插件自己报错就停下了（isListening=false）。这时再调 stopListening 是多余的，
-  // 反而会让紧接着的 startListening 被识别服务拒成 BUSY。
-  let dead = false;
 
   const detach = (): void => {
     unlistenResult?.();
@@ -56,7 +53,8 @@ export async function startSpeech(
     if (stopped) return;
     stopped = true;
     detach();
-    if (dead) return;
+    // 一律真的停：被忽略的假 ERROR_CLIENT 之后会话其实还在录音，
+    // 跳过 stopListening 就等于离页后麦克风一直开着（规格 §6 的硬要求）。
     try {
       await stopListening();
     } catch {
@@ -77,11 +75,10 @@ export async function startSpeech(
     unlistenResult = await onResult((result) => {
       // 只收 final：interimResults 关着，这里再挡一次是为了将来改配置时不至于重复应答
       if (!result.isFinal) return;
-      // 注意不要在这里置 dead：continuous 下会话还在继续，置了会让离页时的 stop() 不关麦
+      // continuous 下会话还在继续，这里什么都不用做
       onResultText(result.transcript);
     });
     unlistenError = await onError((err) => {
-      dead = true;
       onErrorKind(kindOf(err.code), err.message);
     });
     await startListening({ language: "zh-CN", continuous: true, interimResults: false });
@@ -119,7 +116,7 @@ function kindOf(code: string): SpeechErrorKind {
     case "TIMEOUT":
       return "silence";
     // ERROR_CLIENT 被插件映射成 UNKNOWN：上面注释说的双重重启副作用。
-    // 真出现「音频输入坏了」也走这条路，交给页面的静默看门狗兜。
+    // 真出现「音频输入坏了」也走这条路，页面会一直静默不响应（看门狗已删，理由见规格 §11）。
     case "UNKNOWN":
       return "noise";
     default:

@@ -93,14 +93,14 @@ describe("speech", () => {
     expect(mocks.stopListening).toHaveBeenCalledTimes(1);
   });
 
-  it("插件自己报错停下后，stop() 也不再调 stopListening（避免紧接着的启动被拒 BUSY）", async () => {
+  it("被忽略的假 ERROR_CLIENT（UNKNOWN）之后，stop() 必须真的关麦", async () => {
     const handle = await startSpeech(vi.fn(), vi.fn());
 
-    error("NO_SPEECH");
+    // 插件的双重重启副作用：这条错误之后会话其实还活着、仍在录音
+    error("UNKNOWN", "Client side error");
     await handle.stop();
 
-    expect(mocks.unlistenResult).toHaveBeenCalledTimes(1);
-    expect(mocks.stopListening).not.toHaveBeenCalled();
+    expect(mocks.stopListening).toHaveBeenCalledTimes(1);
   });
 
   it("插件 error code 为 NOT_AVAILABLE 时报 unavailable", async () => {

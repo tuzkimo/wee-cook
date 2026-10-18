@@ -42,8 +42,9 @@ describe("tts", () => {
       done = true;
     });
 
-    await Promise.resolve();
-    expect(mocks.pluginSpeak).toHaveBeenCalledWith({ text: "低筋面粉，200 克", language: "zh-CN" });
+    await vi.waitFor(() =>
+      expect(mocks.pluginSpeak).toHaveBeenCalledWith({ text: "低筋面粉，200 克", language: "zh-CN" }),
+    );
     // 还没念完就不能把麦克风还给识别（TTS 与识别抢音频通路）
     expect(done).toBe(false);
 
@@ -71,6 +72,23 @@ describe("tts", () => {
     mocks.pluginSpeak.mockRejectedValue(new Error("no engine"));
 
     await expect(speakAndWait("在，问吧。")).resolves.toBeUndefined();
+  });
+
+  it("finish 之后还要等尾音静默才算念完（否则会把最后半个字听回去）", async () => {
+    vi.useFakeTimers();
+    let done = false;
+    const speaking = speakAndWait("低筋面粉，200 克").then(() => {
+      done = true;
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    fire("speech:finish");
+    await vi.advanceTimersByTimeAsync(100);
+    expect(done).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(300);
+    await speaking;
+    expect(done).toBe(true);
+    vi.useRealTimers();
   });
 
   it("stopSpeaking 停掉当前朗读", async () => {

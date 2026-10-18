@@ -169,6 +169,20 @@ describe("RecipeGuide", () => {
     expect(wrapper.find('[data-test="guide-qa"]').exists()).toBe(false);
   });
 
+  it("插件每 ~4.5s 的假 ERROR_CLIENT 不计数、不出红条", async () => {
+    const wrapper = await page();
+
+    for (let i = 0; i < 5; i++) {
+      mocks.onError?.("noise", "Client side error");
+      await flushPromises();
+    }
+
+    expect(wrapper.find('[data-test="guide-mic-error"]').exists()).toBe(false);
+    expect(wrapper.get('[data-test="guide-status"]').text()).toContain("正在聆听");
+    // 也不许重开会话（会话本来就在跑）
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
+  });
+
   it("transient 错误后 1.5 秒自动重启一次（fake timers）", async () => {
     vi.useFakeTimers();
     const wrapper = mount(RecipeGuide);
@@ -342,7 +356,8 @@ describe("RecipeGuide", () => {
 
   it("静音后只等 300ms 就续听", async () => {
     vi.useFakeTimers();
-    mount(RecipeGuide);
+    const wrapper = mount(RecipeGuide);
+    wrappers.push(wrapper);
     await vi.advanceTimersByTimeAsync(10);
     expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
 
@@ -452,6 +467,69 @@ describe("RecipeGuide", () => {
     await flushPromises();
 
     expect(mocks.speakAndWait).toHaveBeenCalledTimes(2);
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(2);
+  });
+
+  it("念到一半卸载：不会再开麦（否则离页后麦克风还开着）", async () => {
+    const wrapper = await page();
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
+
+    let finishSpeech: () => void = () => {};
+    mocks.speakAndWait.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishSpeech = resolve;
+      }),
+    );
+
+    mocks.onResult?.("小厨，面粉多少");
+    await flushPromises();
+    wrapper.unmount();
+    wrappers.length = 0;
+    finishSpeech();
+    await flushPromises();
+
+    // 只是进页面那一次；念完的那一刻页面已经走了，不许再起麦
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
+  });
+
+  it("两句答案连着来会排队念，不会并发停/开麦", async () => {
+    await page();
+    const order: string[] = [];
+    let finishFirst: () => void = () => {};
+    mocks.speakAndWait
+      .mockImplementationOnce(async (text: string) => {
+        order.push(`start:${text}`);
+        await new Promise<void>((resolve) => {
+          finishFirst = resolve;
+        });
+        order.push(`end:${text}`);
+      })
+      .mockImplementationOnce(async (text: string) => {
+        order.push(`start:${text}`);
+        order.push(`end:${text}`);
+      });
+
+    mocks.onResult?.("小厨，面粉多少");
+    mocks.onResult?.("小厨，第三步是什么");
+    await flushPromises();
+    finishFirst();
+    await flushPromises();
+
+    expect(order).toEqual([
+      "start:低筋面粉，200 克",
+      "end:低筋面粉，200 克",
+      "start:倒掉多余的油，留底油下配料",
+      "end:倒掉多余的油，留底油下配料",
+    ]);
+  });
+
+  it("从后台回到前台会自动重连（插件在后台把麦停了）", async () => {
+    await page();
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
+
+    document.dispatchEvent(new Event("visibilitychange"));
+    await flushPromises();
+
     expect(mocks.startSpeech).toHaveBeenCalledTimes(2);
   });
 
