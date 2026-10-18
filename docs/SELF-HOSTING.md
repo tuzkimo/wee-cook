@@ -277,32 +277,22 @@ docker compose up -d --build
 
 ## 备份
 
-菜谱与图片存在数据卷里，建议定期备份。
+菜谱与图片分别在 PostgreSQL 和 `files` 卷里，**两个要一起备**：数据库只存图片的文件名，只备份数据库的话恢复后图片全是裂的。
+
+每天自动备份 + 异地拉取的完整步骤见 [数据库与图片备份 + NAS 异地拉取指南](数据库备份与异地拉取指南.md)。最省事的入口就一条：
 
 ```bash
-# 数据库（cron 建议；cron 无 TTY，必须加 -T，否则 `docker compose exec` 会报 TTY 错误）
-docker compose exec -T postgres pg_dump -U wee wee-cook > wee-cook-$(date +%F).sql
-
-# 恢复
-cat wee-cook-2026-10-14.sql | docker compose exec -T postgres psql -U wee wee-cook
-
-# 图片：备份 files 卷
-docker run --rm -v wee-cook_files:/data -v "$PWD":/backup alpine tar czf /backup/wee-cook-files-$(date +%F).tar.gz -C /data .
+# 手动备份一次（数据库 + 图片，默认存到 ~/backup/wee-cook，保留 7 天）
+~/wee-cook/scripts/backup-db.sh
 ```
+
+定时每天跑见指南第 1 节，恢复（含恢复图片、演练、恢复后要重新登录的口径）见指南第 4 节。
 
 > 若服务器数据库被重建（`docker compose down -v`）或恢复了一份较旧的备份：服务端已加世代护栏，
 > 客户端首次同步会自动全量重拉；但账号行若不在新库里，客户端需要**重新登录**（`/me` 返回 401
 > → 刷新令牌也失败 → 登出重新注册，新账号从零开始同步）才能恢复。
 
-以上命令假设 `.env` 使用默认的 `POSTGRES_USER=wee`、`POSTGRES_DB=wee-cook`；若你改过这两个值，请对应替换命令中的 `-U wee` 与库名。
-
-图片卷名是 **`<compose 项目名>_files`**，项目名默认取自 `compose.yml` 所在目录名（目录叫 `recipes` 时卷名就是 `recipes_files`）。写错卷名不会报错——`docker run -v` 会**新建一个空卷**并成功打包出空归档。执行前先确认真实卷名：
-
-```bash
-docker volume ls | grep files
-```
-
-确认后把上面命令里的卷名换成它（例如 `-v recipes_files:/data`）。
+> 想手敲命令（没克隆仓库、只想临时备一份）时的坑：图片卷名是 **`<compose 项目名>_files`**，项目名默认取自 `compose.yml` 所在目录名（目录叫 `recipes` 时卷名就是 `recipes_files`）。写错卷名不会报错——`docker run -v` 会**新建一个空卷**并成功打包出空归档。脚本是从运行中的容器反查卷名的，所以用脚本就没这个问题；真要手敲先 `docker volume ls | grep files` 确认真实卷名。
 
 ## 数据与隐私
 
