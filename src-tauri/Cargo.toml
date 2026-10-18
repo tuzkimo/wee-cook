@@ -1,6 +1,6 @@
 [package]
 name = "wee-cook"
-version = "0.8.0"
+version = "1.0.0"
 description = "一起做饭 - 离线优先的家庭菜谱管理 App"
 authors = ["you"]
 edition = "2021"

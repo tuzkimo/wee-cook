@@ -1,7 +1,7 @@
 {
   "name": "wee-cook",
   "private": true,
-  "version": "0.8.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -19,6 +19,7 @@
     "@tauri-apps/plugin-sql": "^2.5.0",
     "@tauri-apps/plugin-store": "^2.5.0",
     "lucide-vue-next": "^0.577.0",
+    "markdown-it": "^15.0.3",
     "pinia": "^4.0.3",
     "vue": "^3.5.13",
     "vue-router": "^4.6.4"
@@ -26,6 +27,7 @@
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",
     "@tauri-apps/cli": "^2",
+    "@types/markdown-it": "^14.2.0",
     "@types/node": "^24.10.1",
     "@vitejs/plugin-vue": "^6.0.7",
     "@vue/test-utils": "^2.5.1",

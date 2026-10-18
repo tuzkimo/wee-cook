@@ -18,18 +18,28 @@ afterEach(() => {
 
 function bubble(image: string | null, text = "这个怎么做"): VueWrapper {
   const message: ChatMessage = {
-    id: "m1",
+    ...reply(),
     role: "user",
     text,
     image,
+  };
+  const wrapper = mount(ChatBubble, { props: { message } });
+  wrappers.push(wrapper);
+  return wrapper;
+}
+
+/** AI 回复轮：无图、无检索结果 */
+function reply(): ChatMessage {
+  return {
+    id: "m2",
+    role: "assistant",
+    text: "库里没找到",
+    image: null,
     filter: null,
     items: [],
     matched: 0,
     unresolved: null,
   };
-  const wrapper = mount(ChatBubble, { props: { message } });
-  wrappers.push(wrapper);
-  return wrapper;
 }
 
 describe("ChatBubble", () => {
@@ -48,5 +58,23 @@ describe("ChatBubble", () => {
 
     expect(wrapper.find('[data-test="ai-bubble-image"]').exists()).toBe(true);
     expect(wrapper.find('[data-test="ai-bubble"]').exists()).toBe(false);
+  });
+
+  it("AI 回复按 markdown 渲染，不把 ** 原样显示出来", () => {
+    const wrapper = mount(ChatBubble, {
+      props: { message: { ...reply(), text: "库里**没有**这道菜" } },
+    });
+    wrappers.push(wrapper);
+
+    const el = wrapper.get('[data-test="ai-bubble"]');
+    expect(el.find("strong").text()).toBe("没有");
+    expect(el.text()).not.toContain("**");
+  });
+
+  it("用户自己打的星号不被当成标记", () => {
+    const wrapper = bubble(null, "**这个是重点吗**");
+
+    expect(wrapper.get('[data-test="ai-bubble"]').find("strong").exists()).toBe(false);
+    expect(wrapper.get('[data-test="ai-bubble"]').text()).toBe("**这个是重点吗**");
   });
 });

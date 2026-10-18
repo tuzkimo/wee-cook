@@ -6,6 +6,7 @@ import RecipeCard from "@/components/RecipeCard.vue";
 import { imageSrc } from "@/services/imageStore";
 import { ensureLocalImages } from "@/services/syncFiles";
 import type { ChatMessage } from "@/stores/aiChat";
+import { renderMarkdown } from "@/utils/markdown";
 import type { RecipeFilter } from "@/utils/recipeFilter";
 
 const props = defineProps<{ message: ChatMessage }>();
@@ -53,14 +54,20 @@ function continueInFilter(): void {
       alt="菜谱截图"
       class="mb-1 max-h-40 rounded-xl object-cover"
     />
+    <!-- 用户说的是什么就打什么；AI 回复是 markdown，走渲染 -->
     <p
-      v-if="message.text !== ''"
+      v-if="message.text !== '' && message.role === 'user'"
       data-test="ai-bubble"
-      class="max-w-[85%] whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-sm"
-      :class="message.role === 'user' ? 'bg-primary text-white' : 'bg-surface text-text'"
+      class="max-w-[85%] whitespace-pre-wrap rounded-2xl bg-primary px-3.5 py-2.5 text-sm text-white"
     >
       {{ message.text }}
     </p>
+    <div
+      v-else-if="message.text !== ''"
+      data-test="ai-bubble"
+      v-html="renderMarkdown(message.text)"
+      class="md max-w-[85%] rounded-2xl bg-surface px-3.5 py-2.5 text-sm text-text"
+    />
 
     <template v-if="message.filter !== null">
       <p
@@ -113,3 +120,95 @@ function continueInFilter(): void {
     </template>
   </div>
 </template>
+
+<!-- 渲染出来的 markdown 没有 class，样式只能从 .md 往下按标签给；整体比正文小一号，免得气泡被撑爆 -->
+<style scoped>
+.md :deep(> :first-child) {
+  margin-top: 0;
+}
+
+.md :deep(> :last-child) {
+  margin-bottom: 0;
+}
+
+.md :deep(p),
+.md :deep(ul),
+.md :deep(ol),
+.md :deep(pre),
+.md :deep(blockquote) {
+  margin: 0.4em 0;
+}
+
+.md :deep(ul),
+.md :deep(ol) {
+  padding-left: 1.25em;
+}
+
+.md :deep(ul) {
+  list-style: disc;
+}
+
+.md :deep(ol) {
+  list-style: decimal;
+}
+
+.md :deep(li) {
+  margin: 0.15em 0;
+}
+
+.md :deep(h1),
+.md :deep(h2),
+.md :deep(h3),
+.md :deep(h4) {
+  margin: 0.6em 0 0.3em;
+  font-weight: 600;
+}
+
+.md :deep(h1) {
+  font-size: 1.05em;
+}
+
+.md :deep(h2) {
+  font-size: 1em;
+}
+
+.md :deep(h3),
+.md :deep(h4) {
+  font-size: 0.95em;
+}
+
+.md :deep(code) {
+  border-radius: 0.25rem;
+  background: var(--color-bg);
+  padding: 0.1em 0.3em;
+  font-size: 0.85em;
+}
+
+.md :deep(pre) {
+  overflow-x: auto;
+  border-radius: 0.5rem;
+  background: var(--color-bg);
+  padding: 0.5em 0.65em;
+}
+
+.md :deep(pre code) {
+  background: none;
+  padding: 0;
+}
+
+.md :deep(blockquote) {
+  border-left: 3px solid var(--color-bg);
+  padding-left: 0.6em;
+  color: var(--color-text-secondary);
+}
+
+.md :deep(a) {
+  color: var(--color-primary);
+  text-decoration: underline;
+}
+
+.md :deep(hr) {
+  margin: 0.6em 0;
+  border-top: 1px solid var(--color-bg);
+}
+</style>
