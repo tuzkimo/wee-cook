@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   stop: vi.fn(),
   speak: vi.fn(),
   stopSpeaking: vi.fn(),
+  isSpeaking: vi.fn(),
   keepScreenOn: vi.fn(),
   onResult: undefined as ((text: string) => void) | undefined,
   onError: undefined as ((kind: SpeechErrorKind, message: string) => void) | undefined,
@@ -39,6 +40,7 @@ vi.mock("@/services/voice/speech", () => ({
 vi.mock("@/services/voice/tts", () => ({
   speak: mocks.speak,
   stopSpeaking: mocks.stopSpeaking,
+  isSpeaking: mocks.isSpeaking,
 }));
 
 vi.mock("@/services/voice/keepAwake", () => ({
@@ -114,6 +116,7 @@ beforeEach(() => {
   mocks.getDetail.mockResolvedValue(detail());
   mocks.isSpeechAvailable.mockResolvedValue(true);
   mocks.speak.mockResolvedValue(undefined);
+  mocks.isSpeaking.mockResolvedValue(false);
   mocks.stopSpeaking.mockResolvedValue(undefined);
   mocks.stop.mockResolvedValue(undefined);
   mocks.keepScreenOn.mockResolvedValue(undefined);
@@ -157,14 +160,15 @@ describe("RecipeGuide", () => {
     expect(wrapper.get('[data-test="guide-qa"]').text()).toContain("低筋面粉，200 克");
   });
 
-  it("识别结果没有唤醒词时不朗读、不加问答行", async () => {
+  it("识别结果没有唤醒词时不朗读答案、不加问答行（只念一句提示）", async () => {
     const wrapper = await page();
     mocks.speak.mockClear();
 
     mocks.onResult?.("面粉多少");
     await flushPromises();
 
-    expect(mocks.speak).not.toHaveBeenCalled();
+    // 不能把「面粉多少」当答案念，也不能进问答列表
+    expect(mocks.speak.mock.calls.map((call) => String(call[0]))).not.toContain("低筋面粉，200 克");
     expect(wrapper.find('[data-test="guide-qa"]').exists()).toBe(false);
   });
 
@@ -366,7 +370,7 @@ describe("RecipeGuide", () => {
     expect(wrapper.find('[data-test="guide-mic-error"]').exists()).toBe(false);
   });
 
-  it("听到不带唤醒词的句子时只显示听到了什么，不出声", async () => {
+  it("听到不带唤醒词的句子时把原文显示出来，方便判断是听错还是没听到", async () => {
     const wrapper = await page();
     mocks.speak.mockClear();
 
@@ -374,7 +378,6 @@ describe("RecipeGuide", () => {
     await flushPromises();
 
     expect(wrapper.get('[data-test="guide-heard"]').text()).toContain("今天天气不错");
-    expect(mocks.speak).not.toHaveBeenCalled();
     expect(wrapper.find('[data-test="guide-qa"]').exists()).toBe(false);
   });
 
@@ -392,7 +395,7 @@ describe("RecipeGuide", () => {
     expect(wrapper.get('[data-test="guide-mic-error"]').text()).toContain("Client side error");
   });
 
-  it("没有唤醒词的结果不出声、也不打断监听", async () => {
+  it("没有唤醒词时用语音提示一句（用这功能的人不看屏幕），且不打断监听", async () => {
     const wrapper = await page();
     expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
     mocks.speak.mockClear();
@@ -401,11 +404,42 @@ describe("RecipeGuide", () => {
     await flushPromises();
 
     expect(wrapper.get('[data-test="guide-heard"]').text()).toContain("今天天气不错");
-    // 告诉用户是「听错了」而不是「没听到」
+    // 屏幕上也留一份（顺手能看见的人不用听）
     expect(wrapper.get('[data-test="guide-heard"]').text()).toContain("没听清「小厨」");
-    expect(mocks.speak).not.toHaveBeenCalled();
+    // 但主要靠声音：提示语不含「小厨」，否则会被自己的麦克风听回去形成回声循环
+    const spoken = mocks.speak.mock.calls.map((call) => String(call[0]));
+    const prompt = spoken.find((text) => text.includes("没听清"));
+    expect(prompt).toBeDefined();
+    expect(prompt).not.toContain("小厨");
     // 会话没被关掉：不需要重开
     expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
+  });
+
+  it("8 秒内重复的「没有唤醒词」只提示一次（厨房里家常话很多）", async () => {
+    vi.useFakeTimers();
+    const wrapper = mount(RecipeGuide);
+    wrappers.push(wrapper);
+    await vi.advanceTimersByTimeAsync(10);
+    mocks.speak.mockClear();
+
+    mocks.onResult?.("今天天气不错");
+    await vi.advanceTimersByTimeAsync(10);
+    mocks.onResult?.("今天天气不错");
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(mocks.speak.mock.calls.filter((call) => String(call[0]).includes("没听清"))).toHaveLength(1);
+    expect(wrapper.find('[data-test="guide-heard"]').exists()).toBe(true);
+  });
+
+  it("正在朗读时不插嘴提示（别把答案念一半再插一句）", async () => {
+    await page();
+    mocks.speak.mockClear();
+    mocks.isSpeaking.mockResolvedValue(true);
+
+    mocks.onResult?.("今天天气不错");
+    await flushPromises();
+
+    expect(mocks.speak).not.toHaveBeenCalled();
   });
 
   it("同一句答案 5 秒内不再朗读", async () => {

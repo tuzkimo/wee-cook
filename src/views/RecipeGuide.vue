@@ -13,7 +13,7 @@ import {
   type SpeechErrorKind,
   type SpeechHandle,
 } from "@/services/voice/speech";
-import { speak, stopSpeaking } from "@/services/voice/tts";
+import { isSpeaking, speak, stopSpeaking } from "@/services/voice/tts";
 import type { RecipeIngredientRow, RecipeStep } from "@/types";
 
 /** 连续 3 次可重试错误就不再自己起麦（规格 §6） */
@@ -28,6 +28,12 @@ const DEDUPE_MS = 5000;
  * 可 result / error 一个都不发）。宁可当作可重试故障重启，也不能永远假装在听。
  */
 const SILENT_TIMEOUT_MS = 15000;
+/**
+ * 没叫醒它时要能听见。提示语**故意不含「小厨」**：这段声音会被自己的麦克风听回去，
+ * 带唤醒词就等于自我触发。另外配 8 秒冷却：厨房里家常话很多，不能每句都回话。
+ */
+const WAKE_MISSED_PROMPT = "没听清，先叫我，再说要问什么。";
+const WAKE_PROMPT_COOLDOWN_MS = 8000;
 const MAX_QA = 5;
 
 const route = useRoute();
@@ -54,6 +60,7 @@ let restartCount = 0;
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
 let lastAnswer: { text: string; at: number } | null = null;
 let silentTimer: ReturnType<typeof setTimeout> | null = null;
+let lastWakePromptAt = 0;
 // 卸载后所有在飞的异步（getDetail / 权限 / startSpeech）都靠它刹车，否则会把麦留在后台
 let disposed = false;
 
@@ -152,6 +159,7 @@ function handleResult(transcript: string): void {
   // null = 不是在叫它，安静丢弃（会话仍在继续，不用做任何事）
   if (!answer) {
     wakeMissed.value = true;
+    void promptWakeMissed();
     return;
   }
   wakeMissed.value = false;
@@ -171,6 +179,15 @@ async function pauseListening(): Promise<void> {
   handle = null;
   listening.value = false;
   await current?.stop();
+}
+
+async function promptWakeMissed(): Promise<void> {
+  const now = Date.now();
+  if (now - lastWakePromptAt < WAKE_PROMPT_COOLDOWN_MS) return;
+  // 正在念答案就别插嘴：半句答案后面接一句「没听清」比不提示更糊涂
+  if (await isSpeaking()) return;
+  lastWakePromptAt = now;
+  await speak(WAKE_MISSED_PROMPT);
 }
 
 function handleError(kind: SpeechErrorKind, message: string): void {

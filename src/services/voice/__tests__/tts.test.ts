@@ -4,19 +4,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   pluginSpeak: vi.fn(),
   pluginStop: vi.fn(),
+  pluginIsSpeaking: vi.fn(),
 }));
 
 vi.mock("tauri-plugin-tts-api", () => ({
   speak: mocks.pluginSpeak,
   stop: mocks.pluginStop,
+  isSpeaking: mocks.pluginIsSpeaking,
 }));
 
-import { speak, stopSpeaking } from "@/services/voice/tts";
+import { isSpeaking, speak, stopSpeaking } from "@/services/voice/tts";
 
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.pluginSpeak.mockResolvedValue({ utteranceId: "u1" });
   mocks.pluginStop.mockResolvedValue(undefined);
+  mocks.pluginIsSpeaking.mockResolvedValue(false);
   vi.spyOn(console, "warn").mockImplementation(() => {});
 });
 
@@ -31,6 +34,12 @@ describe("tts", () => {
     mocks.pluginSpeak.mockRejectedValue(new Error("no engine"));
 
     await expect(speak("在，问吧。")).resolves.toBeUndefined();
+  });
+
+  it("isSpeaking 拿不到状态时报 false（不阻塞页面）", async () => {
+    mocks.pluginIsSpeaking.mockRejectedValue(new Error("plugin gone"));
+
+    await expect(isSpeaking()).resolves.toBe(false);
   });
 
   it("stopSpeaking 停掉当前朗读", async () => {

@@ -78,6 +78,10 @@ describe("answerQuestion", () => {
     expect(answerQuestion("小除，面粉多少", ctx())?.text).toBe("低筋面粉，200 克");
   });
 
+  it("「消除」也当唤醒词（实机还会这么听错）", () => {
+    expect(answerQuestion("消除，面粉多少", ctx())?.text).toBe("低筋面粉，200 克");
+  });
+
   it("只喊唤醒词（哪怕是听错的）也回一句「在」", () => {
     expect(answerQuestion("扫除", ctx())?.text).toContain("在");
   });
