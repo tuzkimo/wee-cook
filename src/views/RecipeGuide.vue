@@ -23,6 +23,11 @@ const RESTART_DELAY_MS = 1500;
 const SILENCE_RESTART_MS = 300;
 /** 同一句答案 5 秒内只应答一次（朗读回灌不暂停识别，见规格 §3） */
 const DEDUPE_MS = 5000;
+/**
+ * 起了麦但一个事件都不来 = 原生层哑了（实机见过：识别服务仍报“Ready for speech”，
+ * 可 result / error 一个都不发）。宁可当作可重试故障重启，也不能永远假装在听。
+ */
+const SILENT_TIMEOUT_MS = 15000;
 const MAX_QA = 5;
 
 const route = useRoute();
@@ -48,6 +53,7 @@ let handle: SpeechHandle | null = null;
 let restartCount = 0;
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
 let lastAnswer: { text: string; at: number } | null = null;
+let silentTimer: ReturnType<typeof setTimeout> | null = null;
 // 卸载后所有在飞的异步（getDetail / 权限 / startSpeech）都靠它刹车，否则会把麦留在后台
 let disposed = false;
 
@@ -87,6 +93,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   disposed = true;
+  clearSilentWatchdog();
   if (restartTimer !== null) {
     clearTimeout(restartTimer);
     restartTimer = null;
@@ -115,9 +122,26 @@ async function listen(): Promise<void> {
     return;
   }
   listening.value = true;
+  armSilentWatchdog();
+}
+
+function clearSilentWatchdog(): void {
+  if (silentTimer !== null) {
+    clearTimeout(silentTimer);
+    silentTimer = null;
+  }
+}
+
+function armSilentWatchdog(): void {
+  clearSilentWatchdog();
+  silentTimer = setTimeout(() => {
+    silentTimer = null;
+    handleError("transient", "语音识别没有响应");
+  }, SILENT_TIMEOUT_MS);
 }
 
 function handleResult(transcript: string): void {
+  clearSilentWatchdog();
   // 只要能拿到一句识别结果，就说明麦和识别服务都活着：重启计数归零
   restartCount = 0;
   lastHeard.value = transcript;
@@ -158,6 +182,7 @@ async function announce(text: string): Promise<void> {
 }
 
 async function pauseListening(): Promise<void> {
+  clearSilentWatchdog();
   const current = handle;
   handle = null;
   listening.value = false;
@@ -165,6 +190,7 @@ async function pauseListening(): Promise<void> {
 }
 
 function handleError(kind: SpeechErrorKind, message: string): void {
+  clearSilentWatchdog();
   if (kind === "permission") {
     // 永久拒绝：不重试，否则用户看到的是一个永远在失败的红条
     unavailable("需要麦克风权限，请在系统设置里允许", false);

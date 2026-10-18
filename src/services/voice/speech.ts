@@ -74,7 +74,11 @@ export async function startSpeech(
 
     // 先订阅再启动：启动瞬间出的错误不能漏
     unlistenResult = await onResult((result) => {
-      if (result.isFinal) onResultText(result.transcript);
+      if (!result.isFinal) return;
+      // 收到结果就等于这次会话终结（插件在 continuous:false 下也会把 isListening 置 false）。
+      // 这时再调 stopListening 会与紧接着的 startListening 撞上，识别服务会变哑。
+      dead = true;
+      onResultText(result.transcript);
     });
     unlistenError = await onError((err) => {
       dead = true;

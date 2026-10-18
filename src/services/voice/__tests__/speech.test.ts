@@ -84,7 +84,16 @@ describe("speech", () => {
     expect(onError).toHaveBeenCalledWith("silence", "boom");
   });
 
-  it("插件自己报错停下后，stop() 不再调 stopListening（避免紧接着的启动被拒 BUSY）", async () => {
+  it("插件报出结果后会话已经终结，stop() 不再调 stopListening（紧接着的启动会变哑）", async () => {
+    const handle = await startSpeech(vi.fn(), vi.fn());
+
+    mocks.onResultHandler?.({ transcript: "天气咋样", isFinal: true });
+    await handle.stop();
+
+    expect(mocks.stopListening).not.toHaveBeenCalled();
+  });
+
+  it("插件自己报错停下后，stop() 也不再调 stopListening（避免紧接着的启动被拒 BUSY）", async () => {
     const handle = await startSpeech(vi.fn(), vi.fn());
 
     error("NO_SPEECH");

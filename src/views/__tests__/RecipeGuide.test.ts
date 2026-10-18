@@ -443,6 +443,33 @@ describe("RecipeGuide", () => {
     expect(mocks.startSpeech).toHaveBeenCalledTimes(3);
   });
 
+  it("起了麦但一直没有任何事件时，看门狗会自己重启（原生层麦哑了不能永远等）", async () => {
+    vi.useFakeTimers();
+    mount(RecipeGuide);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.advanceTimersByTimeAsync(1500);
+
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(2);
+  });
+
+  it("看门狗在收到识别结果后重新计时，不会误重启", async () => {
+    vi.useFakeTimers();
+    mount(RecipeGuide);
+    await vi.advanceTimersByTimeAsync(10);
+
+    await vi.advanceTimersByTimeAsync(14_000);
+    mocks.onResult?.("小厨，面粉多少");
+    await vi.advanceTimersByTimeAsync(10);
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(2);
+
+    // 新一轮会话才刚开始 14s：不该被上一轮的计时器弄重启
+    await vi.advanceTimersByTimeAsync(14_000);
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(2);
+  });
+
   it("卸载时调用 stop()、stopSpeaking()、keepScreenOn(false)", async () => {
     const wrapper = await page();
 
