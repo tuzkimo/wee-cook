@@ -16,6 +16,13 @@ export interface SpeechHandle {
   stop(): Promise<void>;
 }
 
+// 为什么不用 continuous：插件在 continuous 模式下有个双重重启 bug ——
+// onError(NO_MATCH) 走重启分支时提前 return，没把 isListening 置 false，
+// 紧接着的 onResults(matches=0) 又排一次重启 ⇒ 500ms 后对同一个 recognizer
+// 调两次 startListening，第二次必报 ERROR_CLIENT，插件再把它当成真错误抛给 JS。
+// 实机日志：每 ~4.5s 一轮，三轮就够把页面逼成「暂不可用」。
+// 因此改成「一句话一个会话」，由页面在结果/静音后自己续听（见 RecipeGuide.vue）。
+
 /** 桌面端 / 无识别服务 / 插件加载失败一律 false，不冒泡。 */
 export async function isSpeechAvailable(): Promise<boolean> {
   try {
@@ -73,7 +80,7 @@ export async function startSpeech(
       dead = true;
       onErrorKind(kindOf(err.code), err.message);
     });
-    await startListening({ language: "zh-CN", continuous: true, interimResults: false });
+    await startListening({ language: "zh-CN", continuous: false, interimResults: false });
   } catch (err) {
     await stop();
     onErrorKind(kindOfFailure(err), messageOf(err));

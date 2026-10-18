@@ -360,6 +360,18 @@ describe("RecipeGuide", () => {
     expect(wrapper.get('[data-test="guide-privacy"]').text()).toContain("不落盘");
   });
 
+  it("静音后只等 300ms 就续听（continuous 关掉后靠页面续，不能等太久）", async () => {
+    vi.useFakeTimers();
+    mount(RecipeGuide);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
+
+    mocks.onError?.("silence", "No speech detected");
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(2);
+  });
+
   it("连续多次静音（没人说话）不消耗重试额度，一直保持可用", async () => {
     vi.useFakeTimers();
     const wrapper = mount(RecipeGuide);

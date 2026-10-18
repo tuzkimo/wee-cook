@@ -19,6 +19,8 @@ import type { RecipeIngredientRow, RecipeStep } from "@/types";
 /** 连续 3 次可重试错误就不再自己起麦（规格 §6） */
 const MAX_RESTARTS = 3;
 const RESTART_DELAY_MS = 1500;
+/** 静音后的续听要快：真故障才该等 1.5s */
+const SILENCE_RESTART_MS = 300;
 /** 同一句答案 5 秒内只应答一次（朗读回灌不暂停识别，见规格 §3） */
 const DEDUPE_MS = 5000;
 const MAX_QA = 5;
@@ -161,16 +163,16 @@ function handleError(kind: SpeechErrorKind, message: string): void {
     return;
   }
   if (kind === "silence") {
-    // 插件内部已连着重启 3 次，这次是它放弃了（做菜时安静太正常）。
-    // 不计入重试额度，直接接上：把安静当成故障，一分钟就会自己变红条。
+    // 一句话一个会话（见 speech.ts）：插件不会自己续听，静音就是我们续听的信号。
+    // 不计入重试额度，且间隔要短——安静时每 ~4s 就会来一次，等 1.5s 等于三成时间听不见。
     listening.value = false;
-    scheduleRestart();
+    scheduleRestart(SILENCE_RESTART_MS);
     return;
   }
   restartCount += 1;
   if (restartCount < MAX_RESTARTS) {
     listening.value = false;
-    scheduleRestart();
+    scheduleRestart(RESTART_DELAY_MS);
     return;
   }
   // 把插件给的原因带上：只有「暂时不可用」一句话，等于没法排查也看不出是哪一步坏的
@@ -183,12 +185,12 @@ function unavailable(text: string, retryable: boolean): void {
   micErrorRetryable.value = retryable;
 }
 
-function scheduleRestart(): void {
+function scheduleRestart(delay: number): void {
   if (restartTimer !== null) clearTimeout(restartTimer);
   restartTimer = setTimeout(() => {
     restartTimer = null;
     void listen();
-  }, RESTART_DELAY_MS);
+  }, delay);
 }
 
 /** 点提示条重试：手动路径不看重试次数，直接清零重来 */

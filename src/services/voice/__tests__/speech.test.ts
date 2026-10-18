@@ -103,12 +103,13 @@ describe("speech", () => {
     expect(onError).toHaveBeenCalledWith("unavailable", "boom");
   });
 
-  it("startSpeech 以 continuous:true / interimResults:false / language zh-CN 启动", async () => {
+  it("startSpeech 以 continuous:false / interimResults:false / language zh-CN 启动", async () => {
     await startSpeech(vi.fn(), vi.fn());
 
+    // continuous:true 会踩插件双重重启 bug（见 speech.ts 注释与实机日志），续听由页面负责
     expect(mocks.startListening).toHaveBeenCalledWith({
       language: "zh-CN",
-      continuous: true,
+      continuous: false,
       interimResults: false,
     });
   });
