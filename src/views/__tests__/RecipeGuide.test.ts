@@ -15,7 +15,7 @@ const mocks = vi.hoisted(() => ({
   isSpeechAvailable: vi.fn(),
   startSpeech: vi.fn(),
   stop: vi.fn(),
-  speak: vi.fn(),
+  speakAndWait: vi.fn(),
   stopSpeaking: vi.fn(),
   keepScreenOn: vi.fn(),
   onResult: undefined as ((text: string) => void) | undefined,
@@ -37,7 +37,7 @@ vi.mock("@/services/voice/speech", () => ({
 }));
 
 vi.mock("@/services/voice/tts", () => ({
-  speak: mocks.speak,
+  speakAndWait: mocks.speakAndWait,
   stopSpeaking: mocks.stopSpeaking,
 }));
 
@@ -113,7 +113,7 @@ beforeEach(() => {
   mocks.routeParams = { id: "r1" };
   mocks.getDetail.mockResolvedValue(detail());
   mocks.isSpeechAvailable.mockResolvedValue(true);
-  mocks.speak.mockResolvedValue(undefined);
+  mocks.speakAndWait.mockResolvedValue(undefined);
   mocks.stopSpeaking.mockResolvedValue(undefined);
   mocks.stop.mockResolvedValue(undefined);
   mocks.keepScreenOn.mockResolvedValue(undefined);
@@ -142,7 +142,7 @@ describe("RecipeGuide", () => {
     const wrapper = await page();
 
     expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
-    expect(mocks.speak).toHaveBeenCalledWith("鸡胸肉切丁，加盐和淀粉抓匀，腌 10 分钟");
+    expect(mocks.speakAndWait).toHaveBeenCalledWith("鸡胸肉切丁，加盐和淀粉抓匀，腌 10 分钟");
     expect(wrapper.get('[data-test="guide-step-order"]').text()).toBe("1 / 4");
     expect(wrapper.get('[data-test="guide-status"]').text()).toContain("正在聆听");
   });
@@ -153,18 +153,18 @@ describe("RecipeGuide", () => {
     mocks.onResult?.("小厨，面粉多少");
     await flushPromises();
 
-    expect(mocks.speak).toHaveBeenLastCalledWith("低筋面粉，200 克");
+    expect(mocks.speakAndWait).toHaveBeenLastCalledWith("低筋面粉，200 克");
     expect(wrapper.get('[data-test="guide-qa"]').text()).toContain("低筋面粉，200 克");
   });
 
   it("识别结果没有唤醒词时不朗读、不加问答行", async () => {
     const wrapper = await page();
-    mocks.speak.mockClear();
+    mocks.speakAndWait.mockClear();
 
     mocks.onResult?.("面粉多少");
     await flushPromises();
 
-    expect(mocks.speak).not.toHaveBeenCalled();
+    expect(mocks.speakAndWait).not.toHaveBeenCalled();
     expect(wrapper.find('[data-test="guide-qa"]').exists()).toBe(false);
   });
 
@@ -294,7 +294,48 @@ describe("RecipeGuide", () => {
     mocks.onError?.("transient", "no speech");
     await vi.advanceTimersByTimeAsync(1500);
 
-    expect(mocks.startSpeech).toHaveBeenCalledTimes(4);
+    // 中途听到一句 ⇒ announce 先停麦、念完再起麦 ⇒ 归零后再重启是第 5 次
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(5);
+  });
+
+  it("进入时先播报第一步，念完才开始听（TTS 与识别抢音频通路）", async () => {
+    let finishSpeech: () => void = () => {};
+    mocks.speakAndWait.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishSpeech = resolve;
+      }),
+    );
+
+    const wrapper = mount(RecipeGuide);
+    wrappers.push(wrapper);
+    await flushPromises();
+
+    expect(mocks.speakAndWait).toHaveBeenCalledWith("鸡胸肉切丁，加盐和淀粉抓匀，腌 10 分钟");
+    // 还在念：不能同时开麦
+    expect(mocks.startSpeech).not.toHaveBeenCalled();
+
+    finishSpeech();
+    await flushPromises();
+
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
+  });
+
+  it("答完一句后先停麦、念完再重新开始听", async () => {
+    await page();
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
+    mocks.stop.mockClear();
+    let stoppedBeforeSpeaking = false;
+    mocks.speakAndWait.mockImplementation(async () => {
+      stoppedBeforeSpeaking = mocks.stop.mock.calls.length > 0;
+    });
+
+    mocks.onResult?.("小厨，面粉多少");
+    await flushPromises();
+
+    // 顺序是关键：念之前必须已经关麦，否则 TTS 会把识别撞挂
+    expect(stoppedBeforeSpeaking).toBe(true);
+    expect(mocks.speakAndWait).toHaveBeenLastCalledWith("低筋面粉，200 克");
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(2);
   });
 
   it("卸载后才返回的详情不会再开麦（异步竞态不留后台监听）", async () => {
@@ -337,13 +378,13 @@ describe("RecipeGuide", () => {
 
   it("听到不带唤醒词的句子时只显示听到了什么，不出声", async () => {
     const wrapper = await page();
-    mocks.speak.mockClear();
+    mocks.speakAndWait.mockClear();
 
     mocks.onResult?.("今天天气不错");
     await flushPromises();
 
     expect(wrapper.get('[data-test="guide-heard"]').text()).toContain("今天天气不错");
-    expect(mocks.speak).not.toHaveBeenCalled();
+    expect(mocks.speakAndWait).not.toHaveBeenCalled();
     expect(wrapper.find('[data-test="guide-qa"]').exists()).toBe(false);
   });
 

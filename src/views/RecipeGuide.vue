@@ -13,7 +13,7 @@ import {
   type SpeechErrorKind,
   type SpeechHandle,
 } from "@/services/voice/speech";
-import { speak, stopSpeaking } from "@/services/voice/tts";
+import { speakAndWait, stopSpeaking } from "@/services/voice/tts";
 import type { RecipeIngredientRow, RecipeStep } from "@/types";
 
 /** 连续 3 次可重试错误就不再自己起麦（规格 §6） */
@@ -73,10 +73,12 @@ onMounted(async () => {
 
   await keepScreenOn(true);
   if (disposed) return;
-  await listen();
-  if (disposed) return;
-  // 播报与识别互不依赖：识别不可用也照报当前步
-  if (currentText.value) await speak(currentText.value);
+  // 先播报再开麦：TTS 与识别抢音频通路，开着麦念会让识别直接报错（实机复现）
+  if (currentText.value) {
+    await announce(currentText.value);
+  } else {
+    await listen();
+  }
 });
 
 onUnmounted(() => {
@@ -100,9 +102,7 @@ async function listen(): Promise<void> {
   if (disposed) return;
 
   // 旧会话先停：重试时直接覆盖 handle 会永久多出一对监听器，回调被重复触发
-  const previous = handle;
-  handle = null;
-  await previous?.stop();
+  await pauseListening();
 
   handle = await startSpeech(handleResult, handleError);
   if (disposed) {
@@ -132,7 +132,22 @@ function handleResult(transcript: string): void {
 
   if (answer.step !== undefined) currentStep.value = answer.step;
   qa.value = [{ question: transcript, answer: answer.text }, ...qa.value].slice(0, MAX_QA);
-  void speak(answer.text);
+  void announce(answer.text);
+}
+
+/** 念一句：先关麦再念，念完再开麦。边听边念在 Android 上会把识别弄挂。 */
+async function announce(text: string): Promise<void> {
+  await pauseListening();
+  await speakAndWait(text);
+  if (disposed) return;
+  await listen();
+}
+
+async function pauseListening(): Promise<void> {
+  const current = handle;
+  handle = null;
+  listening.value = false;
+  await current?.stop();
 }
 
 function handleError(kind: SpeechErrorKind, message: string): void {
