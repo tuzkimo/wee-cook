@@ -15,9 +15,8 @@ const mocks = vi.hoisted(() => ({
   isSpeechAvailable: vi.fn(),
   startSpeech: vi.fn(),
   stop: vi.fn(),
-  speak: vi.fn(),
+  speakAndWait: vi.fn(),
   stopSpeaking: vi.fn(),
-  isSpeaking: vi.fn(),
   keepScreenOn: vi.fn(),
   onResult: undefined as ((text: string) => void) | undefined,
   onError: undefined as ((kind: SpeechErrorKind, message: string) => void) | undefined,
@@ -38,9 +37,8 @@ vi.mock("@/services/voice/speech", () => ({
 }));
 
 vi.mock("@/services/voice/tts", () => ({
-  speak: mocks.speak,
+  speakAndWait: mocks.speakAndWait,
   stopSpeaking: mocks.stopSpeaking,
-  isSpeaking: mocks.isSpeaking,
 }));
 
 vi.mock("@/services/voice/keepAwake", () => ({
@@ -115,8 +113,7 @@ beforeEach(() => {
   mocks.routeParams = { id: "r1" };
   mocks.getDetail.mockResolvedValue(detail());
   mocks.isSpeechAvailable.mockResolvedValue(true);
-  mocks.speak.mockResolvedValue(undefined);
-  mocks.isSpeaking.mockResolvedValue(false);
+  mocks.speakAndWait.mockResolvedValue(undefined);
   mocks.stopSpeaking.mockResolvedValue(undefined);
   mocks.stop.mockResolvedValue(undefined);
   mocks.keepScreenOn.mockResolvedValue(undefined);
@@ -145,7 +142,7 @@ describe("RecipeGuide", () => {
     const wrapper = await page();
 
     expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
-    expect(mocks.speak).toHaveBeenCalledWith("鸡胸肉切丁，加盐和淀粉抓匀，腌 10 分钟");
+    expect(mocks.speakAndWait).toHaveBeenCalledWith("鸡胸肉切丁，加盐和淀粉抓匀，腌 10 分钟");
     expect(wrapper.get('[data-test="guide-step-order"]').text()).toBe("1 / 4");
     expect(wrapper.get('[data-test="guide-status"]').text()).toContain("正在聆听");
   });
@@ -156,19 +153,19 @@ describe("RecipeGuide", () => {
     mocks.onResult?.("小厨，面粉多少");
     await flushPromises();
 
-    expect(mocks.speak).toHaveBeenLastCalledWith("低筋面粉，200 克");
+    expect(mocks.speakAndWait).toHaveBeenLastCalledWith("低筋面粉，200 克");
     expect(wrapper.get('[data-test="guide-qa"]').text()).toContain("低筋面粉，200 克");
   });
 
   it("识别结果没有唤醒词时不朗读答案、不加问答行（只念一句提示）", async () => {
     const wrapper = await page();
-    mocks.speak.mockClear();
+    mocks.speakAndWait.mockClear();
 
     mocks.onResult?.("面粉多少");
     await flushPromises();
 
     // 不能把「面粉多少」当答案念，也不能进问答列表
-    expect(mocks.speak.mock.calls.map((call) => String(call[0]))).not.toContain("低筋面粉，200 克");
+    expect(mocks.speakAndWait.mock.calls.map((call) => String(call[0]))).not.toContain("低筋面粉，200 克");
     expect(wrapper.find('[data-test="guide-qa"]').exists()).toBe(false);
   });
 
@@ -298,26 +295,27 @@ describe("RecipeGuide", () => {
     mocks.onError?.("transient", "no speech");
     await vi.advanceTimersByTimeAsync(1500);
 
-    // 中途听到一句 ⇒ 计数归零（听到说明会话活着）
-    expect(mocks.startSpeech).toHaveBeenCalledTimes(4);
+    // 中途听到一句 ⇒ 计数归零（听到说明会话活着），announce 会多一次启动
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(5);
   });
 
-  it("进入时播报第一步（朗读不阻塞开麦：continuous 下会话常驻）", async () => {
+  it("进入时先播报第一步，念完才开麦", async () => {
     await page();
 
     expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
-    expect(mocks.speak).toHaveBeenCalledWith("鸡胸肉切丁，加盐和淀粉抓匀，腌 10 分钟");
+    expect(mocks.speakAndWait).toHaveBeenCalledWith("鸡胸肉切丁，加盐和淀粉抓匀，腌 10 分钟");
   });
 
-  it("答完一句不重开会话（continuous 常驻，重开会让 recognizer 变哑）", async () => {
+  it("答完一句先停麦、念完再重新开麦（不然识别会把朗读听回去）", async () => {
     await page();
+    mocks.stop.mockClear();
 
     mocks.onResult?.("小厨，面粉多少");
     await flushPromises();
 
-    expect(mocks.speak).toHaveBeenLastCalledWith("低筋面粉，200 克");
-    expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
-    expect(mocks.stop).not.toHaveBeenCalled();
+    expect(mocks.stop).toHaveBeenCalledTimes(1);
+    expect(mocks.speakAndWait).toHaveBeenLastCalledWith("低筋面粉，200 克");
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(2);
   });
 
   it("卸载后才返回的详情不会再开麦（异步竞态不留后台监听）", async () => {
@@ -342,7 +340,7 @@ describe("RecipeGuide", () => {
     expect(wrapper.get('[data-test="guide-privacy"]').text()).toContain("不落盘");
   });
 
-  it("静音后只等 300ms 就续听（continuous 关掉后靠页面续，不能等太久）", async () => {
+  it("静音后只等 300ms 就续听", async () => {
     vi.useFakeTimers();
     mount(RecipeGuide);
     await vi.advanceTimersByTimeAsync(10);
@@ -372,7 +370,7 @@ describe("RecipeGuide", () => {
 
   it("听到不带唤醒词的句子时把原文显示出来，方便判断是听错还是没听到", async () => {
     const wrapper = await page();
-    mocks.speak.mockClear();
+    mocks.speakAndWait.mockClear();
 
     mocks.onResult?.("今天天气不错");
     await flushPromises();
@@ -398,7 +396,7 @@ describe("RecipeGuide", () => {
   it("没有唤醒词时用语音提示一句（用这功能的人不看屏幕），且不打断监听", async () => {
     const wrapper = await page();
     expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
-    mocks.speak.mockClear();
+    mocks.speakAndWait.mockClear();
 
     mocks.onResult?.("今天天气不错");
     await flushPromises();
@@ -407,12 +405,14 @@ describe("RecipeGuide", () => {
     // 屏幕上也留一份（顺手能看见的人不用听）
     expect(wrapper.get('[data-test="guide-heard"]').text()).toContain("没听清「小厨」");
     // 但主要靠声音：提示语不含「小厨」，否则会被自己的麦克风听回去形成回声循环
-    const spoken = mocks.speak.mock.calls.map((call) => String(call[0]));
+    const spoken = mocks.speakAndWait.mock.calls.map((call) => String(call[0]));
     const prompt = spoken.find((text) => text.includes("没听清"));
     expect(prompt).toBeDefined();
     expect(prompt).not.toContain("小厨");
+    // 提示也是「先关麦再念」：念完要重新开麦
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(2);
     // 会话没被关掉：不需要重开
-    expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(2);
   });
 
   it("8 秒内重复的「没有唤醒词」只提示一次（厨房里家常话很多）", async () => {
@@ -420,66 +420,39 @@ describe("RecipeGuide", () => {
     const wrapper = mount(RecipeGuide);
     wrappers.push(wrapper);
     await vi.advanceTimersByTimeAsync(10);
-    mocks.speak.mockClear();
+    mocks.speakAndWait.mockClear();
 
     mocks.onResult?.("今天天气不错");
     await vi.advanceTimersByTimeAsync(10);
     mocks.onResult?.("今天天气不错");
     await vi.advanceTimersByTimeAsync(10);
 
-    expect(mocks.speak.mock.calls.filter((call) => String(call[0]).includes("没听清"))).toHaveLength(1);
+    expect(mocks.speakAndWait.mock.calls.filter((call) => String(call[0]).includes("没听清"))).toHaveLength(1);
     expect(wrapper.find('[data-test="guide-heard"]').exists()).toBe(true);
   });
 
-  it("正在朗读时不插嘴提示（别把答案念一半再插一句）", async () => {
+  it("提示语也走「先停麦再念」：不会把提示自己听回去", async () => {
     await page();
-    mocks.speak.mockClear();
-    mocks.isSpeaking.mockResolvedValue(true);
+    mocks.stop.mockClear();
 
     mocks.onResult?.("今天天气不错");
     await flushPromises();
 
-    expect(mocks.speak).not.toHaveBeenCalled();
+    expect(mocks.stop).toHaveBeenCalledTimes(1);
   });
 
   it("同一句答案 5 秒内不再朗读", async () => {
     await page();
     // 进页面会播一次第一步，这里只看「问答」是否重复朗读
-    expect(mocks.speak).toHaveBeenCalledTimes(1);
+    expect(mocks.speakAndWait).toHaveBeenCalledTimes(1);
 
     mocks.onResult?.("小厨，面粉多少");
     await flushPromises();
     mocks.onResult?.("小厨，面粉多少");
     await flushPromises();
 
-    expect(mocks.speak).toHaveBeenCalledTimes(2);
-    expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
-  });
-
-  it("起了麦但一直没有任何事件时，看门狗会自己重启（原生层麦哑了不能永远等）", async () => {
-    vi.useFakeTimers();
-    mount(RecipeGuide);
-    await vi.advanceTimersByTimeAsync(10);
-    expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
-
-    await vi.advanceTimersByTimeAsync(15_000);
-    await vi.advanceTimersByTimeAsync(1500);
-
+    expect(mocks.speakAndWait).toHaveBeenCalledTimes(2);
     expect(mocks.startSpeech).toHaveBeenCalledTimes(2);
-  });
-
-  it("看门狗只查会话启动：出过结果就不再重开会话（常驻会话自己续）", async () => {
-    vi.useFakeTimers();
-    mount(RecipeGuide);
-    await vi.advanceTimersByTimeAsync(10);
-
-    await vi.advanceTimersByTimeAsync(14_000);
-    mocks.onResult?.("小厨，面粉多少");
-    await vi.advanceTimersByTimeAsync(10);
-
-    // 之后的长时间安静由插件内部循环处理，页面不再插一脚（重开会话会让 recognizer 变哑）
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
   });
 
   it("卸载时调用 stop()、stopSpeaking()、keepScreenOn(false)", async () => {

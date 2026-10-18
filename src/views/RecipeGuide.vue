@@ -13,7 +13,7 @@ import {
   type SpeechErrorKind,
   type SpeechHandle,
 } from "@/services/voice/speech";
-import { isSpeaking, speak, stopSpeaking } from "@/services/voice/tts";
+import { speakAndWait, stopSpeaking } from "@/services/voice/tts";
 import type { RecipeIngredientRow, RecipeStep } from "@/types";
 
 /** 连续 3 次可重试错误就不再自己起麦（规格 §6） */
@@ -23,11 +23,6 @@ const RESTART_DELAY_MS = 1500;
 const SILENCE_RESTART_MS = 300;
 /** 同一句答案 5 秒内只应答一次（朗读回灌不暂停识别，见规格 §3） */
 const DEDUPE_MS = 5000;
-/**
- * 起了麦但一个事件都不来 = 原生层哑了（实机见过：识别服务仍报“Ready for speech”，
- * 可 result / error 一个都不发）。宁可当作可重试故障重启，也不能永远假装在听。
- */
-const SILENT_TIMEOUT_MS = 15000;
 /**
  * 没叫醒它时要能听见。提示语**故意不含「小厨」**：这段声音会被自己的麦克风听回去，
  * 带唤醒词就等于自我触发。另外配 8 秒冷却：厨房里家常话很多，不能每句都回话。
@@ -59,7 +54,6 @@ let handle: SpeechHandle | null = null;
 let restartCount = 0;
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
 let lastAnswer: { text: string; at: number } | null = null;
-let silentTimer: ReturnType<typeof setTimeout> | null = null;
 let lastWakePromptAt = 0;
 // 卸载后所有在飞的异步（getDetail / 权限 / startSpeech）都靠它刹车，否则会把麦留在后台
 let disposed = false;
@@ -90,15 +84,15 @@ onMounted(async () => {
 
   await keepScreenOn(true);
   if (disposed) return;
-  await listen();
-  if (disposed) return;
-  // 播报与识别互不依赖：识别不可用也照报当前步（continuous 下会话常驻，不需要为朗读停麦）
-  if (currentText.value) await speak(currentText.value);
+  if (currentText.value) {
+    await announce(currentText.value);
+  } else {
+    await listen();
+  }
 });
 
 onUnmounted(() => {
   disposed = true;
-  clearSilentWatchdog();
   if (restartTimer !== null) {
     clearTimeout(restartTimer);
     restartTimer = null;
@@ -127,26 +121,9 @@ async function listen(): Promise<void> {
     return;
   }
   listening.value = true;
-  armSilentWatchdog();
-}
-
-function clearSilentWatchdog(): void {
-  if (silentTimer !== null) {
-    clearTimeout(silentTimer);
-    silentTimer = null;
-  }
-}
-
-function armSilentWatchdog(): void {
-  clearSilentWatchdog();
-  silentTimer = setTimeout(() => {
-    silentTimer = null;
-    handleError("transient", "语音识别没有响应");
-  }, SILENT_TIMEOUT_MS);
 }
 
 function handleResult(transcript: string): void {
-  clearSilentWatchdog();
   // 只要能拿到一句识别结果，就说明麦和识别服务都活着：重启计数归零
   restartCount = 0;
   lastHeard.value = transcript;
@@ -159,7 +136,7 @@ function handleResult(transcript: string): void {
   // null = 不是在叫它，安静丢弃（会话仍在继续，不用做任何事）
   if (!answer) {
     wakeMissed.value = true;
-    void promptWakeMissed();
+    promptWakeMissed();
     return;
   }
   wakeMissed.value = false;
@@ -170,28 +147,36 @@ function handleResult(transcript: string): void {
 
   if (answer.step !== undefined) currentStep.value = answer.step;
   qa.value = [{ question: transcript, answer: answer.text }, ...qa.value].slice(0, MAX_QA);
-  void speak(answer.text);
+  void announce(answer.text);
+}
+
+/**
+ * 念一句：先关麦 → 念完（含尾音静默，见 tts.ts）→ 再开麦。
+ * 不关麦的话识别会把朗读内容听回去，再当成一句话处理，形成回声循环（实机确认）。
+ */
+async function announce(text: string): Promise<void> {
+  await pauseListening();
+  await speakAndWait(text);
+  if (disposed) return;
+  await listen();
 }
 
 async function pauseListening(): Promise<void> {
-  clearSilentWatchdog();
   const current = handle;
   handle = null;
   listening.value = false;
   await current?.stop();
 }
 
-async function promptWakeMissed(): Promise<void> {
+function promptWakeMissed(): void {
   const now = Date.now();
+  // 厨房里家常话很多，不能每句都回话
   if (now - lastWakePromptAt < WAKE_PROMPT_COOLDOWN_MS) return;
-  // 正在念答案就别插嘴：半句答案后面接一句「没听清」比不提示更糊涂
-  if (await isSpeaking()) return;
   lastWakePromptAt = now;
-  await speak(WAKE_MISSED_PROMPT);
+  void announce(WAKE_MISSED_PROMPT);
 }
 
 function handleError(kind: SpeechErrorKind, message: string): void {
-  clearSilentWatchdog();
   if (kind === "permission") {
     // 永久拒绝：不重试，否则用户看到的是一个永远在失败的红条
     unavailable("需要麦克风权限，请在系统设置里允许", false);
