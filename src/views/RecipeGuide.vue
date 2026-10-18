@@ -37,6 +37,8 @@ const currentStep = ref(0);
 const qa = ref<{ question: string; answer: string }[]>([]);
 /** 上一句听到的原文：识别得到的但不带唤醒词时也得让用户知道它听到了 */
 const lastHeard = ref("");
+/** 上一句没有唤醒词（或没听清唤醒词），页面提示用户再说一次 */
+const wakeMissed = ref(false);
 const loadError = ref("");
 const micError = ref("");
 const micErrorRetryable = ref(false);
@@ -125,11 +127,21 @@ function handleResult(transcript: string): void {
     steps: steps.value,
     currentStep: currentStep.value,
   });
-  // null = 不是在叫它，安静丢弃
-  if (!answer) return;
+  // null = 不是在叫它，安静丢弃——但仍然要缓听：
+  // continuous 关了，每次结果都是一个会话的终结，不缓听就是把自己的耳朵关死。
+  if (!answer) {
+    wakeMissed.value = true;
+    void listen();
+    return;
+  }
+  wakeMissed.value = false;
 
   const now = Date.now();
-  if (lastAnswer && lastAnswer.text === answer.text && now - lastAnswer.at < DEDUPE_MS) return;
+  if (lastAnswer && lastAnswer.text === answer.text && now - lastAnswer.at < DEDUPE_MS) {
+    // 不重复念，但会话已经结束（continuous 关了），必须缓上
+    void listen();
+    return;
+  }
   lastAnswer = { text: answer.text, at: now };
 
   if (answer.step !== undefined) currentStep.value = answer.step;
@@ -240,7 +252,7 @@ function goStep(target: number): void {
       </p>
 
       <p v-if="lastHeard" data-test="guide-heard" class="px-4 pb-1 text-xs text-text-secondary">
-        听到：{{ lastHeard }}
+        听到：{{ lastHeard }}<span v-if="wakeMissed">（没听清「小厨」，再说一次）</span>
       </p>
 
       <button

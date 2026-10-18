@@ -414,6 +414,35 @@ describe("RecipeGuide", () => {
     expect(wrapper.get('[data-test="guide-mic-error"]').text()).toContain("Client side error");
   });
 
+  it("没有唤醒词的结果也要续听（否则一句话就把耳朵关死）", async () => {
+    const wrapper = await page();
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(1);
+    mocks.speakAndWait.mockClear();
+
+    mocks.onResult?.("扫除下一步");
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="guide-heard"]').text()).toContain("扫除下一步");
+    // 告诉用户是「听错了」而不是「没听到」
+    expect(wrapper.get('[data-test="guide-heard"]').text()).toContain("没听清「小厨」");
+    expect(mocks.speakAndWait).not.toHaveBeenCalled();
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(2);
+  });
+
+  it("同一句答案 5 秒内重复时不再朗读，但仍然续听", async () => {
+    await page();
+    // 进页面会播一次第一步，这里只看「问答」是否重复朗读
+    expect(mocks.speakAndWait).toHaveBeenCalledTimes(1);
+
+    mocks.onResult?.("小厨，面粉多少");
+    await flushPromises();
+    mocks.onResult?.("小厨，面粉多少");
+    await flushPromises();
+
+    expect(mocks.speakAndWait).toHaveBeenCalledTimes(2);
+    expect(mocks.startSpeech).toHaveBeenCalledTimes(3);
+  });
+
   it("卸载时调用 stop()、stopSpeaking()、keepScreenOn(false)", async () => {
     const wrapper = await page();
 

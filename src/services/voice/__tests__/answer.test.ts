@@ -123,6 +123,13 @@ describe("answerQuestion", () => {
     expect(answerQuestion("小厨，第3步", ctx())?.step).toBe(2);
   });
 
+  it("「第二部」这种同音错字也能识别步号（ASR 把步听成部）", () => {
+    const answer = answerQuestion("小厨，第二部是什么", ctx());
+
+    expect(answer?.step).toBe(1);
+    expect(answer?.text).toBe(steps[1].text);
+  });
+
   it("步号越界时说清只有几步，不改高亮", () => {
     const answer = answerQuestion("小厨，第十步", ctx());
 

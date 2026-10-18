@@ -87,7 +87,7 @@ function answerRelativeStep(text: string, current: number, steps: RecipeStep[]):
 }
 
 function answerAbsoluteStep(text: string, steps: RecipeStep[]): Answer | null {
-  const match = text.match(/第\s*([一二三四五六七八九十]|\d{1,2})\s*步/) ?? text.match(/步骤\s*([一二三四五六七八九十]|\d{1,2})/);
+  const match = text.match(/第\s*([一二三四五六七八九十]|\d{1,2})\s*[步部]/) ?? text.match(/步骤\s*([一二三四五六七八九十]|\d{1,2})/);
   if (!match) return null;
   if (steps.length === 0) return { text: NO_STEPS };
 
