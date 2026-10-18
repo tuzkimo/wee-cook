@@ -84,13 +84,13 @@ describe("speech", () => {
     expect(onError).toHaveBeenCalledWith("silence", "boom");
   });
 
-  it("插件报出结果后会话已经终结，stop() 不再调 stopListening（紧接着的启动会变哑）", async () => {
+  it("出过结果不等于会话终结：stop() 仍然要真的关麦", async () => {
     const handle = await startSpeech(vi.fn(), vi.fn());
 
     mocks.onResultHandler?.({ transcript: "天气咋样", isFinal: true });
     await handle.stop();
 
-    expect(mocks.stopListening).not.toHaveBeenCalled();
+    expect(mocks.stopListening).toHaveBeenCalledTimes(1);
   });
 
   it("插件自己报错停下后，stop() 也不再调 stopListening（避免紧接着的启动被拒 BUSY）", async () => {
@@ -112,15 +112,24 @@ describe("speech", () => {
     expect(onError).toHaveBeenCalledWith("unavailable", "boom");
   });
 
-  it("startSpeech 以 continuous:false / interimResults:false / language zh-CN 启动", async () => {
+  it("startSpeech 以 continuous:true / interimResults:false / language zh-CN 启动", async () => {
     await startSpeech(vi.fn(), vi.fn());
 
-    // continuous:true 会踩插件双重重启 bug（见 speech.ts 注释与实机日志），续听由页面负责
+    // 常驻会话是唯一活得住的形态（见 speech.ts 注释与实机日志）
     expect(mocks.startListening).toHaveBeenCalledWith({
       language: "zh-CN",
-      continuous: false,
+      continuous: true,
       interimResults: false,
     });
+  });
+
+  it("插件双重重启带来的假 ERROR_CLIENT（UNKNOWN）归为 noise，不当故障", async () => {
+    const onError = vi.fn<(kind: SpeechErrorKind, message: string) => void>();
+    await startSpeech(vi.fn(), onError);
+
+    error("UNKNOWN", "Client side error");
+
+    expect(onError).toHaveBeenCalledWith("noise", "Client side error");
   });
 
   it("stop() 会调用 stopListening", async () => {

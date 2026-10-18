@@ -10,18 +10,19 @@ import {
   stopListening,
 } from "tauri-plugin-stt-api";
 
-export type SpeechErrorKind = "permission" | "unavailable" | "silence" | "transient";
+export type SpeechErrorKind = "permission" | "unavailable" | "silence" | "noise" | "transient";
 
 export interface SpeechHandle {
   stop(): Promise<void>;
 }
 
-// 为什么不用 continuous：插件在 continuous 模式下有个双重重启 bug ——
-// onError(NO_MATCH) 走重启分支时提前 return，没把 isListening 置 false，
-// 紧接着的 onResults(matches=0) 又排一次重启 ⇒ 500ms 后对同一个 recognizer
-// 调两次 startListening，第二次必报 ERROR_CLIENT，插件再把它当成真错误抛给 JS。
-// 实机日志：每 ~4.5s 一轮，三轮就够把页面逼成「暂不可用」。
-// 因此改成「一句话一个会话」，由页面在结果/静音后自己续听（见 RecipeGuide.vue）。
+// 为什么用 continuous：实机日志证明常驻会话才是活得住的形态——
+// 插件在 continuous 下每 ~4.5s 会抛一条假 ERROR_CLIENT（码 5 → "UNKNOWN"）：
+// onError(NO_MATCH) 的 shouldRestart 分支提前 return，没把 isListening 置 false，
+// 紧接着的 onResults(matches=0) 又排一次重启 ⇒ 两次 startListening 打在同一 recognizer 上。
+// 但那条假错误之后识别照常工作（"Ready for speech" 在 20ms 后、能出 matches）。
+// 反过来试过「一句话一个会话」：每次结束后同一 recognizer 会变哑，只能靠 15s 看门狗救。
+// 所以：常驻会话 + 把 UNKNOWN 当噪音丢掉（见 kindOf）。
 
 /** 桌面端 / 无识别服务 / 插件加载失败一律 false，不冒泡。 */
 export async function isSpeechAvailable(): Promise<boolean> {
@@ -74,17 +75,16 @@ export async function startSpeech(
 
     // 先订阅再启动：启动瞬间出的错误不能漏
     unlistenResult = await onResult((result) => {
+      // 只收 final：interimResults 关着，这里再挡一次是为了将来改配置时不至于重复应答
       if (!result.isFinal) return;
-      // 收到结果就等于这次会话终结（插件在 continuous:false 下也会把 isListening 置 false）。
-      // 这时再调 stopListening 会与紧接着的 startListening 撞上，识别服务会变哑。
-      dead = true;
+      // 注意不要在这里置 dead：continuous 下会话还在继续，置了会让离页时的 stop() 不关麦
       onResultText(result.transcript);
     });
     unlistenError = await onError((err) => {
       dead = true;
       onErrorKind(kindOf(err.code), err.message);
     });
-    await startListening({ language: "zh-CN", continuous: false, interimResults: false });
+    await startListening({ language: "zh-CN", continuous: true, interimResults: false });
   } catch (err) {
     await stop();
     onErrorKind(kindOfFailure(err), messageOf(err));
@@ -118,6 +118,10 @@ function kindOf(code: string): SpeechErrorKind {
     case "NO_SPEECH":
     case "TIMEOUT":
       return "silence";
+    // ERROR_CLIENT 被插件映射成 UNKNOWN：上面注释说的双重重启副作用。
+    // 真出现「音频输入坏了」也走这条路，交给页面的静默看门狗兜。
+    case "UNKNOWN":
+      return "noise";
     default:
       return "transient";
   }

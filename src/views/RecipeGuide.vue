@@ -13,7 +13,7 @@ import {
   type SpeechErrorKind,
   type SpeechHandle,
 } from "@/services/voice/speech";
-import { speakAndWait, stopSpeaking } from "@/services/voice/tts";
+import { speak, stopSpeaking } from "@/services/voice/tts";
 import type { RecipeIngredientRow, RecipeStep } from "@/types";
 
 /** 连续 3 次可重试错误就不再自己起麦（规格 §6） */
@@ -83,12 +83,10 @@ onMounted(async () => {
 
   await keepScreenOn(true);
   if (disposed) return;
-  // 先播报再开麦：TTS 与识别抢音频通路，开着麦念会让识别直接报错（实机复现）
-  if (currentText.value) {
-    await announce(currentText.value);
-  } else {
-    await listen();
-  }
+  await listen();
+  if (disposed) return;
+  // 播报与识别互不依赖：识别不可用也照报当前步（continuous 下会话常驻，不需要为朗读停麦）
+  if (currentText.value) await speak(currentText.value);
 });
 
 onUnmounted(() => {
@@ -151,34 +149,20 @@ function handleResult(transcript: string): void {
     steps: steps.value,
     currentStep: currentStep.value,
   });
-  // null = 不是在叫它，安静丢弃——但仍然要缓听：
-  // continuous 关了，每次结果都是一个会话的终结，不缓听就是把自己的耳朵关死。
+  // null = 不是在叫它，安静丢弃（会话仍在继续，不用做任何事）
   if (!answer) {
     wakeMissed.value = true;
-    void listen();
     return;
   }
   wakeMissed.value = false;
 
   const now = Date.now();
-  if (lastAnswer && lastAnswer.text === answer.text && now - lastAnswer.at < DEDUPE_MS) {
-    // 不重复念，但会话已经结束（continuous 关了），必须缓上
-    void listen();
-    return;
-  }
+  if (lastAnswer && lastAnswer.text === answer.text && now - lastAnswer.at < DEDUPE_MS) return;
   lastAnswer = { text: answer.text, at: now };
 
   if (answer.step !== undefined) currentStep.value = answer.step;
   qa.value = [{ question: transcript, answer: answer.text }, ...qa.value].slice(0, MAX_QA);
-  void announce(answer.text);
-}
-
-/** 念一句：先关麦再念，念完再开麦。边听边念在 Android 上会把识别弄挂。 */
-async function announce(text: string): Promise<void> {
-  await pauseListening();
-  await speakAndWait(text);
-  if (disposed) return;
-  await listen();
+  void speak(answer.text);
 }
 
 async function pauseListening(): Promise<void> {
@@ -198,6 +182,10 @@ function handleError(kind: SpeechErrorKind, message: string): void {
   }
   if (kind === "unavailable") {
     unavailable("这台设备没有可用的语音识别，可以手动翻步", false);
+    return;
+  }
+  if (kind === "noise") {
+    // 插件双重重启的副作用（每 ~4.5s 一条假 ERROR_CLIENT），会话其实还活着：不计数、不重启
     return;
   }
   if (kind === "silence") {
