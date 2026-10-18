@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "移动端专属能力：语音识别与常亮屏（桌面端不实现语音）",
+  "platforms": ["android", "iOS"],
+  "windows": ["main"],
+  "permissions": ["stt:default", "keep-awake:default"]
+}
