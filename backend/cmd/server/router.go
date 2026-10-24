@@ -20,6 +20,7 @@ import (
 type handlers struct {
 	auth      *handler.AuthHandler
 	sync      *handler.SyncHandler
+	team      *handler.TeamHandler
 	file      *handler.FileHandler
 	ai        *handler.AIHandler
 }
@@ -73,6 +74,24 @@ func newRouter(cfg *config.Config, h handlers) http.Handler {
 			r.Put("/auth/profile", h.auth.UpdateProfile)
 
 			r.Post("/sync", h.sync.Sync)
+
+			// 团队：列表 / 建团 / 改名 / 邀请码 / 成员 / 移除 / 退出 / 转让 / 解散（spec §9）。
+			// 团队只走 REST，不进同步载荷。
+			r.Get("/teams", h.team.List)
+			r.Post("/teams", h.team.Create)
+			r.Put("/teams/{id}", h.team.Rename)
+			r.Post("/teams/{id}/invite", h.team.Invite)
+			r.Get("/teams/{id}/members", h.team.Members)
+			r.Delete("/teams/{id}/members/me", h.team.Leave)
+			r.Delete("/teams/{id}/members/{userId}", h.team.RemoveMember)
+			r.Put("/teams/{id}/owner", h.team.Transfer)
+			r.Delete("/teams/{id}", h.team.Dissolve)
+
+			// 邀请码入组单独限流：6 位数字只有 100 万种，不限流就是一个可暴力枚举的入组口。
+			r.Group(func(r chi.Router) {
+				r.Use(httprate.LimitBy(10, time.Minute, clientIPKey))
+				r.Post("/teams/join", h.team.Join)
+			})
 
 			// 图片走独立通道：body 是裸二进制，文件名由客户端给（spec §8.1）
 			r.Post("/files", h.file.Upload)

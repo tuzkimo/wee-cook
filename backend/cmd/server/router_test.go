@@ -267,3 +267,92 @@ func TestAIChatDailyQuotaUsesQuotaHandler(t *testing.T) {
 	}
 }
 
+
+// fakeTeamService 记录调用次数：用来证明 /teams/join 在限流组内（第 11 次被 429），
+// 以及所有团队路由都在受保护组内（无 token 时 401 且来自 AuthMiddleware）。
+type fakeTeamService struct{ joins int }
+
+func (f *fakeTeamService) List(context.Context, string) ([]service.TeamSummary, error) {
+	return nil, nil
+}
+
+func (f *fakeTeamService) Create(context.Context, string, string) (service.TeamSummary, error) {
+	return service.TeamSummary{}, nil
+}
+
+func (f *fakeTeamService) Invite(context.Context, string, string) (string, error) { return "", nil }
+
+func (f *fakeTeamService) Join(context.Context, string, string) (service.TeamSummary, error) {
+	f.joins++
+	return service.TeamSummary{}, nil
+}
+
+func (f *fakeTeamService) Rename(context.Context, string, string, string) error { return nil }
+func (f *fakeTeamService) Members(context.Context, string, string) ([]service.TeamMember, error) {
+	return nil, nil
+}
+func (f *fakeTeamService) RemoveMember(context.Context, string, string, string) error { return nil }
+func (f *fakeTeamService) Leave(context.Context, string, string) error                { return nil }
+func (f *fakeTeamService) Transfer(context.Context, string, string, string) error     { return nil }
+func (f *fakeTeamService) Dissolve(context.Context, string, string) error             { return nil }
+
+// 九条团队路由全部必须在受保护组内：无 token 时 401，且 401 来自 AuthMiddleware
+// （404 说明路由没挂，挪出受保护组会走到 handler 自己的分支）。
+func TestTeamRoutesRequireAuth(t *testing.T) {
+	cfg := &config.Config{JWTSecret: testJWTSecret}
+	r := newRouter(cfg, handlers{team: handler.NewTeamHandler(&fakeTeamService{})})
+
+	for _, rt := range []struct{ method, path string }{
+		{"GET", "/api/v1/teams"},
+		{"POST", "/api/v1/teams"},
+		{"PUT", "/api/v1/teams/t-1"},
+		{"POST", "/api/v1/teams/t-1/invite"},
+		{"GET", "/api/v1/teams/t-1/members"},
+		{"DELETE", "/api/v1/teams/t-1/members/me"},
+		{"DELETE", "/api/v1/teams/t-1/members/u-2"},
+		{"PUT", "/api/v1/teams/t-1/owner"},
+		{"DELETE", "/api/v1/teams/t-1"},
+		{"POST", "/api/v1/teams/join"},
+	} {
+		req := httptest.NewRequest(rt.method, rt.path, bytes.NewBufferString(`{}`))
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s: got %d, want 401", rt.method, rt.path, rec.Code)
+			continue
+		}
+		if !bytes.Contains(rec.Body.Bytes(), []byte("missing or invalid Authorization header")) {
+			t.Errorf("%s %s: 401 应来自 AuthMiddleware；实际: %s", rt.method, rt.path, rec.Body.String())
+		}
+	}
+}
+
+// 邀请码只有 6 位数字，必须是限流组：第 11 次请求在校验码之前就被 429 挡下。
+func TestTeamJoinIsRateLimited(t *testing.T) {
+	svc := &fakeTeamService{}
+	cfg := &config.Config{JWTSecret: testJWTSecret}
+	r := newRouter(cfg, handlers{team: handler.NewTeamHandler(svc)})
+	token := mintTestToken(t, "access")
+
+	for i := 0; i < 10; i++ {
+		req := httptest.NewRequest("POST", "/api/v1/teams/join", bytes.NewBufferString(`{"code":"123456"}`))
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code == http.StatusTooManyRequests {
+			t.Fatalf("第 %d 次请求就被限流了，限流阈值应大于 10/min", i+1)
+		}
+	}
+
+	req := httptest.NewRequest("POST", "/api/v1/teams/join", bytes.NewBufferString(`{"code":"123456"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("第 11 次请求: got %d, want 429", rec.Code)
+	}
+	if svc.joins != 10 {
+		t.Errorf("被限流的请求不该触达 service；joins=%d, want 10", svc.joins)
+	}
+}

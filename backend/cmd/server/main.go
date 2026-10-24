@@ -45,6 +45,7 @@ func main() {
 		log.Fatalf("创建 FILES_DIR %s: %v", cfg.FilesDir, err)
 	}
 	fileSvc := service.NewFileService(pool, cfg.FilesDir, cfg.MaxFileBytes)
+	teamSvc := service.NewTeamService(pool, redisInvites{client: redisClient})
 	aiSvc := service.NewAIService(cfg)
 
 	srv := &http.Server{
@@ -53,6 +54,7 @@ func main() {
 			auth:      handler.NewAuthHandler(authSvc),
 			sync:      handler.NewSyncHandler(syncSvc),
 			file:      handler.NewFileHandler(fileSvc),
+			team:      handler.NewTeamHandler(teamSvc),
 			ai:        handler.NewAIHandler(aiSvc),
 		}),
 		ReadTimeout:  15 * time.Second,
