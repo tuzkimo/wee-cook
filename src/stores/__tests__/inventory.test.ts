@@ -1,10 +1,19 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { setDb, type Db } from "@/db";
 import { freshTestDb } from "@/db/__tests__/sqliteTestDb";
 import { useIngredientStore, useUnitStore } from "@/stores/ingredient";
+import { enqueueSync } from "@/services/sync";
+import { setActiveScope } from "@/services/scope";
+import { useAuthStore } from "@/stores/auth";
 import { useInventoryStore } from "@/stores/inventory";
 import type { BatchInput } from "@/types";
+
+// 只 mock 入队这一个动作（真要发同步就碰网络了）。
+vi.mock("@/services/sync", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/services/sync")>();
+  return { ...actual, enqueueSync: vi.fn() };
+});
 
 let db: Db;
 
@@ -12,6 +21,8 @@ beforeEach(async () => {
   setActivePinia(createPinia());
   ({ db } = await freshTestDb());
   setDb(db);
+  setActiveScope("p:local");
+  vi.clearAllMocks();
 });
 
 async function newIngredient(name = "鸡蛋"): Promise<string> {
@@ -37,8 +48,8 @@ function batch(over: Partial<BatchInput> & { ingredient_id: string }): BatchInpu
 async function insertUsage(batchId: string, amount: number, recipeId = "r1"): Promise<void> {
   const now = new Date().toISOString();
   await db.execute(
-    `INSERT INTO inventory_usages (id, recipe_id, batch_id, amount, used_at, updated_at, deleted_at)
-     VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+    `INSERT INTO inventory_usages (id, scope_id, recipe_id, batch_id, amount, used_at, updated_at, deleted_at)
+     VALUES (?, 'p:local', ?, ?, ?, ?, ?, NULL)`,
     [crypto.randomUUID(), recipeId, batchId, amount, now, now],
   );
 }
@@ -265,5 +276,106 @@ describe("commitCook", () => {
     ]);
 
     expect(result.shortfall).toEqual([{ ingredient_name: "鸡蛋", unit_name: null, missing: 5 }]);
+  });
+});
+
+describe("库存按范围隔离", () => {
+  it("两个范围各录一批同食材批次，fetchAll 只返回当前范围", async () => {
+    const egg = await newIngredient();
+    const store = useInventoryStore();
+
+    setActiveScope("p:local");
+    await store.addBatch(batch({ ingredient_id: egg, amount: 100 }));
+    setActiveScope("t:t1");
+    await store.addBatch(batch({ ingredient_id: egg, amount: 200 }));
+
+    expect(store.batches.map((row) => row.batch.amount)).toEqual([200]);
+
+    setActiveScope("p:local");
+    await store.fetchAll();
+    expect(store.batches.map((row) => row.batch.amount)).toEqual([100]);
+  });
+
+  it("remainingByIngredient 不跨范围", async () => {
+    const egg = await newIngredient();
+    const store = useInventoryStore();
+
+    setActiveScope("t:t1");
+    await store.addBatch(batch({ ingredient_id: egg, amount: 500 }));
+    setActiveScope("p:local");
+    await store.fetchAll();
+
+    expect(store.remainingByIngredient([egg]).size).toBe(0);
+  });
+
+  it("addBatch 写入当前范围与当前用户", async () => {
+    useAuthStore().serverUser = {
+      id: "u1",
+      username: "u1",
+      nickname: "我",
+      avatar_url: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    const egg = await newIngredient();
+    setActiveScope("t:t1");
+
+    await useInventoryStore().addBatch(batch({ ingredient_id: egg }));
+
+    const rows = await db.select<{ scope_id: string; owner_id: string | null }[]>(
+      "SELECT scope_id, owner_id FROM inventory_batches",
+    );
+    expect(rows).toEqual([{ scope_id: "t:t1", owner_id: "u1" }]);
+  });
+
+  it("commitCook 只扣当前范围的批次，记录带批次范围与当前用户", async () => {
+    useAuthStore().serverUser = {
+      id: "u1",
+      username: "u1",
+      nickname: "我",
+      avatar_url: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    const egg = await newIngredient();
+    const store = useInventoryStore();
+    setActiveScope("p:local");
+    await store.addBatch(batch({ ingredient_id: egg, amount: 1000 }));
+    setActiveScope("t:t1");
+    await store.addBatch(batch({ ingredient_id: egg, amount: 300 }));
+
+    const result = await store.commitCook("r1", [
+      { ingredient_id: egg, ingredient_name: "鸡蛋", unit_id: null, amount: 200, unit_name: null },
+    ]);
+
+    expect(result.deducted[0].amount).toBe(200);
+    const usages = await db.select<
+      { scope_id: string; owner_id: string | null; amount: number }[]
+    >("SELECT scope_id, owner_id, amount FROM inventory_usages");
+    expect(usages).toEqual([{ scope_id: "t:t1", owner_id: "u1", amount: 200 }]);
+    // p:local 那批一点没动
+    setActiveScope("p:local");
+    await store.fetchAll();
+    expect(store.batches[0].remaining).toBe(1000);
+  });
+
+  it("新增 / 软删批次与扣减都入同步队列", async () => {
+    const egg = await newIngredient();
+    const store = useInventoryStore();
+    await store.addBatch(batch({ ingredient_id: egg, amount: 100 }));
+    const id = store.batches[0].batch.id;
+
+    let payload = vi.mocked(enqueueSync).mock.calls[vi.mocked(enqueueSync).mock.calls.length - 1]?.[0];
+    expect(payload?.inventory_batches?.[0]).toMatchObject({ id, scope_id: "p:local" });
+
+    await store.commitCook("r1", [
+      { ingredient_id: egg, ingredient_name: "鸡蛋", unit_id: null, amount: 1, unit_name: null },
+    ]);
+    payload = vi.mocked(enqueueSync).mock.calls[vi.mocked(enqueueSync).mock.calls.length - 1]?.[0];
+    expect(payload?.inventory_usages?.[0]).toMatchObject({ recipe_id: "r1", amount: 1 });
+
+    await store.removeBatch(id);
+    payload = vi.mocked(enqueueSync).mock.calls[vi.mocked(enqueueSync).mock.calls.length - 1]?.[0];
+    expect(payload?.inventory_batches?.[0].deleted_at).not.toBeNull();
   });
 });

@@ -1,11 +1,23 @@
 import { ref } from "vue";
 import { defineStore } from "pinia";
 import { getDb } from "@/db";
-import type { BatchInput, BatchStock, CookLine, CookResult } from "@/types";
+import { activeScope } from "@/services/scope";
+import { enqueueSync } from "@/services/sync";
+import { useAuthStore } from "@/stores/auth";
+import type {
+  BatchInput,
+  BatchStock,
+  CookLine,
+  CookResult,
+  InventoryBatch,
+  InventoryUsage,
+} from "@/types";
 import { planDeduction } from "@/utils/inventory";
 
 interface BatchRow {
   id: string;
+  scope_id: string;
+  owner_id: string | null;
   ingredient_id: string;
   amount: number;
   unit_id: string | null;
@@ -21,16 +33,18 @@ interface BatchRow {
 }
 
 /**
- * 库存只存本地（spec §4.1）：这里不调 enqueueSync，库存表也不在同步载荷里。
+ * 库存归范围（个人 / 团队）：所有查询都带 `scope_id = 当前范围`（spec §11.3）。
  * 余量永远派生（批次数量 − 未删除使用记录），所以「改批次」这种操作不存在，只提供删除。
+ * 写库后把整行重新读出来入同步队列：服务端要的是完整形状，不是差量。
  */
 export const useInventoryStore = defineStore("inventory", () => {
   const batches = ref<BatchStock[]>([]);
 
   async function fetchAll(): Promise<void> {
+    const scope = activeScope.value;
     const rows = await getDb().select<BatchRow[]>(
-      `SELECT b.id, b.ingredient_id, b.amount, b.unit_id, b.produced_at, b.shelf_life_days,
-              b.expires_at, b.created_at, b.updated_at, b.deleted_at,
+      `SELECT b.id, b.scope_id, b.owner_id, b.ingredient_id, b.amount, b.unit_id, b.produced_at,
+              b.shelf_life_days, b.expires_at, b.created_at, b.updated_at, b.deleted_at,
               i.name AS ingredient_name, u.name AS unit_name,
               COALESCE(x.used, 0) AS used
        FROM inventory_batches b
@@ -39,15 +53,18 @@ export const useInventoryStore = defineStore("inventory", () => {
        LEFT JOIN (
          SELECT batch_id, SUM(amount) AS used
          FROM inventory_usages
-         WHERE deleted_at IS NULL
+         WHERE deleted_at IS NULL AND scope_id = ?
          GROUP BY batch_id
        ) x ON x.batch_id = b.id
-       WHERE b.deleted_at IS NULL
+       WHERE b.scope_id = ? AND b.deleted_at IS NULL
        ORDER BY b.expires_at IS NULL ASC, b.expires_at ASC, b.created_at ASC, b.id ASC`,
+      [scope, scope],
     );
     batches.value = rows.map((row) => ({
       batch: {
         id: row.id,
+        scope_id: row.scope_id,
+        owner_id: row.owner_id,
         ingredient_id: row.ingredient_id,
         amount: row.amount,
         unit_id: row.unit_id,
@@ -67,13 +84,16 @@ export const useInventoryStore = defineStore("inventory", () => {
   async function addBatch(input: BatchInput): Promise<void> {
     requireValid(input);
     const now = new Date().toISOString();
+    const id = crypto.randomUUID();
     await getDb().execute(
       `INSERT INTO inventory_batches
-         (id, ingredient_id, amount, unit_id, produced_at, shelf_life_days, expires_at,
-          created_at, updated_at, deleted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+         (id, scope_id, owner_id, ingredient_id, amount, unit_id, produced_at, shelf_life_days,
+          expires_at, created_at, updated_at, deleted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
       [
-        crypto.randomUUID(),
+        id,
+        activeScope.value,
+        currentOwnerId(),
         input.ingredient_id,
         input.amount,
         input.unit_id,
@@ -85,6 +105,7 @@ export const useInventoryStore = defineStore("inventory", () => {
       ],
     );
     await fetchAll();
+    await enqueueBatch(id);
   }
 
   /** 软删批次。使用记录一动不动 —— 历史不追改。 */
@@ -95,6 +116,8 @@ export const useInventoryStore = defineStore("inventory", () => {
       [now, now, id],
     );
     await fetchAll();
+    // 软删也要入队（带墓碑），否则服务端永远不知道它被删了
+    await enqueueBatch(id);
   }
 
   /** 某食材各单位的可用余量。同步读内存，调用前先 fetchAll。 */
@@ -126,6 +149,7 @@ export const useInventoryStore = defineStore("inventory", () => {
     const usedThisCook = new Map<string, number>();
     const result: CookResult = { deducted: [], shortfall: [] };
     const now = new Date().toISOString();
+    const written: string[] = [];
 
     for (const line of lines) {
       if (!(line.amount > 0)) continue;
@@ -143,12 +167,23 @@ export const useInventoryStore = defineStore("inventory", () => {
         }));
       const { plan, shortfall } = planDeduction(candidates, line.amount);
       for (const step of plan) {
+        const usageId = crypto.randomUUID();
         await getDb().execute(
           `INSERT INTO inventory_usages
-             (id, recipe_id, batch_id, amount, used_at, updated_at, deleted_at)
-           VALUES (?, ?, ?, ?, ?, ?, NULL)`,
-          [crypto.randomUUID(), recipeId, step.batch_id, step.amount, now, now],
+             (id, scope_id, owner_id, recipe_id, batch_id, amount, used_at, updated_at, deleted_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+          [
+            usageId,
+            activeScope.value,
+            currentOwnerId(),
+            recipeId,
+            step.batch_id,
+            step.amount,
+            now,
+            now,
+          ],
         );
+        written.push(usageId);
         usedThisCook.set(step.batch_id, (usedThisCook.get(step.batch_id) ?? 0) + step.amount);
       }
       const deducted = plan.reduce((sum, step) => sum + step.amount, 0);
@@ -169,11 +204,39 @@ export const useInventoryStore = defineStore("inventory", () => {
     }
 
     await fetchAll();
+    await enqueueUsages(written);
     return result;
+  }
+
+  /**
+   * 整行重读并入队：服务端要的是完整形状（含 scope_id / owner_id），
+   * 用内存里的对象拼会漏掉数据库默认值与软删时间。
+   */
+  async function enqueueBatch(id: string): Promise<void> {
+    const rows = await getDb().select<InventoryBatch[]>(
+      "SELECT * FROM inventory_batches WHERE id = ?",
+      [id],
+    );
+    if (rows.length > 0) enqueueSync({ inventory_batches: rows });
+  }
+
+  async function enqueueUsages(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    const marks = ids.map(() => "?").join(",");
+    const rows = await getDb().select<InventoryUsage[]>(
+      `SELECT * FROM inventory_usages WHERE id IN (${marks})`,
+      ids,
+    );
+    if (rows.length > 0) enqueueSync({ inventory_usages: rows });
   }
 
   return { batches, fetchAll, addBatch, removeBatch, remainingByIngredient, commitCook };
 });
+
+/** 当前登录用户：未登录为 null（未登录录的批次只有本机的游客范围能看）。 */
+function currentOwnerId(): string | null {
+  return useAuthStore().serverUserId;
+}
 
 /** 校验在任何写入之前：错误文案直接给页面显示。 */
 function requireValid(input: BatchInput): void {

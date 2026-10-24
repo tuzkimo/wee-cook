@@ -126,7 +126,7 @@ describe("transport", () => {
       status: 200,
       data: {
         text: "推荐番茄炒蛋",
-        tool_calls: [{ id: "c1", name: "search_recipes", arguments: "{}" }],
+        tool_calls: [{ id: "c1", scope_id: "p:local", name: "search_recipes", arguments: "{}" }],
         usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
         finish_reason: "stop",
       },
@@ -134,7 +134,7 @@ describe("transport", () => {
 
     await expect(callAiChat(messages, tools)).resolves.toEqual({
       text: "推荐番茄炒蛋",
-      tool_calls: [{ id: "c1", name: "search_recipes", arguments: "{}" }],
+      tool_calls: [{ id: "c1", scope_id: "p:local", name: "search_recipes", arguments: "{}" }],
       usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
       finish_reason: "stop",
     });

@@ -11,7 +11,7 @@ import {
 const NOW = "2026-10-14T00:00:00.000Z";
 
 function label(id: string, name: string, kind: LabelKind): Label {
-  return { id, name, kind, created_at: NOW, updated_at: NOW, deleted_at: null };
+  return { id, scope_id: "p:local", name, kind, created_at: NOW, updated_at: NOW, deleted_at: null };
 }
 
 /** 一行菜谱；分类/标签/食材的 id 由名字派生，测试里好读 */

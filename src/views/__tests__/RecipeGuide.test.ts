@@ -79,7 +79,7 @@ function detail(steps: RecipeStep[] = fourSteps()): RecipeDetail {
       deleted_at: null,
       owner_id: null,
     },
-    category: { id: "c1", name: "荤菜", kind: "category", created_at: NOW, updated_at: NOW, deleted_at: null },
+    category: { id: "c1", scope_id: "p:local", name: "荤菜", kind: "category", created_at: NOW, updated_at: NOW, deleted_at: null },
     tags: [],
     steps,
     ingredients: [line("1", "低筋面粉", 200, "克")],

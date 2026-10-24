@@ -63,8 +63,8 @@ import { useRecipeFilterStore } from "@/stores/recipeFilter";
 import { emptyFilter } from "@/utils/recipeFilter";
 import type { RecipeListItem } from "@/types";
 
-const CAT = { id: "cat-家常菜", name: "家常菜", kind: "category" as const, created_at: "", updated_at: "", deleted_at: null };
-const TAG = { id: "tag-快手", name: "快手", kind: "tag" as const, created_at: "", updated_at: "", deleted_at: null };
+const CAT = { id: "cat-家常菜", scope_id: "p:local", name: "家常菜", kind: "category" as const, created_at: "", updated_at: "", deleted_at: null };
+const TAG = { id: "tag-快手", scope_id: "p:local", name: "快手", kind: "tag" as const, created_at: "", updated_at: "", deleted_at: null };
 
 function item(id: string, name: string): RecipeListItem {
   return {

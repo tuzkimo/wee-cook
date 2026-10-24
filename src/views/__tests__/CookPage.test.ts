@@ -54,19 +54,20 @@ function unitRow(id: string, name: string): WithUsage<RefRow> {
 function detail(): RecipeDetail {
   return {
     recipe: {
+    scope_id: "p:local",
       id: "r1",
       name: "红烧肉",
       cover_path: null,
       category_id: "c1",
       owner_nickname: null,
-      scope_id: "p:local",
+
       owner_avatar_url: null,
       created_at: NOW,
       updated_at: NOW,
       deleted_at: null,
       owner_id: null,
     },
-    category: { id: "c1", name: "家常菜", kind: "category", created_at: NOW, updated_at: NOW, deleted_at: null },
+    category: { id: "c1", scope_id: "p:local", name: "家常菜", kind: "category", created_at: NOW, updated_at: NOW, deleted_at: null },
     tags: [],
     steps: [],
     ingredients: [

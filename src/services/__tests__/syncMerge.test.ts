@@ -9,6 +9,7 @@ import {
   type RecipePayload,
   type SyncPayload,
 } from "@/services/sync";
+import type { InventoryBatch, InventoryUsage } from "@/types";
 
 const T0 = "2026-01-01T00:00:00.000Z";
 const T1 = "2026-01-02T00:00:00.000Z";
@@ -56,13 +57,13 @@ describe("applyRemoteChanges", () => {
   it("远端更新的行覆盖本地较旧的行（LWW）", async () => {
     const { db } = await freshTestDb();
     await db.execute(
-      "INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES ('u1','克',?,?,NULL)",
+      "INSERT INTO units (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('u1','p:local','克',?,?,NULL)",
       [T0, T0],
     );
 
     await applyRemoteChanges(
       remote({
-        units: [{ id: "u1", name: "毫升", created_at: T0, updated_at: T1, deleted_at: null }],
+        units: [{ id: "u1", scope_id: "p:local", name: "毫升", created_at: T0, updated_at: T1, deleted_at: null }],
       }),
       db,
     );
@@ -74,13 +75,13 @@ describe("applyRemoteChanges", () => {
   it("远端更旧的行被跳过，本地不被回滚", async () => {
     const { db } = await freshTestDb();
     await db.execute(
-      "INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES ('u1','克',?,?,NULL)",
+      "INSERT INTO units (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('u1','p:local','克',?,?,NULL)",
       [T0, T1],
     );
 
     await applyRemoteChanges(
       remote({
-        units: [{ id: "u1", name: "毫升", created_at: T0, updated_at: T0, deleted_at: null }],
+        units: [{ id: "u1", scope_id: "p:local", name: "毫升", created_at: T0, updated_at: T0, deleted_at: null }],
       }),
       db,
     );
@@ -92,14 +93,14 @@ describe("applyRemoteChanges", () => {
   it("相同 updated_at 时不重复写（幂等）", async () => {
     const { db } = await freshTestDb();
     await db.execute(
-      "INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES ('u1','克',?,?,NULL)",
+      "INSERT INTO units (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('u1','p:local','克',?,?,NULL)",
       [T0, T0],
     );
     const counted = countingDb(db);
 
     await applyRemoteChanges(
       remote({
-        units: [{ id: "u1", name: "克", created_at: T0, updated_at: T0, deleted_at: null }],
+        units: [{ id: "u1", scope_id: "p:local", name: "克", created_at: T0, updated_at: T0, deleted_at: null }],
       }),
       counted.db,
     );
@@ -110,24 +111,24 @@ describe("applyRemoteChanges", () => {
   it("同名字典行合并：本地已有同名 X，收到 Y → 引用改指 Y 并删掉 X", async () => {
     const { db } = await freshTestDb();
     await db.execute(
-      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('lab-x','家常','category',?,?,NULL)",
+      "INSERT INTO labels (id,scope_id,name,kind,created_at,updated_at,deleted_at) VALUES ('lab-x','p:local','家常','category',?,?,NULL)",
       [T0, T0],
     );
     await db.execute(
-      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('tag-x','快手','tag',?,?,NULL)",
+      "INSERT INTO labels (id,scope_id,name,kind,created_at,updated_at,deleted_at) VALUES ('tag-x','p:local','快手','tag',?,?,NULL)",
       [T0, T0],
     );
     await db.execute(
-      "INSERT INTO ingredients (id,name,created_at,updated_at,deleted_at) VALUES ('ing-x','盐',?,?,NULL)",
+      "INSERT INTO ingredients (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('ing-x','p:local','盐',?,?,NULL)",
       [T0, T0],
     );
     await db.execute(
-      "INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES ('unit-x','克',?,?,NULL)",
+      "INSERT INTO units (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('unit-x','p:local','克',?,?,NULL)",
       [T0, T0],
     );
     await db.execute(
-      `INSERT INTO recipes (id,name,cover_path,category_id,created_at,updated_at,deleted_at)
-       VALUES ('r1','红烧肉',NULL,'lab-x',?,?,NULL)`,
+      `INSERT INTO recipes (id,scope_id,name,cover_path,category_id,created_at,updated_at,deleted_at)
+       VALUES ('r1','p:local','红烧肉',NULL,'lab-x',?,?,NULL)`,
       [T0, T0],
     );
     await db.execute("INSERT INTO recipe_labels (recipe_id,label_id) VALUES ('r1','tag-x')");
@@ -141,11 +142,11 @@ describe("applyRemoteChanges", () => {
     await applyRemoteChanges(
       remote({
         labels: [
-          { id: "lab-y", name: "家常", kind: "category", created_at: T0, updated_at: T0, deleted_at: null },
-          { id: "tag-y", name: "快手", kind: "tag", created_at: T0, updated_at: T0, deleted_at: null },
+          { id: "lab-y", scope_id: "p:local", name: "家常", kind: "category", created_at: T0, updated_at: T0, deleted_at: null },
+          { id: "tag-y", scope_id: "p:local", name: "快手", kind: "tag", created_at: T0, updated_at: T0, deleted_at: null },
         ],
-        ingredients: [{ id: "ing-y", name: "盐", created_at: T0, updated_at: T0, deleted_at: null }],
-        units: [{ id: "unit-y", name: "克", created_at: T0, updated_at: T0, deleted_at: null }],
+        ingredients: [{ id: "ing-y", scope_id: "p:local", name: "盐", created_at: T0, updated_at: T0, deleted_at: null }],
+        units: [{ id: "unit-y", scope_id: "p:local", name: "克", created_at: T0, updated_at: T0, deleted_at: null }],
       }),
       db,
     );
@@ -170,14 +171,14 @@ describe("applyRemoteChanges", () => {
   it("labels 的同名合并按 (name, kind)：同名不同 kind 不合并且不删行", async () => {
     const { db } = await freshTestDb();
     await db.execute(
-      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('x','辣','tag',?,?,NULL)",
+      "INSERT INTO labels (id,scope_id,name,kind,created_at,updated_at,deleted_at) VALUES ('x','p:local','辣','tag',?,?,NULL)",
       [T0, T0],
     );
 
     await applyRemoteChanges(
       remote({
         labels: [
-          { id: "y", name: "辣", kind: "category", created_at: T0, updated_at: T0, deleted_at: null },
+          { id: "y", scope_id: "p:local", name: "辣", kind: "category", created_at: T0, updated_at: T0, deleted_at: null },
         ],
       }),
       db,
@@ -195,7 +196,7 @@ describe("applyRemoteChanges", () => {
   it("远端菜谱的 scope_id 与 owner_nickname 落到本地", async () => {
     const { db } = await freshTestDb();
     await db.execute(
-      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('c1','家常','category',?,?,NULL)",
+      "INSERT INTO labels (id,scope_id,name,kind,created_at,updated_at,deleted_at) VALUES ('c1','p:local','家常','category',?,?,NULL)",
       [T0, T0],
     );
 
@@ -221,7 +222,7 @@ describe("applyRemoteChanges", () => {
   it("新菜谱落库带上作者头像", async () => {
     const { db } = await freshTestDb();
     await db.execute(
-      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('c1','家常','category',?,?,NULL)",
+      "INSERT INTO labels (id,scope_id,name,kind,created_at,updated_at,deleted_at) VALUES ('c1','p:local','家常','category',?,?,NULL)",
       [T0, T0],
     );
 
@@ -247,7 +248,7 @@ describe("applyRemoteChanges", () => {
   it("远端更旧时菜谱本体不过 LWW，但作者两列仍被刷新", async () => {
     const { db } = await freshTestDb();
     await db.execute(
-      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('c1','家常','category',?,?,NULL)",
+      "INSERT INTO labels (id,scope_id,name,kind,created_at,updated_at,deleted_at) VALUES ('c1','p:local','家常','category',?,?,NULL)",
       [T0, T0],
     );
     // 本地行比远端新：菜名是本地改过的，作者头像尚未拿到
@@ -264,7 +265,7 @@ describe("applyRemoteChanges", () => {
             id: "r1",
             name: "服务端的名字",
             owner_nickname: "小明",
-            scope_id: "p:local",
+
             owner_avatar_url: "data:image/jpeg;base64,AV",
           }),
         ],
@@ -286,7 +287,7 @@ describe("applyRemoteChanges", () => {
   it("载荷里没有 owner_avatar_url 这个键时不动本地的值", async () => {
     const { db } = await freshTestDb();
     await db.execute(
-      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('c1','家常','category',?,?,NULL)",
+      "INSERT INTO labels (id,scope_id,name,kind,created_at,updated_at,deleted_at) VALUES ('c1','p:local','家常','category',?,?,NULL)",
       [T0, T0],
     );
     await db.execute(
@@ -309,12 +310,12 @@ describe("applyRemoteChanges", () => {
   it("菜谱的子行整组替换：远端步骤里没有的旧步骤本地必须消失", async () => {
     const { db } = await freshTestDb();
     await db.execute(
-      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('c1','家常','category',?,?,NULL)",
+      "INSERT INTO labels (id,scope_id,name,kind,created_at,updated_at,deleted_at) VALUES ('c1','p:local','家常','category',?,?,NULL)",
       [T0, T0],
     );
     await db.execute(
-      `INSERT INTO recipes (id,name,cover_path,category_id,created_at,updated_at,deleted_at)
-       VALUES ('r1','旧菜',NULL,'c1',?,?,NULL)`,
+      `INSERT INTO recipes (id,scope_id,name,cover_path,category_id,created_at,updated_at,deleted_at)
+       VALUES ('r1','p:local','旧菜',NULL,'c1',?,?,NULL)`,
       [T0, T0],
     );
     await db.execute(
@@ -352,12 +353,12 @@ describe("applyRemoteChanges", () => {
   it("墓碑：远端 deleted_at 非空 → 本地列表里不再出现", async () => {
     const { db } = await freshTestDb();
     await db.execute(
-      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('c1','家常','category',?,?,NULL)",
+      "INSERT INTO labels (id,scope_id,name,kind,created_at,updated_at,deleted_at) VALUES ('c1','p:local','家常','category',?,?,NULL)",
       [T0, T0],
     );
     await db.execute(
-      `INSERT INTO recipes (id,name,cover_path,category_id,created_at,updated_at,deleted_at)
-       VALUES ('r1','要删的菜',NULL,'c1',?,?,NULL)`,
+      `INSERT INTO recipes (id,scope_id,name,cover_path,category_id,created_at,updated_at,deleted_at)
+       VALUES ('r1','p:local','要删的菜',NULL,'c1',?,?,NULL)`,
       [T0, T0],
     );
 
@@ -380,13 +381,13 @@ describe("applyRemoteChanges", () => {
 
     const { db } = await freshTestDb();
     await db.execute(
-      "INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES ('u1','旧',?,?,NULL)",
+      "INSERT INTO units (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('u1','p:local','旧',?,?,NULL)",
       [T0, T0],
     );
     await applyRemoteChanges(
       remote({
         units: [
-          { id: "u1", name: "新", created_at: "2026-01-01 00:00:00", updated_at: "2026-01-01 00:00:01", deleted_at: null },
+          { id: "u1", scope_id: "p:local", name: "新", created_at: "2026-01-01 00:00:00", updated_at: "2026-01-01 00:00:01", deleted_at: null },
         ],
       }),
       db,
@@ -398,32 +399,32 @@ describe("applyRemoteChanges", () => {
     const { db } = await freshTestDb();
     // 本地历史：先建了同名行并软删（旧），后来又重建了同名活行（新）。
     await db.execute(
-      "INSERT INTO ingredients (id,name,created_at,updated_at,deleted_at) VALUES ('ing-gone','盐',?,?,?)",
+      "INSERT INTO ingredients (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('ing-gone','p:local','盐',?,?,?)",
       [T0, T0, T0],
     );
     await db.execute(
-      "INSERT INTO ingredients (id,name,created_at,updated_at,deleted_at) VALUES ('ing-live','盐',?,?,NULL)",
+      "INSERT INTO ingredients (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('ing-live','p:local','盐',?,?,NULL)",
       [T0, T0],
     );
     await db.execute(
-      "INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES ('unit-gone','克',?,?,?)",
+      "INSERT INTO units (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('unit-gone','p:local','克',?,?,?)",
       [T0, T0, T0],
     );
     await db.execute(
-      "INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES ('unit-live','克',?,?,NULL)",
+      "INSERT INTO units (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('unit-live','p:local','克',?,?,NULL)",
       [T0, T0],
     );
     await db.execute(
-      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('lab-gone','家常','category',?,?,?)",
+      "INSERT INTO labels (id,scope_id,name,kind,created_at,updated_at,deleted_at) VALUES ('lab-gone','p:local','家常','category',?,?,?)",
       [T0, T0, T0],
     );
     await db.execute(
-      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('lab-live','家常','category',?,?,NULL)",
+      "INSERT INTO labels (id,scope_id,name,kind,created_at,updated_at,deleted_at) VALUES ('lab-live','p:local','家常','category',?,?,NULL)",
       [T0, T0],
     );
     await db.execute(
-      `INSERT INTO recipes (id,name,cover_path,category_id,created_at,updated_at,deleted_at)
-       VALUES ('r1','红烧肉',NULL,'lab-live',?,?,NULL)`,
+      `INSERT INTO recipes (id,scope_id,name,cover_path,category_id,created_at,updated_at,deleted_at)
+       VALUES ('r1','p:local','红烧肉',NULL,'lab-live',?,?,NULL)`,
       [T0, T0],
     );
     await db.execute(
@@ -436,10 +437,10 @@ describe("applyRemoteChanges", () => {
     // 服务端按 spec §7.4 归并出第三个 UUID 的同名行下发。
     await applyRemoteChanges(
       remote({
-        ingredients: [{ id: "ing-remote", name: "盐", created_at: T0, updated_at: T1, deleted_at: null }],
-        units: [{ id: "unit-remote", name: "克", created_at: T0, updated_at: T1, deleted_at: null }],
+        ingredients: [{ id: "ing-remote", scope_id: "p:local", name: "盐", created_at: T0, updated_at: T1, deleted_at: null }],
+        units: [{ id: "unit-remote", scope_id: "p:local", name: "克", created_at: T0, updated_at: T1, deleted_at: null }],
         labels: [
-          { id: "lab-remote", name: "家常", kind: "category", created_at: T0, updated_at: T1, deleted_at: null },
+          { id: "lab-remote", scope_id: "p:local", name: "家常", kind: "category", created_at: T0, updated_at: T1, deleted_at: null },
         ],
       }),
       db,
@@ -474,24 +475,24 @@ describe("applyRemoteChanges", () => {
   it("子行引用的食材/单位 id 在同一批 remote.recipes 里也要 remap", async () => {
     const { db } = await freshTestDb();
     await db.execute(
-      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('lab-x','家常','category',?,?,NULL)",
+      "INSERT INTO labels (id,scope_id,name,kind,created_at,updated_at,deleted_at) VALUES ('lab-x','p:local','家常','category',?,?,NULL)",
       [T0, T0],
     );
     await db.execute(
-      "INSERT INTO ingredients (id,name,created_at,updated_at,deleted_at) VALUES ('ing-x','盐',?,?,NULL)",
+      "INSERT INTO ingredients (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('ing-x','p:local','盐',?,?,NULL)",
       [T0, T0],
     );
     await db.execute(
-      "INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES ('unit-x','克',?,?,NULL)",
+      "INSERT INTO units (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('unit-x','p:local','克',?,?,NULL)",
       [T0, T0],
     );
 
     await applyRemoteChanges(
       remote({
-        ingredients: [{ id: "ing-y", name: "盐", created_at: T0, updated_at: T0, deleted_at: null }],
-        units: [{ id: "unit-y", name: "克", created_at: T0, updated_at: T0, deleted_at: null }],
+        ingredients: [{ id: "ing-y", scope_id: "p:local", name: "盐", created_at: T0, updated_at: T0, deleted_at: null }],
+        units: [{ id: "unit-y", scope_id: "p:local", name: "克", created_at: T0, updated_at: T0, deleted_at: null }],
         labels: [
-          { id: "lab-y", name: "家常", kind: "category", created_at: T0, updated_at: T0, deleted_at: null },
+          { id: "lab-y", scope_id: "p:local", name: "家常", kind: "category", created_at: T0, updated_at: T0, deleted_at: null },
         ],
         recipes: [
           recipe({
@@ -522,32 +523,32 @@ describe("applyRemoteChanges", () => {
     const { db } = await freshTestDb();
     // 本地历史：X 先建后软删，Y 是后来重建的同名活行。
     await db.execute(
-      "INSERT INTO ingredients (id,name,created_at,updated_at,deleted_at) VALUES ('ing-x','盐',?,?,?)",
+      "INSERT INTO ingredients (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('ing-x','p:local','盐',?,?,?)",
       [T0, T0, T0],
     );
     await db.execute(
-      "INSERT INTO ingredients (id,name,created_at,updated_at,deleted_at) VALUES ('ing-y','盐',?,?,NULL)",
+      "INSERT INTO ingredients (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('ing-y','p:local','盐',?,?,NULL)",
       [T0, T0],
     );
     await db.execute(
-      "INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES ('unit-x','克',?,?,?)",
+      "INSERT INTO units (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('unit-x','p:local','克',?,?,?)",
       [T0, T0, T0],
     );
     await db.execute(
-      "INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES ('unit-y','克',?,?,NULL)",
+      "INSERT INTO units (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('unit-y','p:local','克',?,?,NULL)",
       [T0, T0],
     );
     await db.execute(
-      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('lab-x','家常','category',?,?,?)",
+      "INSERT INTO labels (id,scope_id,name,kind,created_at,updated_at,deleted_at) VALUES ('lab-x','p:local','家常','category',?,?,?)",
       [T0, T0, T0],
     );
     await db.execute(
-      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('lab-y','家常','category',?,?,NULL)",
+      "INSERT INTO labels (id,scope_id,name,kind,created_at,updated_at,deleted_at) VALUES ('lab-y','p:local','家常','category',?,?,NULL)",
       [T0, T0],
     );
     await db.execute(
-      `INSERT INTO recipes (id,name,cover_path,category_id,created_at,updated_at,deleted_at)
-       VALUES ('r1','红烧肉',NULL,'lab-y',?,?,NULL)`,
+      `INSERT INTO recipes (id,scope_id,name,cover_path,category_id,created_at,updated_at,deleted_at)
+       VALUES ('r1','p:local','红烧肉',NULL,'lab-y',?,?,NULL)`,
       [T0, T0],
     );
     await db.execute("INSERT INTO recipe_labels (recipe_id,label_id) VALUES ('r1','lab-y')");
@@ -562,9 +563,9 @@ describe("applyRemoteChanges", () => {
     await expect(
       applyRemoteChanges(
         remote({
-          ingredients: [{ id: "ing-x", name: "盐", created_at: T0, updated_at: T1, deleted_at: null }],
-          units: [{ id: "unit-x", name: "克", created_at: T0, updated_at: T1, deleted_at: null }],
-          labels: [{ id: "lab-x", name: "家常", kind: "category", created_at: T0, updated_at: T1, deleted_at: null }],
+          ingredients: [{ id: "ing-x", scope_id: "p:local", name: "盐", created_at: T0, updated_at: T1, deleted_at: null }],
+          units: [{ id: "unit-x", scope_id: "p:local", name: "克", created_at: T0, updated_at: T1, deleted_at: null }],
+          labels: [{ id: "lab-x", scope_id: "p:local", name: "家常", kind: "category", created_at: T0, updated_at: T1, deleted_at: null }],
         }),
         db,
       ),
@@ -601,7 +602,7 @@ describe("recipePayloadFor", () => {
   it("我推上去的菜谱载荷带 scope_id", async () => {
     const { db } = await freshTestDb();
     await db.execute(
-      "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('c1','家常','category',?,?,NULL)",
+      "INSERT INTO labels (id,scope_id,name,kind,created_at,updated_at,deleted_at) VALUES ('c1','p:local','家常','category',?,?,NULL)",
       [T0, T0],
     );
     await db.execute(
@@ -621,18 +622,18 @@ describe("字典合并时库存批次跟着重指", () => {
   /** 本地先有一条引用旧 id 的批次，合并后它必须指向合并后的 id，否则库存静默消失 */
   async function seed(db: Db): Promise<void> {
     await db.execute(
-      "INSERT INTO ingredients (id,name,created_at,updated_at,deleted_at) VALUES ('ing-old','盐',?,?,NULL)",
+      "INSERT INTO ingredients (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('ing-old','p:local','盐',?,?,NULL)",
       [T0, T0],
     );
     await db.execute(
-      "INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES ('unit-old','克',?,?,NULL)",
+      "INSERT INTO units (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('unit-old','p:local','克',?,?,NULL)",
       [T0, T0],
     );
     await db.execute(
       `INSERT INTO inventory_batches
-         (id, ingredient_id, amount, unit_id, produced_at, shelf_life_days, expires_at,
+         (id, scope_id, ingredient_id, amount, unit_id, produced_at, shelf_life_days, expires_at,
           created_at, updated_at, deleted_at)
-       VALUES ('b1','ing-old',100,'unit-old',NULL,NULL,NULL,?,?,NULL)`,
+       VALUES ('b1','p:local','ing-old',100,'unit-old',NULL,NULL,NULL,?,?,NULL)`,
       [T0, T0],
     );
   }
@@ -643,8 +644,8 @@ describe("字典合并时库存批次跟着重指", () => {
 
     await applyRemoteChanges(
       remote({
-        ingredients: [{ id: "ing-new", name: "盐", created_at: T0, updated_at: T0, deleted_at: null }],
-        units: [{ id: "unit-new", name: "克", created_at: T0, updated_at: T0, deleted_at: null }],
+        ingredients: [{ id: "ing-new", scope_id: "p:local", name: "盐", created_at: T0, updated_at: T0, deleted_at: null }],
+        units: [{ id: "unit-new", scope_id: "p:local", name: "克", created_at: T0, updated_at: T0, deleted_at: null }],
       }),
       db,
     );
@@ -653,5 +654,155 @@ describe("字典合并时库存批次跟着重指", () => {
       .toEqual([{ ingredient_id: "ing-new", unit_id: "unit-new" }]);
     expect(await db.select("SELECT id FROM ingredients")).toEqual([{ id: "ing-new" }]);
     expect(await db.select("SELECT id FROM units")).toEqual([{ id: "unit-new" }]);
+  });
+});
+
+// --- 库存进同步（Task 11） ---
+
+function batch(over: Partial<InventoryBatch> & { id: string }): InventoryBatch {
+  return {
+    scope_id: "p:local",
+    owner_id: "u1",
+    ingredient_id: "i1",
+    amount: 100,
+    unit_id: null,
+    produced_at: null,
+    shelf_life_days: null,
+    expires_at: null,
+    created_at: T0,
+    updated_at: T0,
+    deleted_at: null,
+    ...over,
+  };
+}
+
+function usage(over: Partial<InventoryUsage> & { id: string }): InventoryUsage {
+  return {
+    scope_id: "p:local",
+    owner_id: "u1",
+    recipe_id: "r1",
+    batch_id: "b1",
+    amount: 10,
+    used_at: T0,
+    updated_at: T0,
+    deleted_at: null,
+    ...over,
+  };
+}
+
+describe("applyRemoteChanges：库存", () => {
+  it("批次按 LWW：旧的不覆盖新的，软删墓碑落库", async () => {
+    const { db } = await freshTestDb();
+    await db.execute(
+      "INSERT INTO ingredients (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('i1','p:local','鸡蛋',?,?,NULL)",
+      [T0, T0],
+    );
+
+    await applyRemoteChanges(remote({ inventory_batches: [batch({ id: "b1", amount: 500 })] }), db);
+    await applyRemoteChanges(
+      remote({ inventory_batches: [batch({ id: "b1", amount: 300, updated_at: T1 })] }),
+      db,
+    );
+    // 更旧的一次推送不得回滚
+    await applyRemoteChanges(
+      remote({ inventory_batches: [batch({ id: "b1", amount: 999, updated_at: T0 })] }),
+      db,
+    );
+    expect(await db.select("SELECT amount FROM inventory_batches WHERE id = 'b1'")).toEqual([
+      { amount: 300 },
+    ]);
+
+    // 软删墓碑（时间更新才生效）
+    const T2 = "2026-01-03T00:00:00.000Z";
+    await applyRemoteChanges(
+      remote({
+        inventory_batches: [batch({ id: "b1", amount: 300, updated_at: T2, deleted_at: T2 })],
+      }),
+      db,
+    );
+    expect(
+      await db.select("SELECT deleted_at FROM inventory_batches WHERE id = 'b1'"),
+    ).toEqual([{ deleted_at: T2 }]);
+  });
+
+  it("使用记录 INSERT OR IGNORE：同 id 推两次只一行", async () => {
+    const { db } = await freshTestDb();
+    const row = usage({ id: "us1" });
+
+    await applyRemoteChanges(remote({ inventory_usages: [row] }), db);
+    await applyRemoteChanges(remote({ inventory_usages: [row] }), db);
+
+    expect(await db.select("SELECT count(*) AS n FROM inventory_usages")).toEqual([{ n: 1 }]);
+    // 使用记录不参与 LWW：远端再来一条同 id 也改不动它
+    await applyRemoteChanges(
+      remote({ inventory_usages: [usage({ id: "us1", amount: 99, updated_at: T1 })] }),
+      db,
+    );
+    expect(await db.select("SELECT amount FROM inventory_usages WHERE id = 'us1'")).toEqual([
+      { amount: 10 },
+    ]);
+  });
+
+  it("字典同名合并不跨范围：p:a 与 p:b 各一个「生抽」都保留", async () => {
+    const { db } = await freshTestDb();
+
+    await applyRemoteChanges(
+      remote({
+        ingredients: [
+          { id: "i-a", scope_id: "p:a", name: "生抽", created_at: T0, updated_at: T0, deleted_at: null },
+        ],
+      }),
+      db,
+    );
+    await applyRemoteChanges(
+      remote({
+        ingredients: [
+          { id: "i-b", scope_id: "p:b", name: "生抽", created_at: T0, updated_at: T0, deleted_at: null },
+        ],
+      }),
+      db,
+    );
+
+    expect(
+      await db.select("SELECT id FROM ingredients WHERE name = '生抽' ORDER BY id"),
+    ).toEqual([{ id: "i-a" }, { id: "i-b" }]);
+  });
+
+  it("字典同名合并把本地批次的 ingredient_id 与 unit_id 改指到存活的行", async () => {
+    const { db } = await freshTestDb();
+    // 本地已有「生抽」i-old / 「勺」u-old，以及一条引用它们的批次
+    await db.execute(
+      "INSERT INTO ingredients (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('i-old','p:local','生抽',?,?,NULL)",
+      [T0, T0],
+    );
+    await db.execute(
+      "INSERT INTO units (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('u-old','p:local','勺',?,?,NULL)",
+      [T0, T0],
+    );
+    await applyRemoteChanges(
+      remote({
+        inventory_batches: [
+          batch({ id: "b1", ingredient_id: "i-old", unit_id: "u-old" }),
+        ],
+      }),
+      db,
+    );
+
+    // 同步推来了同范围同名的 i-new / u-new：本地那两条被并掉，批次引用必须跟着改指
+    await applyRemoteChanges(
+      remote({
+        ingredients: [
+          { id: "i-new", scope_id: "p:local", name: "生抽", created_at: T0, updated_at: T1, deleted_at: null },
+        ],
+        units: [
+          { id: "u-new", scope_id: "p:local", name: "勺", created_at: T0, updated_at: T1, deleted_at: null },
+        ],
+      }),
+      db,
+    );
+
+    expect(
+      await db.select("SELECT ingredient_id, unit_id FROM inventory_batches WHERE id = 'b1'"),
+    ).toEqual([{ ingredient_id: "i-new", unit_id: "u-new" }]);
   });
 });

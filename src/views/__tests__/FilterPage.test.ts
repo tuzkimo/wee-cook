@@ -31,7 +31,7 @@ vi.mock("@/stores/recipeFilter", async () => {
 });
 
 function label(id: string, name: string, kind: LabelKind): Label {
-  return { id, name, kind, created_at: NOW, updated_at: NOW, deleted_at: null };
+  return { id, scope_id: "p:local", name, kind, created_at: NOW, updated_at: NOW, deleted_at: null };
 }
 
 function item(

@@ -18,22 +18,17 @@ import type { Label, Recipe, RecipeListItem } from "@/types";
 
 const NOW = "2026-10-16T00:00:00.000Z";
 
-const category: Label = {
-  id: "c1",
-  name: "家常菜",
+const category: Label = { id: "c1", scope_id: "p:local", name: "家常菜",
   kind: "category",
   created_at: NOW,
   updated_at: NOW,
   deleted_at: null,
 };
 
-const recipe: Recipe = {
-  id: "r1",
-  name: "红烧肉",
+const recipe: Recipe = { id: "r1", scope_id: "p:local", name: "红烧肉",
   cover_path: null,
   category_id: "c1",
   owner_nickname: null,
-  scope_id: "p:local",
   owner_avatar_url: null,
   created_at: NOW,
   updated_at: NOW,

@@ -245,12 +245,12 @@ describe("authStore", () => {
     seedSetting("server_nickname", "阿丽");
     await writeRefreshToken("u1", "refresh-1");
     await db.execute(
-      "INSERT INTO labels (id, name, kind, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, NULL)",
-      ["c1", "家常菜", "category", NOW, NOW],
+      "INSERT INTO labels (id, scope_id, name, kind, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, NULL)",
+      ["c1", "p:local", "家常菜", "category", NOW, NOW],
     );
     await db.execute(
-      "INSERT INTO recipes (id, name, cover_path, category_id, created_at, updated_at, deleted_at) VALUES (?, ?, NULL, ?, ?, ?, NULL)",
-      ["r1", "红烧肉", "c1", NOW, NOW],
+      "INSERT INTO recipes (id, scope_id, name, cover_path, category_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, NULL, ?, ?, ?, NULL)",
+      ["r1", "p:local", "红烧肉", "c1", NOW, NOW],
     );
     // 断网 / 超时：拿不到 HTTP 响应（apiFetch 契约里这种情况一律抛）
     vi.stubGlobal(

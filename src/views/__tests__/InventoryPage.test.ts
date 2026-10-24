@@ -50,27 +50,27 @@ interface SeedBatch {
 async function seedBatch(o: SeedBatch): Promise<void> {
   const now = new Date().toISOString();
   await db.execute(
-    "INSERT OR IGNORE INTO ingredients (id, name, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, NULL)",
+    "INSERT OR IGNORE INTO ingredients (id, scope_id, name, created_at, updated_at, deleted_at) VALUES (?, 'p:local', ?, ?, ?, NULL)",
     [o.ingredientId, o.ingredientName, now, now],
   );
   if (o.unitId) {
     await db.execute(
-      "INSERT OR IGNORE INTO units (id, name, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, NULL)",
+      "INSERT OR IGNORE INTO units (id, scope_id, name, created_at, updated_at, deleted_at) VALUES (?, 'p:local', ?, ?, ?, NULL)",
       [o.unitId, o.unitName ?? o.unitId, now, now],
     );
   }
   const batchId = crypto.randomUUID();
   await db.execute(
     `INSERT INTO inventory_batches
-       (id, ingredient_id, amount, unit_id, produced_at, shelf_life_days, expires_at,
+       (id, scope_id, ingredient_id, amount, unit_id, produced_at, shelf_life_days, expires_at,
         created_at, updated_at, deleted_at)
-     VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL)`,
+     VALUES (?, 'p:local', ?, ?, ?, ?, NULL, ?, ?, ?, NULL)`,
     [batchId, o.ingredientId, o.amount, o.unitId ?? null, o.producedAt ?? null, o.expiresAt ?? null, now, now],
   );
   if (o.used) {
     await db.execute(
-      `INSERT INTO inventory_usages (id, recipe_id, batch_id, amount, used_at, updated_at, deleted_at)
-       VALUES (?, 'r1', ?, ?, ?, ?, NULL)`,
+      `INSERT INTO inventory_usages (id, scope_id, recipe_id, batch_id, amount, used_at, updated_at, deleted_at)
+       VALUES (?, 'p:local', 'r1', ?, ?, ?, ?, NULL)`,
       [crypto.randomUUID(), batchId, o.used, now, now],
     );
   }

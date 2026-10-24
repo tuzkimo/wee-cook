@@ -93,7 +93,7 @@ function fakeIo(): { deps: FileSyncDeps; store: Map<string, Uint8Array> } {
 }
 
 function label(id: string, name: string, kind: LabelKind): Label {
-  return { id, name, kind, created_at: NOW, updated_at: NOW, deleted_at: null };
+  return { id, scope_id: "p:local", name, kind, created_at: NOW, updated_at: NOW, deleted_at: null };
 }
 
 function step(id: string, sortOrder: number, text: string, image?: string): RecipeStep {

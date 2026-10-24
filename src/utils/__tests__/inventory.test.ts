@@ -35,6 +35,8 @@ function stock(o: {
   return {
     batch: {
       id: o.id,
+    scope_id: "p:local",
+    owner_id: null,
       ingredient_id: o.ingredient_id,
       amount: o.remaining,
       unit_id: o.unit_id,

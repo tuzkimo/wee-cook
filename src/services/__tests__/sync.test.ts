@@ -47,6 +47,7 @@ import {
   emptyPayload,
   enqueueSync,
   getLastSyncedAtFor,
+  localScopeIds,
   performSync,
   requestSyncNow,
   resetSyncCursorsOnce,
@@ -63,7 +64,7 @@ const T0 = "2026-01-01T00:00:00.000Z";
 const T1 = "2026-01-02T00:00:00.000Z";
 
 function unit(id: string, name: string, updatedAt = T0): Unit {
-  return { id, name, created_at: T0, updated_at: updatedAt, deleted_at: null };
+  return { id, scope_id: "p:u1", name, created_at: T0, updated_at: updatedAt, deleted_at: null };
 }
 
 function okResponse(serverSeq: number): OkResult {
@@ -78,7 +79,7 @@ type OkResult = {
 
 async function insertLabel(db: Db, id = "c1"): Promise<void> {
   await db.execute(
-    "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES (?,'家常','category',?,?,NULL)",
+    "INSERT INTO labels (id,scope_id,name,kind,created_at,updated_at,deleted_at) VALUES (?,'p:u1','家常','category',?,?,NULL)",
     [id, T0, T0],
   );
 }
@@ -90,9 +91,9 @@ async function insertRecipe(
   deletedAt: string | null = null,
 ): Promise<void> {
   await db.execute(
-    `INSERT INTO recipes (id,name,cover_path,category_id,created_at,updated_at,deleted_at,owner_id)
-     VALUES (?,'菜',NULL,'c1',?,?,?,?)`,
-    [id, T0, T0, deletedAt, ownerId],
+    `INSERT INTO recipes (id,scope_id,name,cover_path,category_id,created_at,updated_at,deleted_at,owner_id)
+     VALUES (?,?,'菜',NULL,'c1',?,?,?,?)`,
+    [id, ownerId ? `p:${ownerId}` : "p:local", T0, T0, deletedAt, ownerId],
   );
 }
 
@@ -216,7 +217,8 @@ describe("performSync", () => {
     const first = performSync();
     const second = performSync();
     await expect(second).resolves.toBe(false);
-    expect(apiFetchMock).toHaveBeenCalledTimes(1);
+    // 全扫推送要在真库里扫一遍字典与库存，apiFetch 不是在 performSync 同步返回前就被调用的
+    await vi.waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(1));
 
     resolveFirst(okResponse(1));
     await expect(first).resolves.toBe(true);
@@ -268,7 +270,7 @@ describe("performSync", () => {
     expect(await db.select("SELECT id FROM recipes WHERE owner_id = 'u1'")).toEqual([{ id: "r1" }]);
     // 本地读写不受同步失败影响
     await db.execute(
-      "INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES ('u9','克',?,?,NULL)",
+      "INSERT INTO units (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('u9','p:u1','克',?,?,NULL)",
       [T0, T0],
     );
     expect(await db.select("SELECT id FROM units")).toEqual([{ id: "u9" }]);
@@ -419,9 +421,9 @@ describe("collectPushPayload", () => {
 
   it("带上全部字典行与菜谱子行", async () => {
     await insertLabel(db, "c1");
-    await db.execute("INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('t1','快手','tag',?,?,NULL)", [T0, T0]);
-    await db.execute("INSERT INTO ingredients (id,name,created_at,updated_at,deleted_at) VALUES ('i1','盐',?,?,NULL)", [T0, T0]);
-    await db.execute("INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES ('un1','克',?,?,NULL)", [T0, T0]);
+    await db.execute("INSERT INTO labels (id,scope_id,name,kind,created_at,updated_at,deleted_at) VALUES ('t1','p:u1','快手','tag',?,?,NULL)", [T0, T0]);
+    await db.execute("INSERT INTO ingredients (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('i1','p:u1','盐',?,?,NULL)", [T0, T0]);
+    await db.execute("INSERT INTO units (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('un1','p:u1','克',?,?,NULL)", [T0, T0]);
     await insertRecipe(db, "r1", "u1");
     await db.execute(
       "INSERT INTO recipe_steps (id,recipe_id,sort_order,text,image_path,updated_at,deleted_at) VALUES ('s1','r1',0,'切',NULL,?,NULL)",
@@ -459,10 +461,61 @@ describe("collectPushPayload", () => {
   });
 });
 
+describe("collectPushPayload 按我的范围收集", () => {
+  it("只收「我的个人范围 ∪ 我加入的团队」的字典与库存，别的一行不推", async () => {
+    const now = T0;
+    await db.execute(
+      `INSERT INTO ingredients (id, scope_id, name, created_at, updated_at, deleted_at) VALUES
+         ('i-mine','p:u1','盐',?,?,NULL),
+         ('i-team','t:t1','生抽',?,?,NULL),
+         ('i-other','p:u2','糖',?,?,NULL)`,
+      [now, now, now, now, now, now],
+    );
+    await db.execute(
+      `INSERT INTO teams (id, name, role, member_count) VALUES ('t1','自己家','owner',1)`,
+    );
+    await db.execute(
+      `INSERT INTO inventory_batches
+         (id, scope_id, owner_id, ingredient_id, amount, created_at, updated_at, deleted_at) VALUES
+         ('b-mine','p:u1','u1','i-mine',100,?,?,NULL),
+         ('b-team','t:t1','u2','i-team',200,?,?,NULL),
+         ('b-other','p:u2','u2','i-other',300,?,?,NULL)`,
+      [now, now, now, now, now, now],
+    );
+    await db.execute(
+      `INSERT INTO inventory_usages
+         (id, scope_id, owner_id, recipe_id, batch_id, amount, used_at, updated_at, deleted_at) VALUES
+         ('us-mine','p:u1','u1','r1','b-mine',10,?,?,NULL),
+         ('us-other','p:u2','u2','r2','b-other',20,?,?,NULL)`,
+      [now, now, now, now],
+    );
+
+    const payload = await collectPushPayload();
+
+    expect(payload.ingredients.map((row) => row.id).sort()).toEqual(["i-mine", "i-team"]);
+    expect(payload.inventory_batches.map((row) => row.id).sort()).toEqual(["b-mine", "b-team"]);
+    expect(payload.inventory_usages.map((row) => row.id)).toEqual(["us-mine"]);
+  });
+
+  it("localScopeIds 返回个人范围 + teams 缓存表里的团队", async () => {
+    await db.execute(
+      `INSERT INTO teams (id, name, role, member_count) VALUES ('t1','自己家','owner',1), ('t2','爸妈家','member',3)`,
+    );
+
+    expect(await localScopeIds(db, "u1")).toEqual(["p:u1", "t:t1", "t:t2"]);
+  });
+});
+
 describe("同步载荷范围", () => {
   it("上行载荷的键集被钉死，AI 会话表不许混进来", () => {
     expect(Object.keys(emptyPayload()).sort()).toEqual([
-      "files", "ingredients", "labels", "recipes", "units",
+      "files",
+      "ingredients",
+      "inventory_batches",
+      "inventory_usages",
+      "labels",
+      "recipes",
+      "units",
     ]);
   });
 });

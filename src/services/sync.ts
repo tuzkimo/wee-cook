@@ -9,7 +9,8 @@ import { getDb, type Db } from "@/db";
 import { apiFetch, hasBaseUrl } from "./api";
 import { downloadPendingFiles, uploadPendingFiles, type FileRef } from "./syncFiles";
 import { useAuthStore } from "@/stores/auth";
-import type { Ingredient, Label, Recipe, Unit } from "@/types";
+import { LOCAL_SCOPE, personalScope, teamScope } from "@/services/scope";
+import type { Ingredient, InventoryBatch, InventoryUsage, Label, Recipe, Unit } from "@/types";
 
 /** 菜谱子表在协议里的形状：跟父菜谱整条走，不带各自的 updated_at / deleted_at（spec §7.3）。 */
 export interface RecipeStepPayload {
@@ -43,6 +44,9 @@ export interface SyncPayload {
   units: Unit[];
   labels: Label[];
   recipes: RecipePayload[];
+  /** 库存跟着同步走（spec §8.1）：批次 LWW、使用记录只增不清。 */
+  inventory_batches: InventoryBatch[];
+  inventory_usages: InventoryUsage[];
   files: FileRef[];
 }
 
@@ -57,7 +61,15 @@ interface SyncResponse {
 }
 
 export function emptyPayload(): SyncPayload {
-  return { ingredients: [], units: [], labels: [], recipes: [], files: [] };
+  return {
+    ingredients: [],
+    units: [],
+    labels: [],
+    recipes: [],
+    inventory_batches: [],
+    inventory_usages: [],
+    files: [],
+  };
 }
 
 // SQLite 的 datetime('now') 产出 "YYYY-MM-DD HH:MM:SS"（UTC），非 RFC3339，
@@ -149,10 +161,20 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
         updatedAt,
         // 优先取活行：(deleted_at IS NULL) DESC 把活行排在前。若先取到软删行，只软删它
         // 不会释放 name 的局部唯一索引，INSERT 会撞活行 → 同步永远卡死。
-        findDupSql: "SELECT id FROM ingredients WHERE name = ? ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
-        findDupParams: [item.name],
-        writeSql: "INSERT INTO ingredients (id,name,created_at,updated_at,deleted_at) VALUES (?,?,?,?,?)",
-        writeParams: [item.id, item.name, toIsoTimestamp(item.created_at), updatedAt, normDeleted(item.deleted_at)],
+        // 同键查询必须带范围：两个家庭各有一个「生抽」是两条记录（spec §8.6）
+        findDupSql:
+          "SELECT id FROM ingredients WHERE scope_id = ? AND name = ? ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
+        findDupParams: [item.scope_id, item.name],
+        writeSql:
+          "INSERT INTO ingredients (id,scope_id,name,created_at,updated_at,deleted_at) VALUES (?,?,?,?,?,?)",
+        writeParams: [
+          item.id,
+          item.scope_id,
+          item.name,
+          toIsoTimestamp(item.created_at),
+          updatedAt,
+          normDeleted(item.deleted_at),
+        ],
         repointSql: [
           "UPDATE recipe_ingredients SET ingredient_id = ? WHERE ingredient_id = ?",
           // 库存批次只存本地，合并掉字典行后不重指就会永远查不出名字（spec §4.16）
@@ -169,8 +191,9 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
           id: item.id,
           updatedAt,
           // 只找另一条**活行**：软删行不占唯一键，误删它没有意义。
-          findDupSql: "SELECT id FROM ingredients WHERE name = ? AND deleted_at IS NULL AND id != ? LIMIT 1",
-          findDupParams: [item.name, item.id],
+          findDupSql:
+            "SELECT id FROM ingredients WHERE scope_id = ? AND name = ? AND deleted_at IS NULL AND id != ? LIMIT 1",
+          findDupParams: [item.scope_id, item.name, item.id],
           writeSql: "UPDATE ingredients SET name=?, updated_at=?, deleted_at=? WHERE id=?",
           writeParams: [item.name, updatedAt, null, item.id],
           repointSql: [
@@ -203,10 +226,18 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
         table: "units",
         id: item.id,
         updatedAt,
-        findDupSql: "SELECT id FROM units WHERE name = ? ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
-        findDupParams: [item.name],
-        writeSql: "INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES (?,?,?,?,?)",
-        writeParams: [item.id, item.name, toIsoTimestamp(item.created_at), updatedAt, normDeleted(item.deleted_at)],
+        findDupSql:
+          "SELECT id FROM units WHERE scope_id = ? AND name = ? ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
+        findDupParams: [item.scope_id, item.name],
+        writeSql: "INSERT INTO units (id,scope_id,name,created_at,updated_at,deleted_at) VALUES (?,?,?,?,?,?)",
+        writeParams: [
+          item.id,
+          item.scope_id,
+          item.name,
+          toIsoTimestamp(item.created_at),
+          updatedAt,
+          normDeleted(item.deleted_at),
+        ],
         repointSql: [
           "UPDATE recipe_ingredients SET unit_id = ? WHERE unit_id = ?",
           "UPDATE inventory_batches SET unit_id = ? WHERE unit_id = ?",
@@ -219,8 +250,9 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
           table: "units",
           id: item.id,
           updatedAt,
-          findDupSql: "SELECT id FROM units WHERE name = ? AND deleted_at IS NULL AND id != ? LIMIT 1",
-          findDupParams: [item.name, item.id],
+          findDupSql:
+            "SELECT id FROM units WHERE scope_id = ? AND name = ? AND deleted_at IS NULL AND id != ? LIMIT 1",
+          findDupParams: [item.scope_id, item.name, item.id],
           writeSql: "UPDATE units SET name=?, updated_at=?, deleted_at=? WHERE id=?",
           writeParams: [item.name, updatedAt, null, item.id],
           repointSql: [
@@ -253,10 +285,20 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
         id: item.id,
         updatedAt,
         // 合并键是 (name, kind)：分类与标签不能并成一行（spec §7.4）。
-        findDupSql: "SELECT id FROM labels WHERE name = ? AND kind = ? ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
-        findDupParams: [item.name, item.kind],
-        writeSql: "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES (?,?,?,?,?,?)",
-        writeParams: [item.id, item.name, item.kind, toIsoTimestamp(item.created_at), updatedAt, normDeleted(item.deleted_at)],
+        findDupSql:
+          "SELECT id FROM labels WHERE scope_id = ? AND name = ? AND kind = ? ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
+        findDupParams: [item.scope_id, item.name, item.kind],
+        writeSql:
+          "INSERT INTO labels (id,scope_id,name,kind,created_at,updated_at,deleted_at) VALUES (?,?,?,?,?,?,?)",
+        writeParams: [
+          item.id,
+          item.scope_id,
+          item.name,
+          item.kind,
+          toIsoTimestamp(item.created_at),
+          updatedAt,
+          normDeleted(item.deleted_at),
+        ],
         // recipe_labels 的主键是 (recipe_id, label_id)：一条菜谱同时引用新旧两行时，
         // OR IGNORE 跳过冲突行，随后整行删掉旧 id，不留指向已删行的关联。
         repointSql: [
@@ -272,8 +314,9 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
           table: "labels",
           id: item.id,
           updatedAt,
-          findDupSql: "SELECT id FROM labels WHERE name = ? AND kind = ? AND deleted_at IS NULL AND id != ? LIMIT 1",
-          findDupParams: [item.name, item.kind, item.id],
+          findDupSql:
+            "SELECT id FROM labels WHERE scope_id = ? AND name = ? AND kind = ? AND deleted_at IS NULL AND id != ? LIMIT 1",
+          findDupParams: [item.scope_id, item.name, item.kind, item.id],
           writeSql: "UPDATE labels SET name=?, kind=?, updated_at=?, deleted_at=? WHERE id=?",
           writeParams: [item.name, item.kind, updatedAt, null, item.id],
           repointSql: [
@@ -303,6 +346,87 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
       line.ingredient_id = remap.get(line.ingredient_id) ?? line.ingredient_id;
       if (line.unit_id !== null) line.unit_id = remap.get(line.unit_id) ?? line.unit_id;
     }
+  }
+
+  // 库存批次引用的字典 id 同理
+  for (const b of remote.inventory_batches ?? []) {
+    b.ingredient_id = remap.get(b.ingredient_id) ?? b.ingredient_id;
+    if (b.unit_id !== null) b.unit_id = remap.get(b.unit_id) ?? b.unit_id;
+  }
+
+  // --- 库存批次：LWW（与菜谱同一套骨架） ---
+  for (const b of remote.inventory_batches ?? []) {
+    const local = await db.select<{ updated_at: string }[]>(
+      "SELECT updated_at FROM inventory_batches WHERE id = ?",
+      [b.id],
+    );
+    if (
+      local.length > 0 &&
+      compareTimestamp(b.updated_at, local[0].updated_at) <= 0
+    ) {
+      continue;
+    }
+    const updatedAt = toIsoTimestamp(b.updated_at);
+    const createdAt = toIsoTimestamp(b.created_at);
+    if (local.length === 0) {
+      await db.execute(
+        `INSERT INTO inventory_batches
+           (id,scope_id,owner_id,ingredient_id,amount,unit_id,produced_at,shelf_life_days,
+            expires_at,created_at,updated_at,deleted_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          b.id,
+          b.scope_id,
+          b.owner_id ?? null,
+          b.ingredient_id,
+          b.amount,
+          b.unit_id,
+          b.produced_at,
+          b.shelf_life_days,
+          b.expires_at,
+          createdAt,
+          updatedAt,
+          normDeleted(b.deleted_at),
+        ],
+      );
+    } else {
+      await db.execute(
+        `UPDATE inventory_batches SET ingredient_id=?, amount=?, unit_id=?, produced_at=?,
+                shelf_life_days=?, expires_at=?, updated_at=?, deleted_at=?
+         WHERE id=?`,
+        [
+          b.ingredient_id,
+          b.amount,
+          b.unit_id,
+          b.produced_at,
+          b.shelf_life_days,
+          b.expires_at,
+          updatedAt,
+          normDeleted(b.deleted_at),
+          b.id,
+        ],
+      );
+    }
+  }
+
+  // --- 使用记录：只增不清（INSERT OR IGNORE，不参与 LWW、不软删）---
+  for (const u of remote.inventory_usages ?? []) {
+    await db.execute(
+      `INSERT OR IGNORE INTO inventory_usages
+         (id,scope_id,owner_id,recipe_id,batch_id,amount,used_at,updated_at,deleted_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+      [
+        u.id,
+        u.scope_id,
+        u.owner_id ?? null,
+        u.recipe_id,
+        u.batch_id,
+        u.amount,
+        toIsoTimestamp(u.used_at),
+        toIsoTimestamp(u.updated_at),
+        normDeleted(u.deleted_at),
+      ],
+    );
   }
 
   // --- 菜谱：LWW + 子行整组替换 ---
@@ -349,9 +473,10 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
       );
     } else {
       await db.execute(
-        `UPDATE recipes SET name=?, cover_path=?, category_id=?, owner_nickname=?, owner_avatar_url=?, updated_at=?, deleted_at=?, owner_id=?
+        `UPDATE recipes SET scope_id=?, name=?, cover_path=?, category_id=?, owner_nickname=?, owner_avatar_url=?, updated_at=?, deleted_at=?, owner_id=?
          WHERE id=?`,
         [
+          r.scope_id,
           r.name,
           r.cover_path,
           r.category_id,
@@ -413,7 +538,14 @@ export const syncInFlight = ref(false);
 const pendingByUid = new Map<string, SyncPayload>();
 
 // 同步只推队列里这四类（files 只在响应里有值，不参与入队）。
-const PENDING_KEYS = ["ingredients", "units", "labels", "recipes"] as const;
+const PENDING_KEYS = [
+  "ingredients",
+  "units",
+  "labels",
+  "recipes",
+  "inventory_batches",
+  "inventory_usages",
+] as const;
 
 /** 当前登录用户的 id；未登录 / 未初始化时 null。内部调 auth store。 */
 export function getCurrentServerUserId(): string | null {
@@ -438,6 +570,14 @@ export function getLastSyncedAtFor(uid: string | null): string | null {
 
 export function setLastSyncedAtFor(uid: string | null, seq: string): void {
   localStorage.setItem(cursorKeyFor(uid), seq);
+}
+
+/**
+ * 把游标清 0，让下一轮同步从零全量重拉（spec §12.10）。
+ * 只有一个全局游标：新建 / 加入团队后，那个团队里 server_seq 早于游标的行否则永远拉不下来。
+ */
+export function clearSyncCursorFor(uid: string | null): void {
+  localStorage.removeItem(cursorKeyFor(uid));
 }
 
 /** 一次性迁移：本轮新增的 owner_avatar_url 只有「被重新下发的行」才会补上，
@@ -808,17 +948,51 @@ async function buildRecipePayload(db: Db, row: Recipe): Promise<RecipePayload> {
 }
 
 /**
- * 组装全扫推送载荷（spec §9.3）：`owner_id = 我` 的全部菜谱（**含墓碑**，否则删不掉）
- * 加全部字典行（含软删行，否则服务端删不掉），子行随父菜谱整条带上。
- * 未登录时只带字典（不会走到这里——doSync 已早退）。
+ * 我的范围集合：个人范围 ∪ `teams` 缓存表里的全部团队（spec §8.5）。
+ * 团队列表只走 REST，本地 `teams` 表就是「我加入了谁」的快照 —— 退出团队后它从这里消失，
+ * 那些本地行自然不再被推送。
+ */
+export async function localScopeIds(db: Db = getDb(), uid = getCurrentServerUserId()): Promise<string[]> {
+  if (!uid) return [LOCAL_SCOPE];
+  const teams = await db.select<{ id: string }[]>("SELECT id FROM teams");
+  return [personalScope(uid), ...teams.map((team) => teamScope(team.id))];
+}
+
+/** 用 IN (?,?,…) 过滤的 SQL 片段与参数（空集合时退化成恒假，绝不拼出 `IN ()`）。 */
+function inClause(values: string[]): { sql: string; params: string[] } {
+  if (values.length === 0) return { sql: "NULL", params: [] };
+  return { sql: values.map(() => "?").join(","), params: values };
+}
+
+/**
+ * 组装全扫推送载荷（spec §8.5）：我的范围里的全部字典行（含软删行，否则服务端删不掉）、
+ * `owner_id = 我` 的菜谱（**含墓碑**）、我的范围里的库存批次、`owner_id = 我` 的使用记录。
+ * 子行随父菜谱整条带上。未登录时不会走到这里——doSync 已早退。
  */
 export async function collectPushPayload(): Promise<SyncPayload> {
   const uid = getCurrentServerUserId();
   const db = getDb();
+  const scopes = inClause(await localScopeIds(db, uid));
 
-  const ingredients = await db.select<Ingredient[]>("SELECT * FROM ingredients");
-  const units = await db.select<Unit[]>("SELECT * FROM units");
-  const labels = await db.select<Label[]>("SELECT * FROM labels");
+  const ingredients = await db.select<Ingredient[]>(
+    `SELECT * FROM ingredients WHERE scope_id IN (${scopes.sql})`,
+    scopes.params,
+  );
+  const units = await db.select<Unit[]>(
+    `SELECT * FROM units WHERE scope_id IN (${scopes.sql})`,
+    scopes.params,
+  );
+  const labels = await db.select<Label[]>(
+    `SELECT * FROM labels WHERE scope_id IN (${scopes.sql})`,
+    scopes.params,
+  );
+  const batches = await db.select<InventoryBatch[]>(
+    `SELECT * FROM inventory_batches WHERE scope_id IN (${scopes.sql})`,
+    scopes.params,
+  );
+  const usages = uid
+    ? await db.select<InventoryUsage[]>("SELECT * FROM inventory_usages WHERE owner_id = ?", [uid])
+    : [];
   const recipeRows = uid
     ? await db.select<Recipe[]>("SELECT * FROM recipes WHERE owner_id = ?", [uid])
     : [];
@@ -843,6 +1017,18 @@ export async function collectPushPayload(): Promise<SyncPayload> {
       deleted_at: normDeleted(r.deleted_at),
     })),
     recipes: await Promise.all(recipeRows.map((row) => buildRecipePayload(db, row))),
+    inventory_batches: batches.map((row) => ({
+      ...row,
+      created_at: toIsoTimestamp(row.created_at),
+      updated_at: toIsoTimestamp(row.updated_at),
+      deleted_at: normDeleted(row.deleted_at),
+    })),
+    inventory_usages: usages.map((row) => ({
+      ...row,
+      used_at: toIsoTimestamp(row.used_at),
+      updated_at: toIsoTimestamp(row.updated_at),
+      deleted_at: normDeleted(row.deleted_at),
+    })),
     files: [],
   };
 }

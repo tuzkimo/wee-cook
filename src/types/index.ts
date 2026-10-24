@@ -41,6 +41,8 @@ export interface RecipeIngredient {
 
 export interface Label {
   id: string;
+  /** 范围键（字典按个人 / 团队分开，spec §7.1）。 */
+  scope_id: string;
   name: string;
   kind: LabelKind;
   created_at: string;
@@ -50,6 +52,8 @@ export interface Label {
 
 export interface Ingredient {
   id: string;
+  /** 范围键（字典按个人 / 团队分开，spec §7.1）。 */
+  scope_id: string;
   name: string;
   created_at: string;
   updated_at: string;
@@ -58,6 +62,8 @@ export interface Ingredient {
 
 export interface Unit {
   id: string;
+  /** 范围键（字典按个人 / 团队分开，spec §7.1）。 */
+  scope_id: string;
   name: string;
   created_at: string;
   updated_at: string;
@@ -110,6 +116,10 @@ export interface RecipeInput {
 
 export interface InventoryBatch {
   id: string;
+  /** 范围键：'p:<uid>' 个人 / 't:<teamId>' 团队 / 'p:local' 未登录（spec §7.1）。 */
+  scope_id: string;
+  /** 录入者（不展示，只用来推「我的批次」）。 */
+  owner_id: string | null;
   ingredient_id: string;
   amount: number;
   unit_id: string | null;
@@ -117,6 +127,19 @@ export interface InventoryBatch {
   shelf_life_days: number | null;
   expires_at: string | null;
   created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+/** 一条扣减记录：只增不清，used_at 就是发生时间（没有 created_at）。 */
+export interface InventoryUsage {
+  id: string;
+  scope_id: string;
+  owner_id: string | null;
+  recipe_id: string;
+  batch_id: string;
+  amount: number;
+  used_at: string;
   updated_at: string;
   deleted_at: string | null;
 }

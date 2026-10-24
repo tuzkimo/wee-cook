@@ -20,7 +20,7 @@ const DICT: Dict = {
 };
 
 function label(id: string, name: string, kind: Label["kind"]): Label {
-  return { id, name, kind, created_at: NOW, updated_at: NOW, deleted_at: null };
+  return { id, scope_id: "p:local", name, kind, created_at: NOW, updated_at: NOW, deleted_at: null };
 }
 
 function recipeItem(name: string, ingredients: { id: string; name: string }[]): RecipeListItem {

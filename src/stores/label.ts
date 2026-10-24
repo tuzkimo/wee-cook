@@ -60,6 +60,7 @@ export const useLabelStore = defineStore("label", (): LabelStore => {
     const now = new Date().toISOString();
     const row: LabelWithUsage = {
       id: crypto.randomUUID(),
+      scope_id: activeScope.value,
       name: trimmed,
       kind,
       created_at: now,

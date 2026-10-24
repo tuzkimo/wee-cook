@@ -38,14 +38,14 @@ describe("filter", () => {
 
     const label = (id: string, name: string, kind: string, deleted: string | null = null) =>
       db.execute(
-        `INSERT INTO labels (id, name, kind, created_at, updated_at, deleted_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO labels (id, scope_id, name, kind, created_at, updated_at, deleted_at)
+         VALUES (?, 'p:local', ?, ?, ?, ?, ?)`,
         [id, name, kind, NOW, NOW, deleted],
       );
     const ingredient = (id: string, name: string, deleted: string | null = null) =>
       db.execute(
-        `INSERT INTO ingredients (id, name, created_at, updated_at, deleted_at)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO ingredients (id, scope_id, name, created_at, updated_at, deleted_at)
+         VALUES (?, 'p:local', ?, ?, ?, ?)`,
         [id, name, NOW, NOW, deleted],
       );
 
