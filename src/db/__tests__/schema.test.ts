@@ -11,6 +11,16 @@ const BUSINESS_TABLES = [
   "units",
 ];
 
+/** 带范围列的五张表 + 库存两张（库存另带 owner_id）。 */
+const SCOPED_TABLES = [
+  "recipes",
+  "ingredients",
+  "units",
+  "labels",
+  "inventory_batches",
+  "inventory_usages",
+];
+
 describe("数据库表结构", () => {
   it("七张表都建出来了", async () => {
     const { db } = await freshTestDb();
@@ -42,24 +52,71 @@ describe("数据库表结构", () => {
     }
   });
 
-  it("部分唯一索引挡住未删除行的重名，但允许软删后重建同名", async () => {
+  it("范围列：五张表 + 库存两张都带 scope_id，两张库存表还有 owner_id", async () => {
+    const { db } = await freshTestDb();
+    for (const table of SCOPED_TABLES) {
+      const columns = await db.select<{ name: string; notnull: number }[]>(
+        `PRAGMA table_info(${table})`,
+      );
+      expect(columns.map((column) => column.name), table).toContain("scope_id");
+    }
+    for (const table of ["inventory_batches", "inventory_usages"]) {
+      const columns = await db.select<{ name: string }[]>(`PRAGMA table_info(${table})`);
+      expect(columns.map((column) => column.name), table).toContain("owner_id");
+    }
+  });
+
+  it("recipes 不再有 is_public（社区已删除）", async () => {
+    const { db } = await freshTestDb();
+    const columns = await db.select<{ name: string }[]>("PRAGMA table_info(recipes)");
+    expect(columns.map((column) => column.name)).not.toContain("is_public");
+  });
+
+  it("teams 缓存表建出来了", async () => {
+    const { db } = await freshTestDb();
+    const columns = await db.select<{ name: string }[]>("PRAGMA table_info(teams)");
+    expect(columns.map((column) => column.name)).toEqual([
+      "id",
+      "name",
+      "role",
+      "member_count",
+    ]);
+  });
+
+  it("部分唯一索引挡住同范围内的重名，但允许软删后重建同名", async () => {
     const { db } = await freshTestDb();
     const now = new Date().toISOString();
     const insert =
-      "INSERT INTO ingredients (id, name, created_at, updated_at, deleted_at) VALUES (?, '鸡蛋', ?, ?, NULL)";
+      "INSERT INTO ingredients (id, scope_id, name, created_at, updated_at, deleted_at) VALUES (?, ?, '鸡蛋', ?, ?, NULL)";
 
-    await db.execute(insert, ["i1", now, now]);
-    await expect(db.execute(insert, ["i2", now, now])).rejects.toThrow();
+    await db.execute(insert, ["i1", "p:local", now, now]);
+    await expect(db.execute(insert, ["i2", "p:local", now, now])).rejects.toThrow();
 
     await db.execute("UPDATE ingredients SET deleted_at = ? WHERE id = ?", [now, "i1"]);
-    await expect(db.execute(insert, ["i3", now, now])).resolves.toBeDefined();
+    await expect(db.execute(insert, ["i3", "p:local", now, now])).resolves.toBeDefined();
+  });
+
+  it("两个范围各有一个「鸡蛋」互不冲突（字典按家庭分开）", async () => {
+    const { db } = await freshTestDb();
+    const now = new Date().toISOString();
+    const insert =
+      "INSERT INTO ingredients (id, scope_id, name, created_at, updated_at, deleted_at) VALUES (?, ?, '鸡蛋', ?, ?, NULL)";
+
+    await db.execute(insert, ["i1", "p:local", now, now]);
+    await expect(db.execute(insert, ["i2", "t:team-1", now, now])).resolves.toBeDefined();
+    await expect(db.execute(insert, ["i3", "p:user-1", now, now])).resolves.toBeDefined();
+
+    const rows = await db.select<{ scope_id: string }[]>(
+      "SELECT scope_id FROM ingredients ORDER BY scope_id",
+    );
+    expect(rows.map((row) => row.scope_id)).toEqual(["p:local", "p:user-1", "t:team-1"]);
   });
 
   it("labels 的 (name, kind) 各自独立：同名的分类与标签可以共存", async () => {
     const { db } = await freshTestDb();
     const now = new Date().toISOString();
     const insert =
-      "INSERT INTO labels (id, name, kind, created_at, updated_at, deleted_at) VALUES (?, '家常', ?, ?, ?, NULL)";
+      "INSERT INTO labels (id, scope_id, name, kind, created_at, updated_at, deleted_at) VALUES (?, 'p:local', '家常', ?, ?, ?, NULL)";
 
     await db.execute(insert, ["l1", "category", now, now]);
     await expect(db.execute(insert, ["l2", "tag", now, now])).resolves.toBeDefined();
@@ -138,13 +195,13 @@ describe("库存表", () => {
     const { db } = await freshTestDb();
     const now = new Date().toISOString();
     await db.execute(
-      "INSERT INTO ingredients (id, name, created_at, updated_at, deleted_at) VALUES ('i1', '鸡蛋', ?, ?, NULL)",
+      "INSERT INTO ingredients (id, scope_id, name, created_at, updated_at, deleted_at) VALUES ('i1', 'p:local', '鸡蛋', ?, ?, NULL)",
       [now, now],
     );
     const insert = `INSERT INTO inventory_batches
-      (id, ingredient_id, amount, unit_id, produced_at, shelf_life_days, expires_at,
+      (id, scope_id, ingredient_id, amount, unit_id, produced_at, shelf_life_days, expires_at,
        created_at, updated_at, deleted_at)
-      VALUES (?, 'i1', ?, NULL, NULL, NULL, NULL, ?, ?, NULL)`;
+      VALUES (?, 'p:local', 'i1', ?, NULL, NULL, NULL, NULL, ?, ?, NULL)`;
     await expect(db.execute(insert, ["b0", 0, now, now])).rejects.toThrow();
     await expect(db.execute(insert, ["b-", -1, now, now])).rejects.toThrow();
     await expect(db.execute(insert, ["b1", 1, now, now])).resolves.toBeDefined();
@@ -154,14 +211,14 @@ describe("库存表", () => {
     const { db } = await freshTestDb();
     const now = new Date().toISOString();
     await db.execute(
-      "INSERT INTO ingredients (id, name, created_at, updated_at, deleted_at) VALUES ('i1', '鸡蛋', ?, ?, NULL)",
+      "INSERT INTO ingredients (id, scope_id, name, created_at, updated_at, deleted_at) VALUES ('i1', 'p:local', '鸡蛋', ?, ?, NULL)",
       [now, now],
     );
     await db.execute(
       `INSERT INTO inventory_batches
-       (id, ingredient_id, amount, unit_id, produced_at, shelf_life_days, expires_at,
+       (id, scope_id, ingredient_id, amount, unit_id, produced_at, shelf_life_days, expires_at,
         created_at, updated_at, deleted_at)
-       VALUES ('b1', 'i1', 10, NULL, NULL, NULL, NULL, ?, ?, NULL)`,
+       VALUES ('b1', 'p:local', 'i1', 10, NULL, NULL, NULL, NULL, ?, ?, NULL)`,
       [now, now],
     );
     // 同步的字典合并会物理删掉被合并的行（spec §4.15）；真外键会在这里卡死
