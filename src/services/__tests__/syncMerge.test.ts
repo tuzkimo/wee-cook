@@ -23,8 +23,8 @@ function recipe(over: Partial<RecipePayload> & { id: string }): RecipePayload {
     name: "菜",
     cover_path: null,
     category_id: "c1",
-    is_public: 0,
     owner_nickname: null,
+    scope_id: "p:local",
     owner_avatar_url: null,
     created_at: T0,
     updated_at: T0,
@@ -192,30 +192,30 @@ describe("applyRemoteChanges", () => {
     ]);
   });
 
-  it("远端菜谱的 is_public 与 owner_nickname 落到本地", async () => {
+  it("远端菜谱的 scope_id 与 owner_nickname 落到本地", async () => {
     const { db } = await freshTestDb();
     await db.execute(
       "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('c1','家常','category',?,?,NULL)",
       [T0, T0],
     );
 
-    // 新行走 INSERT：远端首次下发就带公开标记与作者昵称
+    // 新行走 INSERT：远端首次下发就带范围与作者昵称
     await applyRemoteChanges(
-      remote({ recipes: [recipe({ id: "r1", is_public: 1, owner_nickname: "小明" })] }),
+      remote({ recipes: [recipe({ id: "r1", scope_id: "t:t1", owner_nickname: "小明" })] }),
       db,
     );
     expect(
-      await db.select("SELECT is_public, owner_nickname FROM recipes WHERE id = 'r1'"),
-    ).toEqual([{ is_public: 1, owner_nickname: "小明" }]);
+      await db.select("SELECT scope_id, owner_nickname FROM recipes WHERE id = 'r1'"),
+    ).toEqual([{ scope_id: "t:t1", owner_nickname: "小明" }]);
 
-    // 已有行走 UPDATE：远端把公开取消掉，本地要跟着回落
+    // 已有行走 UPDATE：范围随远端走（同一条菜谱在库里不会有第二种范围），昵称回落
     await applyRemoteChanges(
       remote({ recipes: [recipe({ id: "r1", updated_at: T1 })] }),
       db,
     );
     expect(
-      await db.select("SELECT is_public, owner_nickname FROM recipes WHERE id = 'r1'"),
-    ).toEqual([{ is_public: 0, owner_nickname: null }]);
+      await db.select("SELECT scope_id, owner_nickname FROM recipes WHERE id = 'r1'"),
+    ).toEqual([{ scope_id: "p:local", owner_nickname: null }]);
   });
 
   it("新菜谱落库带上作者头像", async () => {
@@ -230,8 +230,8 @@ describe("applyRemoteChanges", () => {
         recipes: [
           recipe({
             id: "r1",
-            is_public: 1,
             owner_nickname: "小明",
+            scope_id: "p:local",
             owner_avatar_url: "data:image/jpeg;base64,AV",
           }),
         ],
@@ -252,8 +252,8 @@ describe("applyRemoteChanges", () => {
     );
     // 本地行比远端新：菜名是本地改过的，作者头像尚未拿到
     await db.execute(
-      `INSERT INTO recipes (id,name,cover_path,category_id,is_public,owner_nickname,owner_avatar_url,created_at,updated_at,deleted_at,owner_id)
-       VALUES ('r1','本地改过的名字',NULL,'c1',1,NULL,NULL,?,?,NULL,NULL)`,
+      `INSERT INTO recipes (id,scope_id,name,cover_path,category_id,owner_nickname,owner_avatar_url,created_at,updated_at,deleted_at,owner_id)
+       VALUES ('r1','p:local','本地改过的名字',NULL,'c1',NULL,NULL,?,?,NULL,NULL)`,
       [T0, T1],
     );
 
@@ -264,6 +264,7 @@ describe("applyRemoteChanges", () => {
             id: "r1",
             name: "服务端的名字",
             owner_nickname: "小明",
+            scope_id: "p:local",
             owner_avatar_url: "data:image/jpeg;base64,AV",
           }),
         ],
@@ -289,8 +290,8 @@ describe("applyRemoteChanges", () => {
       [T0, T0],
     );
     await db.execute(
-      `INSERT INTO recipes (id,name,cover_path,category_id,is_public,owner_nickname,owner_avatar_url,created_at,updated_at,deleted_at,owner_id)
-       VALUES ('r1','红烧肉',NULL,'c1',1,'小明','🐱',?,?,NULL,NULL)`,
+      `INSERT INTO recipes (id,scope_id,name,cover_path,category_id,owner_nickname,owner_avatar_url,created_at,updated_at,deleted_at,owner_id)
+       VALUES ('r1','p:local','红烧肉',NULL,'c1','小明','🐱',?,?,NULL,NULL)`,
       [T0, T1],
     );
 
@@ -597,21 +598,21 @@ describe("applyRemoteChanges", () => {
 });
 
 describe("recipePayloadFor", () => {
-  it("我推上去的菜谱载荷带 is_public", async () => {
+  it("我推上去的菜谱载荷带 scope_id", async () => {
     const { db } = await freshTestDb();
     await db.execute(
       "INSERT INTO labels (id,name,kind,created_at,updated_at,deleted_at) VALUES ('c1','家常','category',?,?,NULL)",
       [T0, T0],
     );
     await db.execute(
-      `INSERT INTO recipes (id,name,cover_path,category_id,is_public,owner_nickname,created_at,updated_at,deleted_at,owner_id)
-       VALUES ('r1','红烧肉',NULL,'c1',1,'小明',?,?,NULL,'u1')`,
+      `INSERT INTO recipes (id,scope_id,name,cover_path,category_id,owner_nickname,created_at,updated_at,deleted_at,owner_id)
+       VALUES ('r1','t:t1','红烧肉',NULL,'c1','小明',?,?,NULL,'u1')`,
       [T0, T0],
     );
 
     const payload = await recipePayloadFor("r1", db);
 
-    expect(payload?.is_public).toBe(1);
+    expect(payload?.scope_id).toBe("t:t1");
     expect(payload?.owner_nickname).toBe("小明");
   });
 });

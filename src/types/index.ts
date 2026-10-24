@@ -5,8 +5,8 @@ export interface Recipe {
   name: string;
   cover_path: string | null;
   category_id: string;
-  /** 0 = 私有（默认），1 = 公开给同一服务器的登录用户（spec §3）。 */
-  is_public: number;
+  /** 范围键：'p:<uid>' 个人 / 't:<teamId>' 团队 / 'p:local' 未登录（spec §7.1）。 */
+  scope_id: string;
   /** 作者昵称的本地副本，供离线显示（spec §11.12）；本机自建 / 未认领时为 NULL。 */
   owner_nickname: string | null;
   /** 作者头像的本地副本（别人发的菜谱才有）；本机自建 / 未认领为 NULL。 */
@@ -103,7 +103,6 @@ export interface RecipeInput {
   name: string;
   cover_path: string | null;
   category_id: string;
-  is_public: number;
   tag_ids: string[];
   steps: { text: string; image_path: string | null }[];
   ingredients: { ingredient_id: string; amount: number | null; unit_id: string | null }[];

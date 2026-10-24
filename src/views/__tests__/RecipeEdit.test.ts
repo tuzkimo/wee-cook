@@ -161,8 +161,8 @@ function detail(): RecipeDetail {
       name: "红烧肉",
       cover_path: "c.jpg",
       category_id: "c1",
-      is_public: 0,
       owner_nickname: null,
+      scope_id: "p:local",
       owner_avatar_url: null,
       created_at: NOW,
       updated_at: NOW,
@@ -283,7 +283,6 @@ describe("RecipeEdit", () => {
       name: "红烧肉",
       cover_path: null,
       category_id: "c1",
-      is_public: 0,
       tag_ids: [],
       steps: [],
       ingredients: [],
@@ -456,10 +455,6 @@ describe("RecipeEdit", () => {
     expect(line.get('[data-test="ingredient-row-amount"]').text()).toContain("克");
     // 封面图 + 步骤图两张图都从详情里恢复
     expect(wrapper.findAll('[data-test="image-preview"]')).toHaveLength(2);
-    // 私有菜谱：公开开关默认关
-    expect(
-      (wrapper.get('[data-test="recipe-public"]').element as HTMLInputElement).checked,
-    ).toBe(false);
   });
 
   it("编辑模式：删掉最后一条步骤后保存，回读详情里没有步骤", async () => {
@@ -473,25 +468,23 @@ describe("RecipeEdit", () => {
       name: "红烧肉",
       cover_path: "c.jpg",
       category_id: "c1",
-      is_public: 0,
       tag_ids: ["t1"],
       steps: [],
       ingredients: [{ ingredient_id: "i1", amount: 200, unit_id: "u1" }],
     });
   });
 
-  it("公开开关默认关，打开保存后 is_public = 1", async () => {
+  it("保存时不带公开字段（社区已删除，提交形状就是菜谱内容）", async () => {
     const wrapper = await page();
     await wrapper.get('[data-test="name"]').setValue("红烧肉");
     await chooseCategory(wrapper, "家常菜");
 
-    const toggle = wrapper.get('[data-test="recipe-public"]');
-    expect((toggle.element as HTMLInputElement).checked).toBe(false);
-
-    await toggle.setValue(true);
     await save(wrapper);
 
-    expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({ is_public: 1 }));
+    const submitted = mocks.create.mock.calls[0][0] as Record<string, unknown>;
+    expect(Object.keys(submitted).sort()).toEqual(
+      ["category_id", "cover_path", "ingredients", "name", "steps", "tag_ids"].sort(),
+    );
     expect(mocks.replace).toHaveBeenCalledWith("/recipe/new-1");
   });
 
@@ -806,7 +799,6 @@ describe("RecipeEdit", () => {
       name: "番茄炒蛋",
       cover_path: "d.jpg",
       category_id: "c1",
-      is_public: 0,
       tag_ids: ["t1"],
       steps: [
         { text: "打蛋", image_path: null },

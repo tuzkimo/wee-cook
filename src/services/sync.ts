@@ -54,8 +54,6 @@ interface SyncRequest {
 interface SyncResponse {
   server_seq: number;
   remote_changes: SyncPayload;
-  /** 我当前有效的收藏（只读下发，整表替换用）。对账接线见 Task 4。 */
-  favorite_recipe_ids: string[];
 }
 
 export function emptyPayload(): SyncPayload {
@@ -329,20 +327,18 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
 
     const updatedAt = toIsoTimestamp(r.updated_at);
     const deletedAt = normDeleted(r.deleted_at);
-    // 旧版本服务端的载荷可能没有这两列：缺失时按「私有、无昵称」兜底。
-    const isPublic = r.is_public ?? 0;
     const ownerNickname = r.owner_nickname ?? null;
     const ownerAvatar = r.owner_avatar_url ?? null;
     if (isNew) {
       await db.execute(
-        `INSERT INTO recipes (id,name,cover_path,category_id,is_public,owner_nickname,owner_avatar_url,created_at,updated_at,deleted_at,owner_id)
+        `INSERT INTO recipes (id,scope_id,name,cover_path,category_id,owner_nickname,owner_avatar_url,created_at,updated_at,deleted_at,owner_id)
          VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
         [
           r.id,
+          r.scope_id,
           r.name,
           r.cover_path,
           r.category_id,
-          isPublic,
           ownerNickname,
           ownerAvatar,
           toIsoTimestamp(r.created_at),
@@ -353,13 +349,12 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
       );
     } else {
       await db.execute(
-        `UPDATE recipes SET name=?, cover_path=?, category_id=?, is_public=?, owner_nickname=?, owner_avatar_url=?, updated_at=?, deleted_at=?, owner_id=?
+        `UPDATE recipes SET name=?, cover_path=?, category_id=?, owner_nickname=?, owner_avatar_url=?, updated_at=?, deleted_at=?, owner_id=?
          WHERE id=?`,
         [
           r.name,
           r.cover_path,
           r.category_id,
-          isPublic,
           ownerNickname,
           ownerAvatar,
           updatedAt,
@@ -401,66 +396,7 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
   }
 }
 
-// --- 收藏对账与本机账号登记（spec §7.2）---
-
-/** 记录本机用过的账号：清理别人的菜谱副本时要拿它当白名单（spec §7.2）。 */
-export async function registerLocalAccount(uid: string, db: Db = getDb()): Promise<void> {
-  await db.execute("INSERT OR IGNORE INTO local_accounts (user_id) VALUES (?)", [uid]);
-}
-
-// 收藏 / 取消收藏的操作版本，只在内存里（不持久化）。在途同步的响应快照可能早于一次收藏 POST，
-// 靠它判断这份快照是否已过期。
-let favoriteOps = 0;
-// 本轮 /sync 请求发出时的版本，由 doSync 记录。
-let favoriteOpsAtRequest = 0;
-
-export function bumpFavoriteOps(): void {
-  favoriteOps += 1;
-}
-
-export function favoriteOpsEpoch(): number {
-  return favoriteOps;
-}
-
-/** 删掉「本机谁都不要、只因为浏览或收藏才存在」的别人的菜谱副本（含子行）。 */
-async function deleteCachedOtherRecipes(uid: string, db: Db): Promise<void> {
-  const rows = await db.select<{ id: string }[]>(
-    `SELECT id FROM recipes
-     WHERE owner_id IS NOT NULL AND owner_id <> ?
-       AND owner_id NOT IN (SELECT user_id FROM local_accounts)
-       AND id NOT IN (SELECT recipe_id FROM favorite_recipes)`,
-    [uid],
-  );
-  for (const { id } of rows) {
-    // 本地子表没有 ON DELETE CASCADE，删父行前自己删子行，否则留下孤儿。
-    await db.execute("DELETE FROM recipe_steps WHERE recipe_id = ?", [id]);
-    await db.execute("DELETE FROM recipe_ingredients WHERE recipe_id = ?", [id]);
-    await db.execute("DELETE FROM recipe_labels WHERE recipe_id = ?", [id]);
-    await db.execute("DELETE FROM recipes WHERE id = ?", [id]);
-  }
-}
-
-/**
- * 同步成功后的收藏对账（spec §7.2）：整表替换收藏集合 → 清掉别人的缓存副本。
- * 响应快照发出后用户又动过收藏（版本已变）时整段跳过，不推进任何本地状态，交给补跑的那轮。
- */
-export async function reconcileFavorites(
-  uid: string,
-  favoriteIds: string[],
-  db: Db = getDb(),
-): Promise<void> {
-  const epoch = favoriteOps;
-  if (epoch !== favoriteOpsAtRequest) return;
-
-  await db.execute("DELETE FROM favorite_recipes");
-  for (const id of favoriteIds) {
-    await db.execute("INSERT OR IGNORE INTO favorite_recipes (recipe_id) VALUES (?)", [id]);
-  }
-
-  // 替换期间又收藏了：这份过期列表不能拿去清缓存，交给下一轮
-  if (epoch !== favoriteOps) return;
-  await deleteCachedOtherRecipes(uid, db);
-}
+// --- 收藏对账与本机账号登记：社区功能已删除，整段移除 ---
 
 // --- 调度：待推送队列 / 游标 / 定时器 ---
 
@@ -762,9 +698,6 @@ async function doSync(): Promise<boolean> {
   const lastSyncedAt = getLastSyncedAtFor(uid);
   const lastServerSeq = lastSyncedAt === null ? 0 : parseInt(lastSyncedAt, 10);
 
-  // 记下请求发出时的收藏版本：响应回来时若已变，说明快照早于一次收藏操作（spec §7.2）
-  favoriteOpsAtRequest = favoriteOps;
-
   let res: Awaited<ReturnType<typeof apiFetch<SyncResponse>>>;
   try {
     res = await apiFetch<SyncResponse>("/api/v1/sync", {
@@ -809,11 +742,6 @@ async function doSync(): Promise<boolean> {
   // 远端只在下发菜谱时带上引用的图，游标推进后就不再重发 ⇒ 把没下来的名字记进按 uid
   // 持久化的待下载集合，每轮同步末尾再补一轮（瞬时失败下轮再试，404 放弃）。
   rememberAndDownloadFiles(uid, res.data.remote_changes.files ?? []);
-
-  // 收藏对账（spec §7.2）：整表替换收藏集合 → 清别人的缓存副本。
-  // 请求发出后若用户又动过收藏，这份响应快照已过期：对账会自己跳过，这里补跑一轮把它带上。
-  await reconcileFavorites(uid, res.data.favorite_recipe_ids ?? [], db);
-  if (favoriteOps !== favoriteOpsAtRequest) enqueueSync({});
 
   setLastSyncedAtFor(uid, String(res.data.server_seq));
   pendingByUid.set(uid, emptyPayload());
@@ -867,7 +795,7 @@ async function buildRecipePayload(db: Db, row: Recipe): Promise<RecipePayload> {
     name: row.name,
     cover_path: row.cover_path,
     category_id: row.category_id,
-    is_public: row.is_public,
+    scope_id: row.scope_id,
     owner_nickname: row.owner_nickname,
     owner_avatar_url: row.owner_avatar_url,
     created_at: toIsoTimestamp(row.created_at),

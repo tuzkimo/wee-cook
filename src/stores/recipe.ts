@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, type Ref } from "vue";
 import { getDb } from "@/db";
+import { activeScope } from "@/services/scope";
 import { enqueueSync, recipePayloadFor } from "@/services/sync";
 import { useAuthStore } from "@/stores/auth";
 import type {
@@ -16,9 +17,7 @@ import type {
 
 export interface RecipeStore {
   recipes: Ref<RecipeListItem[]>;
-  favorites: Ref<RecipeListItem[]>;
   fetchAll(): Promise<void>;
-  fetchFavorites(): Promise<void>;
   getDetail(id: string): Promise<RecipeDetail>;
   create(input: RecipeInput): Promise<string>;
   update(id: string, input: RecipeInput): Promise<void>;
@@ -28,22 +27,14 @@ export interface RecipeStore {
 type LabelLink = Label & { recipe_id: string };
 
 /**
- * 「我的」列表的可见范围（spec §9.1）：
- *   未登录 → 本机自己的（无主 + 本机账号白名单）；收藏的别人的菜谱归「收藏」tab，不混进来
- *   已登录 → 只有自己名下的菜谱
+ * 列表的可见范围就是当前范围键（spec §10.1）：个人范围只有自己，团队范围全队可见。
  * 返回的 sql 是一段可直接接在 WHERE 后面的条件（调方自行拼），params 顺序与其中的 ? 对应。
  */
 export async function visibleRecipeFilter(): Promise<{ sql: string; params: unknown[] }> {
-  const uid = useAuthStore().serverUserId;
-  if (!uid)
-    return {
-      sql: "(owner_id IS NULL OR owner_id IN (SELECT user_id FROM local_accounts))",
-      params: [],
-    };
-  return { sql: "owner_id = ?", params: [uid] };
+  return { sql: "scope_id = ?", params: [activeScope.value] };
 }
 
-/** 能不能改 / 删：未登录只有本机未认领的菜谱，登录后只有自己名下的（spec §9.1）。 */
+/** 能不能改 / 删：只有创建者（spec §6）。团队菜谱全队可见，但只有建它的那个人能改。 */
 export function canEdit(recipe: Recipe): boolean {
   const uid = useAuthStore().serverUserId;
   return uid === null ? recipe.owner_id === null : recipe.owner_id === uid;
@@ -51,7 +42,6 @@ export function canEdit(recipe: Recipe): boolean {
 
 export const useRecipeStore = defineStore("recipe", (): RecipeStore => {
   const recipes = ref<RecipeListItem[]>([]);
-  const favorites = ref<RecipeListItem[]>([]);
 
   async function fetchAll(): Promise<void> {
     const db = getDb();
@@ -64,19 +54,6 @@ export const useRecipeStore = defineStore("recipe", (): RecipeStore => {
       params,
     );
     recipes.value = await assembleItems(rows);
-  }
-
-  /**
-   * 「收藏」段落的数据源：只认本机的收藏关系，**不套可见性过滤**——登录后可见性只剩
-   * 「自己名下」，套上会把别人的公开菜谱全滤掉（spec §9.1）。
-   */
-  async function fetchFavorites(): Promise<void> {
-    const rows = await getDb().select<Recipe[]>(
-      `SELECT * FROM recipes WHERE deleted_at IS NULL
-         AND id IN (SELECT recipe_id FROM favorite_recipes)
-       ORDER BY updated_at DESC, id ASC`,
-    );
-    favorites.value = await assembleItems(rows);
   }
 
   /** 行 → 列表项：分类 / 标签 / 食材各查一次再按 recipe_id 归拢，fetchAll 与 fetchFavorites 共用。 */
@@ -131,19 +108,10 @@ export const useRecipeStore = defineStore("recipe", (): RecipeStore => {
 
   async function getDetail(id: string): Promise<RecipeDetail> {
     const db = getDb();
-    // 不可见的菜谱按「不存在」处理：详情只能从列表进来，越不到可见范围之外。两条例外：
-    //  - 收藏的：登录后「我的」只剩自己名下，但收藏 tab 会点进来（spec §9.1）；
-    //    favorite_recipes 只由服务端下发的「仍公开未删」集合与收藏成功写入，是合法可见范围。
-    //  - 登录态下别人公开的本地缓存：社区列表点卡片就是这条路径（openRecipe 先落库再跳详情，
-    //    spec §11.1），不靠「先收藏才能看」。缓存行只可能是 cacheCommunityChanges 写的，
-    //    服务端社区接口只返回 is_public = 1 AND deleted_at IS NULL。
-    //    游客不加这条：spec §9.1 明写未登录不显示这批缓存，详情口径与列表一致。
-    const uid = useAuthStore().serverUserId;
+    // 不可见的菜谱按「不存在」处理：详情只能从列表进，直接输 URL 也越不到别的范围（spec §6）。
     const visibility = await visibleRecipeFilter();
-    const publicCache = uid ? " OR (is_public = 1 AND owner_id IS NOT NULL)" : "";
     const rows = await db.select<Recipe[]>(
-      `SELECT * FROM recipes WHERE id = ? AND deleted_at IS NULL
-         AND ((${visibility.sql})${publicCache} OR id IN (SELECT recipe_id FROM favorite_recipes))`,
+      `SELECT * FROM recipes WHERE id = ? AND deleted_at IS NULL AND (${visibility.sql})`,
       [id, ...visibility.params],
     );
     const recipe = rows[0];
@@ -185,9 +153,9 @@ export const useRecipeStore = defineStore("recipe", (): RecipeStore => {
     const { owner_id } = currentOwnership();
 
     await getDb().execute(
-      `INSERT INTO recipes (id, name, cover_path, category_id, is_public, created_at, updated_at, deleted_at, owner_id)
+      `INSERT INTO recipes (id, scope_id, name, cover_path, category_id, created_at, updated_at, deleted_at, owner_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
-      [id, name, input.cover_path, input.category_id, input.is_public, now, now, owner_id],
+      [id, activeScope.value, name, input.cover_path, input.category_id, now, now, owner_id],
     );
     await insertSteps(id, input.steps, now);
     await insertIngredients(id, input.ingredients, now);
@@ -328,13 +296,16 @@ export const useRecipeStore = defineStore("recipe", (): RecipeStore => {
     ]);
   }
 
-  /** 规格 §10.7：动过任何子表或封面，父行都要 bump。归属列（owner_id）不在这里动。 */
+  /**
+   * 规格 §10.7：动过任何子表或封面，父行都要 bump。
+   * 归属（owner_id）与范围（scope_id）都不在这里动：改内容不会换主人，也不会换范围。
+   */
   function bumpParent(id: string, input: RecipeInput, name: string, now: string): Promise<unknown> {
     return getDb().execute(
-      "UPDATE recipes SET name = ?, cover_path = ?, category_id = ?, is_public = ?, updated_at = ? WHERE id = ?",
-      [name, input.cover_path, input.category_id, input.is_public, now, id],
+      "UPDATE recipes SET name = ?, cover_path = ?, category_id = ?, updated_at = ? WHERE id = ?",
+      [name, input.cover_path, input.category_id, now, id],
     );
   }
 
-  return { recipes, favorites, fetchAll, fetchFavorites, getDetail, create, update, remove };
+  return { recipes, fetchAll, getDetail, create, update, remove };
 });

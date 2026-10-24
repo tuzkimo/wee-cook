@@ -11,7 +11,7 @@ defineProps<{
   tags: string[];
   authorName: string | null;
   authorAvatarUrl: string | null;
-  testPrefix: "recipe" | "community";
+  testPrefix: string;
 }>();
 
 /** 按码点取首字：charAt(0) 会把 emoji 切成半个代理对（与 UserAvatar 同一套判断） */

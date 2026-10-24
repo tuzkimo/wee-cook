@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { DOMWrapper, flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { useAuthStore } from "@/stores/auth";
-import type { UserProfile } from "@/services/community";
 import type {
   Label,
   LabelKind,
@@ -23,12 +22,7 @@ const mocks = vi.hoisted(() => ({
   getDetail: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
-  isFavorited: vi.fn(),
-  favorite: vi.fn(),
-  unfavorite: vi.fn(),
   profile: vi.fn(),
-  follow: vi.fn(),
-  unfollow: vi.fn(),
   fetchWithAuth: vi.fn(),
   authReady: { value: true },
 }));
@@ -56,17 +50,6 @@ vi.mock("@/stores/recipe", async (importOriginal) => {
 
 vi.mock("@/services/imageStore", () => ({
   imageSrc: (name: string) => `asset://localhost/images/${name}`,
-}));
-
-vi.mock("@/stores/community", () => ({
-  useCommunityStore: () => ({
-    isFavorited: mocks.isFavorited,
-    favorite: mocks.favorite,
-    unfavorite: mocks.unfavorite,
-    profile: mocks.profile,
-    follow: mocks.follow,
-    unfollow: mocks.unfollow,
-  }),
 }));
 
 // 步骤图也走鉴权下载通道补下来：网络层换成替身，文件 IO 用 setFileSyncDeps 注入假文件系统。
@@ -152,8 +135,8 @@ function detail(): RecipeDetailData {
       name: "红烧肉",
       cover_path: "c.jpg",
       category_id: "c1",
-      is_public: 0,
       owner_nickname: null,
+      scope_id: "p:local",
       owner_avatar_url: null,
       created_at: NOW,
       updated_at: NOW,
@@ -176,23 +159,12 @@ function others(): RecipeDetailData {
   };
 }
 
-/** 作者资料：联网时补「公开 N 道」与关注态。 */
-function authorProfile(count = 12, followed = false): UserProfile {
-  return { id: "u2", nickname: "老王", avatar_url: null, followed, public_count: count };
-}
-
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.routeParams = { id: "r1" };
   mocks.getDetail.mockResolvedValue(detail());
   mocks.update.mockResolvedValue(undefined);
   mocks.remove.mockResolvedValue(undefined);
-  mocks.isFavorited.mockResolvedValue(false);
-  mocks.favorite.mockResolvedValue(undefined);
-  mocks.unfavorite.mockResolvedValue(undefined);
-  mocks.profile.mockResolvedValue(authorProfile());
-  mocks.follow.mockResolvedValue(undefined);
-  mocks.unfollow.mockResolvedValue(undefined);
   mocks.authReady.value = true;
 });
 
@@ -449,89 +421,19 @@ describe("RecipeDetail", () => {
     expect(wrapper.find('[data-test="delete"]').exists()).toBe(false);
   });
 
-  it("我的菜谱详情页能一键公开，父行 is_public 变 1", async () => {
-    const wrapper = await page();
-
-    expect(wrapper.find('[data-test="recipe-public-toggle"]').exists()).toBe(true);
-    await wrapper.get('[data-test="recipe-public-toggle"]').trigger("change");
-    await flushPromises();
-
-    expect(mocks.update).toHaveBeenCalledTimes(1);
-    const [id, input] = mocks.update.mock.calls[0];
-    expect(id).toBe("r1");
-    expect(input.is_public).toBe(1);
-    // update 是整组替换子行：完整输入必须带上步骤 / 食材 / 标签 / 分类，漏了就清空这道菜
-    expect(input.name).toBe("红烧肉");
-    expect(input.cover_path).toBe("c.jpg");
-    expect(input.category_id).toBe("c1");
-    expect(input.tag_ids).toEqual(["t1", "t2"]);
-    expect(input.steps).toEqual([
-      { text: "切块", image_path: null },
-      { text: "下锅", image_path: null },
-    ]);
-    expect(input.ingredients).toEqual([
-      { ingredient_id: "i-ri1", amount: 200, unit_id: "u-ri1" },
-    ]);
-    // 页面立即反映新状态
-    expect(
-      (wrapper.get('[data-test="recipe-public-toggle"]').element as HTMLInputElement).checked,
-    ).toBe(true);
-    // 回归网：写完子行没被清掉
-    expect(wrapper.findAll('[data-test="step-row"]')).toHaveLength(2);
-    expect(rowTexts(wrapper)).toEqual(["200 克 五花肉"]);
-  });
-
-  it("别人的菜谱没有公开开关（也没有编辑/删除）", async () => {
-    mocks.getDetail.mockResolvedValue({
-      ...detail(),
-      recipe: { ...detail().recipe, owner_id: "other" },
-    });
-
-    const wrapper = await page();
-
-    expect(wrapper.find('[data-test="recipe-public-toggle"]').exists()).toBe(false);
-    expect(wrapper.find('[data-test="edit"]').exists()).toBe(false);
-    expect(wrapper.find('[data-test="delete"]').exists()).toBe(false);
-    // 别人的菜谱根本不能触发写入：步骤与食材原样显示
-    expect(mocks.update).not.toHaveBeenCalled();
-    expect(wrapper.findAll('[data-test="step-row"]')).toHaveLength(2);
-    expect(rowTexts(wrapper)).toEqual(["200 克 五花肉"]);
-  });
-
-  it("公开开关写入在途时重复点不会并发写（update 非事务，会互相删子行）", async () => {
-    let resolveUpdate: () => void = () => {};
-    mocks.update.mockReturnValue(
-      new Promise<void>((resolve) => {
-        resolveUpdate = resolve;
-      }),
-    );
-    const wrapper = await page();
-
-    const toggle = wrapper.get('[data-test="recipe-public-toggle"]');
-    await toggle.trigger("change");
-    await toggle.trigger("change");
-
-    expect(mocks.update).toHaveBeenCalledTimes(1);
-    resolveUpdate();
-    await flushPromises();
-  });
-
-  it("别人的菜谱显示作者昵称，点它进 /user/:id", async () => {
+  it("别人的菜谱显示作者昵称，没有用户页可跳、也没有收藏 / 关注入口", async () => {
     mocks.getDetail.mockResolvedValue(others());
 
     const wrapper = await page();
 
-    const author = wrapper.get('[data-test="recipe-author"]');
-    expect(author.text()).toBe("老王");
-    // 收藏按钮与作者同属「别人的菜谱」这一态，而且是顶栏里的图标按钮
-    const favorite = wrapper.find('[data-test="recipe-favorite"]');
-    expect(favorite.exists()).toBe(true);
-    expect(wrapper.get("header").find('[data-test="recipe-favorite"]').exists()).toBe(true);
-    await author.trigger("click");
-    expect(mocks.push).toHaveBeenCalledWith("/user/u2");
+    expect(wrapper.get('[data-test="recipe-author"]').text()).toBe("老王");
+    expect(wrapper.find('[data-test="recipe-favorite"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="recipe-author-follow"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="recipe-author-count"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="recipe-public-toggle"]').exists()).toBe(false);
   });
 
-  it("作者卡片第一眼就有头像与昵称，断网不补数字、不发资料请求", async () => {
+  it("作者卡片第一眼就有头像与昵称", async () => {
     const data = others();
     data.recipe.owner_avatar_url = "https://e.com/u2.png";
     mocks.getDetail.mockResolvedValue(data);
@@ -543,169 +445,8 @@ describe("RecipeDetail", () => {
     expect(wrapper.get('[data-test="recipe-author-avatar"] img').attributes("src")).toBe(
       "https://e.com/u2.png",
     );
-    // 离线（guest）：一个资料请求都不发，数字与关注按钮都不出现
+    // 资料补料已删（社区下线）：一个资料请求都不发
     expect(mocks.profile).not.toHaveBeenCalled();
-    expect(wrapper.find('[data-test="recipe-author-count"]').exists()).toBe(false);
-    expect(wrapper.find('[data-test="recipe-author-follow"]').exists()).toBe(false);
-    expect(wrapper.find('[data-test="recipe-favorite"]').exists()).toBe(true);
-  });
-
-  it("联网时补出公开菜谱数与关注按钮", async () => {
-    setActivePinia(createPinia());
-    useAuthStore().mode = "online";
-    mocks.getDetail.mockResolvedValue(others());
-
-    const wrapper = await page();
-
-    expect(mocks.profile).toHaveBeenCalledWith("u2");
-    expect(wrapper.get('[data-test="recipe-author-count"]').text()).toContain("12");
-    expect(wrapper.get('[data-test="recipe-author-follow"]').attributes("aria-label")).toBe("关注");
-    // 图标是这次改动的可见内容：没它按钮就只是个空圈
-    expect(wrapper.get('[data-test="recipe-author-follow"]').find("svg").exists()).toBe(true);
-  });
-
-  it("已关注的作者显示「取消关注」", async () => {
-    setActivePinia(createPinia());
-    useAuthStore().mode = "online";
-    mocks.getDetail.mockResolvedValue(others());
-    mocks.profile.mockResolvedValue(authorProfile(3, true));
-
-    const wrapper = await page();
-
-    expect(wrapper.get('[data-test="recipe-author-count"]').text()).toContain("3");
-    expect(wrapper.get('[data-test="recipe-author-follow"]').attributes("aria-label")).toBe("取消关注");
-    expect(wrapper.get('[data-test="recipe-author-follow"]').find("svg").exists()).toBe(true);
-  });
-
-  it("点关注按钮只关注作者，不跳用户页", async () => {
-    setActivePinia(createPinia());
-    useAuthStore().mode = "online";
-    mocks.getDetail.mockResolvedValue(others());
-
-    const wrapper = await page();
-
-    await wrapper.get('[data-test="recipe-author-follow"]').trigger("click");
-    await flushPromises();
-
-    expect(mocks.follow).toHaveBeenCalledWith("u2");
-    expect(mocks.unfollow).not.toHaveBeenCalled();
-    // @click.stop：关注按钮的点击不许冒到卡片上跳用户页
-    expect(mocks.push).not.toHaveBeenCalled();
-  });
-
-  it("关注失败时按钮翻回原状并提示，不静默", async () => {
-    setActivePinia(createPinia());
-    useAuthStore().mode = "online";
-    mocks.getDetail.mockResolvedValue(others());
-    mocks.follow.mockRejectedValue(new Error("网络不可用"));
-
-    const wrapper = await page();
-
-    await wrapper.get('[data-test="recipe-author-follow"]').trigger("click");
-    await flushPromises();
-
-    expect(wrapper.get('[data-test="author-follow-error"]').text()).toContain("网络不可用");
-    expect(wrapper.get('[data-test="recipe-author-follow"]').attributes("aria-label")).toBe("关注");
-  });
-
-  it("作者资料请求失败时完全静默：卡片照常，不报错也不画数字与关注按钮", async () => {
-    setActivePinia(createPinia());
-    useAuthStore().mode = "online";
-    mocks.getDetail.mockResolvedValue(others());
-    mocks.profile.mockRejectedValue(new Error("网络不可用"));
-
-    const wrapper = await page();
-
-    expect(wrapper.get('[data-test="recipe-author"]').text()).toBe("老王");
-    expect(wrapper.find('[data-test="recipe-author-count"]').exists()).toBe(false);
-    expect(wrapper.find('[data-test="recipe-author-follow"]').exists()).toBe(false);
-    expect(wrapper.find('[data-test="author-follow-error"]').exists()).toBe(false);
-    expect(wrapper.get('[data-test="detail-name"]').text()).toBe("红烧肉");
-  });
-
-  it("离线时收藏按钮不可用（disabled，且视觉上也灰着）", async () => {
-    setActivePinia(createPinia());
-    mocks.getDetail.mockResolvedValue(others());
-
-    const wrapper = await page();
-
-    // 未登录（离线）也看得到按钮，只是不能点
-    const favorite = wrapper.get('[data-test="recipe-favorite"]');
-    expect(favorite.attributes("disabled")).toBeDefined();
-    expect(favorite.classes()).toContain("disabled:opacity-50");
-  });
-
-  it("收藏成功后按钮显示已收藏", async () => {
-    setActivePinia(createPinia());
-    useAuthStore().mode = "online";
-    mocks.getDetail.mockResolvedValue(others());
-
-    const wrapper = await page();
-
-    expect(wrapper.get('[data-test="recipe-favorite"]').attributes("aria-label")).toBe("收藏");
-    await wrapper.get('[data-test="recipe-favorite"]').trigger("click");
-    await flushPromises();
-
-    expect(mocks.favorite).toHaveBeenCalledWith("r1");
-    expect(wrapper.get('[data-test="recipe-favorite"]').attributes("aria-label")).toBe("已收藏");
-  });
-
-  it("本地已收藏的菜谱进详情页直接显示已收藏", async () => {
-    mocks.getDetail.mockResolvedValue(others());
-    mocks.isFavorited.mockResolvedValue(true);
-
-    const wrapper = await page();
-
-    expect(wrapper.get('[data-test="recipe-favorite"]').attributes("aria-label")).toBe("已收藏");
-  });
-
-  it("步骤图还在下载时不阻塞收藏态初始化（先读本地收藏，再等图）", async () => {
-    setFileSyncDeps(fakeIo().deps);
-    // 卡住下载：收藏初值读的是本地 SQL，不该等在途的网络
-    mocks.fetchWithAuth.mockReturnValue(new Promise<Response>(() => {}));
-    const data = others();
-    data.steps = [step("s1", 0, "切块", "step-1.jpg")];
-    mocks.getDetail.mockResolvedValue(data);
-    mocks.isFavorited.mockResolvedValue(true);
-
-    const wrapper = await page();
-
-    expect(wrapper.get('[data-test="recipe-favorite"]').attributes("aria-label")).toBe("已收藏");
-  });
-
-  it("exists 读不了时不炸整页，收藏态照常初始化", async () => {
-    const io = fakeIo();
-    setFileSyncDeps({
-      ...io.deps,
-      exists: async () => {
-        throw new Error("FS 读不了");
-      },
-    });
-    mocks.fetchWithAuth.mockRejectedValue(new Error("断网"));
-    const data = others();
-    data.steps = [step("s1", 0, "切块", "step-1.jpg")];
-    mocks.getDetail.mockResolvedValue(data);
-    mocks.isFavorited.mockResolvedValue(true);
-
-    const wrapper = await page();
-
-    expect(wrapper.get('[data-test="detail-name"]').text()).toBe("红烧肉");
-    expect(wrapper.get('[data-test="recipe-favorite"]').attributes("aria-label")).toBe("已收藏");
-  });
-
-  it("收藏失败时按钮回到原状并提示，不静默", async () => {
-    setActivePinia(createPinia());
-    useAuthStore().mode = "online";
-    mocks.getDetail.mockResolvedValue(others());
-    mocks.favorite.mockRejectedValue(new Error("网络不可用"));
-
-    const wrapper = await page();
-
-    await wrapper.get('[data-test="recipe-favorite"]').trigger("click");
-    await flushPromises();
-
-    expect(wrapper.get('[data-test="favorite-error"]').text()).toContain("网络不可用");
-    expect(wrapper.get('[data-test="recipe-favorite"]').attributes("aria-label")).toBe("收藏");
   });
 
   it("自己的菜谱渲染编辑与删除按钮", async () => {
@@ -727,9 +468,8 @@ describe("RecipeDetail", () => {
 
     expect(wrapper.find('[data-test="edit"]').exists()).toBe(true);
     expect(wrapper.find('[data-test="delete"]').exists()).toBe(true);
-    // 自己的菜谱不是「别人的」：没有作者入口、也没有收藏按钮
+    // 自己的菜谱不是「别人的」：没有作者卡片
     expect(wrapper.find('[data-test="recipe-author"]').exists()).toBe(false);
-    expect(wrapper.find('[data-test="recipe-favorite"]').exists()).toBe(false);
   });
 });
 

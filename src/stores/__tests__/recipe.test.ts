@@ -4,6 +4,7 @@ import { setDb, type Db } from "@/db";
 import { freshTestDb } from "@/db/__tests__/sqliteTestDb";
 import { useIngredientStore, useUnitStore } from "@/stores/ingredient";
 import { useLabelStore } from "@/stores/label";
+import { LOCAL_SCOPE } from "@/services/scope";
 import { useRecipeStore } from "@/stores/recipe";
 import type { RecipeInput } from "@/types";
 
@@ -39,7 +40,6 @@ function input(overrides: Partial<RecipeInput> & { category_id: string }): Recip
   return {
     name: "番茄炒蛋",
     cover_path: null,
-    is_public: 0,
     tag_ids: [],
     steps: [],
     ingredients: [],
@@ -60,12 +60,12 @@ async function deletedAtOf(table: string, id: string): Promise<string | null> {
   return rows[0].deleted_at;
 }
 
-async function isPublicOf(id: string): Promise<number> {
-  const rows = await db.select<{ is_public: number }[]>(
-    "SELECT is_public FROM recipes WHERE id = ?",
+async function scopeOf(id: string): Promise<string> {
+  const rows = await db.select<{ scope_id: string }[]>(
+    "SELECT scope_id FROM recipes WHERE id = ?",
     [id],
   );
-  return rows[0].is_public;
+  return rows[0].scope_id;
 }
 
 describe("recipeStore", () => {
@@ -107,23 +107,23 @@ describe("recipeStore", () => {
     expect(detail.ingredients[1].amount).toBeNull();
   });
 
-  it("新建菜谱默认 is_public = 0", async () => {
+  it("新建菜谱写当前范围（未登录即 p:local）", async () => {
     const categoryId = await newCategory();
     const store = useRecipeStore();
 
     const id = await store.create(input({ category_id: categoryId }));
 
-    expect(await isPublicOf(id)).toBe(0);
+    expect(await scopeOf(id)).toBe(LOCAL_SCOPE);
   });
 
-  it("编辑时能改成公开（is_public 随输入写入父行）", async () => {
+  it("编辑不改范围（范围只在认领 / 建团时变）", async () => {
     const categoryId = await newCategory();
     const store = useRecipeStore();
     const id = await store.create(input({ category_id: categoryId }));
 
-    await store.update(id, input({ category_id: categoryId, is_public: 1 }));
+    await store.update(id, input({ category_id: categoryId, name: "红烧肉" }));
 
-    expect(await isPublicOf(id)).toBe(1);
+    expect(await scopeOf(id)).toBe(LOCAL_SCOPE);
   });
 
   it("create 把标签写进 recipe_labels", async () => {
@@ -475,39 +475,6 @@ describe("recipeStore", () => {
     await store.fetchAll();
 
     expect(store.recipes[0].ingredients).toEqual([]);
-  });
-
-  it("fetchFavorites 只回收藏的菜谱，JOIN 出的分类 / 标签 / 食材与 fetchAll 一致", async () => {
-    const categoryId = await newCategory();
-    const home = await newTag("家常");
-    const pork = await newIngredient("五花肉");
-    const store = useRecipeStore();
-    const kept = await store.create(
-      input({
-        category_id: categoryId,
-        name: "红烧肉",
-        tag_ids: [home],
-        ingredients: [{ ingredient_id: pork, amount: 500, unit_id: null }],
-      }),
-    );
-    await sleep();
-    const other = await store.create(input({ category_id: categoryId, name: "番茄炒蛋" }));
-    await db.execute("INSERT INTO favorite_recipes (recipe_id) VALUES (?)", [kept]);
-
-    await store.fetchFavorites();
-
-    expect(store.favorites.map((item) => item.recipe.id)).toEqual([kept]);
-    expect(store.favorites[0].category.name).toBe("炒菜");
-    expect(store.favorites[0].tags.map((tag) => tag.id)).toEqual([home]);
-    expect(store.favorites[0].ingredients).toEqual([{ id: pork, name: "五花肉" }]);
-    // 收藏是另一条数据源，不碰「我的」列表
-    expect(store.recipes).toEqual([]);
-
-    // 软删的收藏不再出现
-    await store.remove(other);
-    await store.remove(kept);
-    await store.fetchFavorites();
-    expect(store.favorites).toEqual([]);
   });
 
   it("remove 只软删父行，子行原封不动", async () => {
