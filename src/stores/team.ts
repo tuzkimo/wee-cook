@@ -102,9 +102,14 @@ export const useTeamStore = defineStore("team", () => {
   function resetFor(uid: string | null): void {
     teams.value = [];
     currentTeamId.value = null;
-    void getDb()
-      .execute("DELETE FROM teams")
-      .catch(() => {});
+    // 库可能还没打开（登出发生在冷启动早期）：清缓存失败不影响登出本身
+    try {
+      void getDb()
+        .execute("DELETE FROM teams")
+        .catch(() => {});
+    } catch {
+      // ignore: 数据库未就绪
+    }
     if (uid) localStorage.removeItem(PERSIST_PREFIX + uid);
     setActiveScope(LOCAL_SCOPE);
   }

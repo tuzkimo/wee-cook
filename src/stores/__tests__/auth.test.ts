@@ -10,6 +10,7 @@ import { readAiSendingEnabled } from "@/services/ai/privacy";
 import { aiAccount, setAiAccount } from "@/services/ai/account";
 import { useAiSettingsStore } from "@/stores/aiSettings";
 import { useAuthStore } from "@/stores/auth";
+import { useTeamStore } from "@/stores/team";
 
 // spec §9.5：会话从不在线变在线（登录/注册/恢复成功）要触发一次全扫推送。
 // 这里把整块同步替换成 spy，否则在途同步请求会在 teardown 留下 AbortError 噪音，
@@ -646,5 +647,38 @@ describe("authStore", () => {
     expect(storedSetting("server_avatar_url")).toBeUndefined();
     expect(storedSetting("server_url")).toBe("https://srv");
     expect(storedSetting("server_username")).toBe("alice");
+  });
+});
+
+describe("团队缓存与会话时序", () => {
+  it("登录成功后先刷团队缓存再触发同步", async () => {
+    const order: string[] = [];
+    const team = useTeamStore();
+    const loadSpy = vi.spyOn(team, "load").mockImplementation(async () => {
+      order.push("team.load");
+    });
+    syncMock.mockImplementation(async () => {
+      order.push("sync");
+    });
+
+    stubFetch(() => res(200, authBody(user("u1", { username: "alice" }), "access-1", "refresh-1")));
+    await useAuthStore().login("https://srv", "alice", "pw");
+
+    await vi.waitFor(() => expect(order).toEqual(["team.load", "sync"]));
+    loadSpy.mockRestore();
+  });
+
+  it("登出清空团队缓存与当前范围", async () => {
+    const team = useTeamStore();
+    const resetSpy = vi.spyOn(team, "resetFor");
+
+    stubFetch(() => res(200, authBody(user("u1", { username: "alice" }), "access-1", "refresh-1")));
+    await useAuthStore().login("https://srv", "alice", "pw");
+    await useAuthStore().logout();
+
+    expect(resetSpy).toHaveBeenCalled();
+    expect(team.teams).toEqual([]);
+    expect(team.currentTeamId).toBeNull();
+    resetSpy.mockRestore();
   });
 });

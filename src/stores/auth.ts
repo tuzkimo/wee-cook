@@ -26,15 +26,28 @@ const LOG_SAVE: SettingLogContext = { tag: "auth", label: "同步设置", action
 const NETWORK_MESSAGE = "连不上服务器，检查地址和网络";
 
 /**
- * 会话刚变在线：认领存量 + 一次全扫推送（spec §9.3）。fire-and-forget，不阻塞登录返回。
+ * 会话刚变在线：先把这个账号的团队缓存刷成本账号的，再认领存量 + 一次全扫推送（spec §8.5）。
+ * fire-and-forget，不阻塞登录返回。
+ *
+ * 顺序不能换：同步的收集范围是「我的个人范围 ∪ 我加入的团队」，团队缓存还是上一个账号的，
+ * 就会把别人的团队数据推上去 / 拉回来。
  *
  * 这里刻意用动态 import：`auth → migration → sync → auth` 已是一个静态环，顶部静态 import
  * 会让环在最坏情况下拿到半初始化的模块。保持动态，别改成静态。
  */
-function triggerPostSessionSync(): void {
-  void import("@/services/migration")
-    .then((m) => m.triggerFullPushAndSync())
-    .catch((e: unknown) => console.warn("[auth] 同步模块加载失败:", e));
+async function triggerPostSessionSync(): Promise<void> {
+  try {
+    const [{ useTeamStore }, migration] = await Promise.all([
+      import("@/stores/team"),
+      import("@/services/migration"),
+    ]);
+    await useTeamStore().load().catch(() => {
+      // 团队列表拿不到不该挡住认领与同步：范围退化成本账号的个人范围
+    });
+    await migration.triggerFullPushAndSync();
+  } catch (e: unknown) {
+    console.warn("[auth] 同步模块加载失败:", e);
+  }
 }
 
 /** 读字符串型设置：空串按未设置处理（地址与账号都不该是空串）。 */
@@ -161,8 +174,8 @@ const useAuthStoreBase = defineStore("auth", () => {
     await persistSession(resp.user, normalized);
     // 账号变了，入口状态按新账号重读一次（永不 reject）
     void useAiSettingsStore().load();
-    // 会话刚变在线：认领存量 + 一次全扫推送（spec §9.3）
-    triggerPostSessionSync();
+    // 会话刚变在线：刷团队缓存 → 认领存量 → 一次全扫推送（spec §8.5）
+    void triggerPostSessionSync();
   }
 
   async function login(url: string, username: string, password: string): Promise<void> {
@@ -246,7 +259,7 @@ const useAuthStoreBase = defineStore("auth", () => {
       await persistSession(resp.user, url);
       void useAiSettingsStore().load();
       // 冷启动恢复会话成功同样算「会话变在线」（spec §9.5）
-      triggerPostSessionSync();
+      void triggerPostSessionSync();
     } catch (err) {
       // 服务端明确说 refresh token 失效才清；超时 / 断网保留凭据与设置。
       // 无论哪种都保持 guest，绝不阻塞或清空本地菜谱。
@@ -298,6 +311,9 @@ const useAuthStoreBase = defineStore("auth", () => {
     // 动态 import 避免 auth→sync→auth 的静态环。
     const { resetSyncTimers } = await import("@/services/sync");
     resetSyncTimers();
+    // 团队缓存属于刚退出的账号：整表清空、当前范围回落（spec §8.5 / §11.1）
+    const { useTeamStore } = await import("@/stores/team");
+    useTeamStore().resetFor(persistedUserId);
     // AI 的会话与错误文案属于刚退出的账号：只清内存，库里的行一概不动（spec §12.1）。
     // 同样用动态 import：auth→aiChat→stores/recipe→sync→auth 是静态环。
     const { useAiChatStore } = await import("@/stores/aiChat");
