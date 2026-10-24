@@ -31,6 +31,66 @@ func NewSyncService(pool *pgxpool.Pool) *SyncService {
 	return &SyncService{pool: pool}
 }
 
+// scope 是一条同步写入落在哪个范围：TeamID 为空即个人范围（OwnerID 就是那个人），
+// 否则是团队范围。OwnerID 一律取当前登录用户，请求里带的值不用。
+type scope struct {
+	TeamID  *string
+	OwnerID string
+}
+
+// errScopeInvalid 表示范围形状不合法或越权：这种条目整条跳过，不回滚整批（spec §8.2）。
+var errScopeInvalid = errors.New("范围不合法或越权")
+
+// parseScope 解析客户端的 scope_id：'t:<uuid>' 团队、'p:<uuid>' 个人，其余报错。
+func parseScope(scopeID string) (teamID string, personalUser string, err error) {
+	if id, ok := strings.CutPrefix(scopeID, "t:"); ok {
+		if id == "" {
+			return "", "", fmt.Errorf("%w: %q", errScopeInvalid, scopeID)
+		}
+		return id, "", nil
+	}
+	if id, ok := strings.CutPrefix(scopeID, "p:"); ok {
+		if id == "" {
+			return "", "", fmt.Errorf("%w: %q", errScopeInvalid, scopeID)
+		}
+		return "", id, nil
+	}
+	return "", "", fmt.Errorf("%w: %q", errScopeInvalid, scopeID)
+}
+
+// resolveScope 把 scope_id 解成服务端的范围，并校验「这个范围归不归我」：
+// 个人范围只能是我自己；团队范围必须是未解散团队的成员（spec §8.2）。
+func (s *SyncService) resolveScope(ctx context.Context, q dbQuerier, userID, scopeID string) (scope, error) {
+	teamID, personalUser, err := parseScope(scopeID)
+	if err != nil {
+		return scope{}, err
+	}
+	if teamID == "" {
+		if personalUser != userID {
+			return scope{}, fmt.Errorf("%w: 个人范围 %q 不属于 %s", errScopeInvalid, scopeID, userID)
+		}
+		return scope{OwnerID: userID}, nil
+	}
+	var visible bool
+	if err := q.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM team_members tm JOIN teams t ON t.id = tm.team_id AND t.deleted_at IS NULL
+		 WHERE tm.user_id = $1 AND tm.team_id = $2)`, userID, teamID).Scan(&visible); err != nil {
+		return scope{}, err
+	}
+	if !visible {
+		return scope{}, fmt.Errorf("%w: 团队范围 %q 不可见", errScopeInvalid, scopeID)
+	}
+	return scope{TeamID: &teamID, OwnerID: userID}, nil
+}
+
+// scopeWhere 生成字典 / 库存 / 菜谱的范围条件，参数从 argOffset 开始编号。
+func scopeWhere(sc scope, argOffset int) (string, []any) {
+	if sc.TeamID != nil {
+		return fmt.Sprintf("team_id = $%d", argOffset), []any{*sc.TeamID}
+	}
+	return fmt.Sprintf("team_id IS NULL AND owner_id = $%d", argOffset), []any{sc.OwnerID}
+}
+
 // dictEntity 是三张字典表的公共列：mergeDict 只认这些，表名与键列由 dictSpec 给出。
 type dictEntity struct {
 	ID        string
@@ -56,19 +116,19 @@ var (
 	ingredientSpec = dictSpec{
 		table:      "ingredients",
 		keyColumns: []string{"name"},
-		insertSQL:  `INSERT INTO ingredients (id, name, created_at, updated_at, deleted_at) VALUES ($1,$2,$3,$4,$5)`,
+		insertSQL:  `INSERT INTO ingredients (id, team_id, owner_id, name, created_at, updated_at, deleted_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		updateSQL:  `UPDATE ingredients SET name=$1, updated_at=$2, deleted_at=$3, server_seq = nextval('global_server_seq') WHERE id=$4`,
 	}
 	unitSpec = dictSpec{
 		table:      "units",
 		keyColumns: []string{"name"},
-		insertSQL:  `INSERT INTO units (id, name, created_at, updated_at, deleted_at) VALUES ($1,$2,$3,$4,$5)`,
+		insertSQL:  `INSERT INTO units (id, team_id, owner_id, name, created_at, updated_at, deleted_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		updateSQL:  `UPDATE units SET name=$1, updated_at=$2, deleted_at=$3, server_seq = nextval('global_server_seq') WHERE id=$4`,
 	}
 	labelSpec = dictSpec{
 		table:      "labels",
 		keyColumns: []string{"name", "kind"},
-		insertSQL:  `INSERT INTO labels (id, name, kind, created_at, updated_at, deleted_at) VALUES ($1,$2,$3,$4,$5,$6)`,
+		insertSQL:  `INSERT INTO labels (id, team_id, owner_id, name, kind, created_at, updated_at, deleted_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
 		updateSQL:  `UPDATE labels SET name=$1, kind=$2, updated_at=$3, deleted_at=$4, server_seq = nextval('global_server_seq') WHERE id=$5`,
 	}
 )
@@ -76,8 +136,9 @@ var (
 func (spec dictSpec) hasKind() bool { return slices.Contains(spec.keyColumns, "kind") }
 
 // insertArgs / updateArgs 的参数顺序与对应 SQL 的占位符一一对应。
-func (spec dictSpec) insertArgs(ent dictEntity) []any {
-	args := []any{ent.ID, ent.Name}
+// 插入写范围：team_id 为空是个人字典（owner_id 就是这个人），否则 owner_id 只记谁先推上来的。
+func (spec dictSpec) insertArgs(ent dictEntity, sc scope) []any {
+	args := []any{ent.ID, sc.TeamID, sc.OwnerID, ent.Name}
 	if spec.hasKind() {
 		args = append(args, ent.Kind)
 	}
@@ -94,12 +155,13 @@ func (spec dictSpec) updateArgs(ent dictEntity, id string) []any {
 
 // mergeDict 对单条字典记录做 LWW 合并，返回这条记录在服务器上的有效 id：
 //  1. 按主键查 updated_at（FOR UPDATE）→ 存在则比时间，incoming 更新才 UPDATE
-//  2. 主键不存在 → 按合并键查（不筛 deleted_at：软删行仍占着同名的坑，漏判会写出第二条同名数据）
+//  2. 主键不存在 → 在**同一范围内**按合并键查（不筛 deleted_at：软删行仍占着同名的坑，漏判会写出第二条同名数据）
 //     命中同键行 Y → 把内容并进 Y、丢弃新 id X，返回 Y
 //  3. 都没有 → INSERT，返回自身 id
 //
+// 同键查询必须带范围：两个家庭各有一个「生抽」是两条记录，不带范围就会并成一条（spec §7.2）。
 // 返回的 id 与入参 id 不同时，调用方要把所有引用重写到这个 id 上（spec §7.2 第 2/3 步）。
-func (s *SyncService) mergeDict(ctx context.Context, tx dbQuerier, spec dictSpec, ent dictEntity) (string, error) {
+func (s *SyncService) mergeDict(ctx context.Context, tx dbQuerier, spec dictSpec, sc scope, ent dictEntity) (string, error) {
 	var remoteUpdatedAt time.Time
 	err := tx.QueryRow(ctx,
 		"SELECT updated_at FROM "+spec.table+" WHERE id = $1 FOR UPDATE", ent.ID).Scan(&remoteUpdatedAt)
@@ -113,6 +175,9 @@ func (s *SyncService) mergeDict(ctx context.Context, tx dbQuerier, spec dictSpec
 				keyArgs[i] = ent.Kind
 			}
 		}
+		scopeSQL, scopeArgs := scopeWhere(sc, len(keyArgs)+1)
+		conds = append(conds, scopeSQL)
+		keyArgs = append(keyArgs, scopeArgs...)
 		var dupID string
 		var dupUpdatedAt time.Time
 		dupErr := tx.QueryRow(ctx,
@@ -129,7 +194,7 @@ func (s *SyncService) mergeDict(ctx context.Context, tx dbQuerier, spec dictSpec
 		if !errors.Is(dupErr, pgx.ErrNoRows) {
 			return "", dupErr // 真实 DB 错误，透传（不当成「没有同键行」）
 		}
-		if _, err := tx.Exec(ctx, spec.insertSQL, spec.insertArgs(ent)...); err != nil {
+		if _, err := tx.Exec(ctx, spec.insertSQL, spec.insertArgs(ent, sc)...); err != nil {
 			return "", err
 		}
 		return ent.ID, nil
@@ -364,21 +429,43 @@ func (s *SyncService) mergeLocalChanges(ctx context.Context, tx dbQuerier, userI
 	}
 
 	remap := make(map[string]string)
+	// 每条字典行自己带范围：越权 / 形状不对的那一条跳过，不回滚整批（spec §8.2）。
 	for _, it := range req.Ingredients {
+		sc, err := s.resolveScope(ctx, tx, userID, it.ScopeID)
+		if errors.Is(err, errScopeInvalid) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
 		ent := dictEntity{ID: it.ID, Name: it.Name, CreatedAt: it.CreatedAt, UpdatedAt: it.UpdatedAt, DeletedAt: it.DeletedAt}
-		if err := s.mergeOneDict(ctx, tx, ingredientSpec, ent, remap); err != nil {
+		if err := s.mergeOneDict(ctx, tx, ingredientSpec, sc, ent, remap); err != nil {
 			return err
 		}
 	}
 	for _, it := range req.Units {
+		sc, err := s.resolveScope(ctx, tx, userID, it.ScopeID)
+		if errors.Is(err, errScopeInvalid) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
 		ent := dictEntity{ID: it.ID, Name: it.Name, CreatedAt: it.CreatedAt, UpdatedAt: it.UpdatedAt, DeletedAt: it.DeletedAt}
-		if err := s.mergeOneDict(ctx, tx, unitSpec, ent, remap); err != nil {
+		if err := s.mergeOneDict(ctx, tx, unitSpec, sc, ent, remap); err != nil {
 			return err
 		}
 	}
 	for _, it := range req.Labels {
+		sc, err := s.resolveScope(ctx, tx, userID, it.ScopeID)
+		if errors.Is(err, errScopeInvalid) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
 		ent := dictEntity{ID: it.ID, Name: it.Name, Kind: it.Kind, CreatedAt: it.CreatedAt, UpdatedAt: it.UpdatedAt, DeletedAt: it.DeletedAt}
-		if err := s.mergeOneDict(ctx, tx, labelSpec, ent, remap); err != nil {
+		if err := s.mergeOneDict(ctx, tx, labelSpec, sc, ent, remap); err != nil {
 			return err
 		}
 	}
@@ -392,8 +479,8 @@ func (s *SyncService) mergeLocalChanges(ctx context.Context, tx dbQuerier, userI
 }
 
 // mergeOneDict 合并一条字典记录，并把「旧 id → 有效 id」记进 remap 供菜谱重写引用。
-func (s *SyncService) mergeOneDict(ctx context.Context, tx dbQuerier, spec dictSpec, ent dictEntity, remap map[string]string) error {
-	effectiveID, err := s.mergeDict(ctx, tx, spec, ent)
+func (s *SyncService) mergeOneDict(ctx context.Context, tx dbQuerier, spec dictSpec, sc scope, ent dictEntity, remap map[string]string) error {
+	effectiveID, err := s.mergeDict(ctx, tx, spec, sc, ent)
 	if err != nil {
 		return fmt.Errorf("merge %s %s: %w", spec.table, ent.ID, err)
 	}

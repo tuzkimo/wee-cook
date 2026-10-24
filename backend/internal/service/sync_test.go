@@ -55,12 +55,15 @@ func execIndex(q *syncQuerier, sub string) int {
 	return -1
 }
 
+// testScope 是个人范围的简写：绝大多数字典用例都是个人字典。
+func testScope(userID string) scope { return scope{OwnerID: userID} }
+
 // 三张表都没有同名唯一约束：插入前必须按键查过，同一批里重复推同一格也不会撞约束。
 func TestMergeDictInsertsWhenAbsent(t *testing.T) {
 	now := time.Now().UTC()
 	q := newSyncQuerier()
 
-	id, err := NewSyncService(nil).mergeDict(context.Background(), q, ingredientSpec,
+	id, err := NewSyncService(nil).mergeDict(context.Background(), q, ingredientSpec, testScope("u1"),
 		dictEntity{ID: "i-new", Name: "盐", CreatedAt: now, UpdatedAt: now})
 	if err != nil {
 		t.Fatalf("mergeDict: %v", err)
@@ -89,7 +92,7 @@ func TestMergeDictSkipsOlder(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			q := newSyncQuerier(fakeRow{vals: []any{remote}})
 
-			id, err := NewSyncService(nil).mergeDict(context.Background(), q, unitSpec,
+			id, err := NewSyncService(nil).mergeDict(context.Background(), q, unitSpec, testScope("u1"),
 				dictEntity{ID: "u-1", Name: "克", UpdatedAt: tc.incoming})
 			if err != nil {
 				t.Fatalf("mergeDict: %v", err)
@@ -115,7 +118,7 @@ func TestMergeDictMergesByNameIntoExistingID(t *testing.T) {
 		fakeRow{vals: []any{"Y", old}},  // 同名行 id=Y
 	)
 
-	id, err := NewSyncService(nil).mergeDict(context.Background(), q, ingredientSpec,
+	id, err := NewSyncService(nil).mergeDict(context.Background(), q, ingredientSpec, testScope("u1"),
 		dictEntity{ID: "X", Name: "五花肉", UpdatedAt: old.Add(time.Minute)})
 	if err != nil {
 		t.Fatalf("mergeDict: %v", err)
@@ -144,7 +147,7 @@ func TestMergeDictMatchesSoftDeletedRow(t *testing.T) {
 		fakeRow{vals: []any{"Y", deleted}}, // 该行的 deleted_at 非空（fake 只回 id/updated_at）
 	)
 
-	id, err := NewSyncService(nil).mergeDict(context.Background(), q, unitSpec,
+	id, err := NewSyncService(nil).mergeDict(context.Background(), q, unitSpec, testScope("u1"),
 		dictEntity{ID: "X", Name: "克", UpdatedAt: deleted.Add(time.Minute)})
 	if err != nil {
 		t.Fatalf("mergeDict: %v", err)
@@ -171,7 +174,7 @@ func TestMergeDictLabelKeyIncludesKind(t *testing.T) {
 		fakeRow{scanErr: pgx.ErrNoRows}, // 同名同 kind 的行不存在（同名但 kind 不同 → 不命中）
 	)
 
-	id, err := NewSyncService(nil).mergeDict(context.Background(), q, labelSpec,
+	id, err := NewSyncService(nil).mergeDict(context.Background(), q, labelSpec, testScope("u1"),
 		dictEntity{ID: "L1", Name: "川菜", Kind: "tag", UpdatedAt: now})
 	if err != nil {
 		t.Fatalf("mergeDict: %v", err)
@@ -183,13 +186,13 @@ func TestMergeDictLabelKeyIncludesKind(t *testing.T) {
 	if !strings.Contains(keyQuery.sql, "name = $1 AND kind = $2") {
 		t.Fatalf("labels 的合并键要含 kind，got %s", keyQuery.sql)
 	}
-	if len(keyQuery.args) != 2 || keyQuery.args[1] != "tag" {
+	if len(keyQuery.args) != 3 || keyQuery.args[1] != "tag" {
 		t.Fatalf("按键查要带上 kind 参数，got %+v", keyQuery.args)
 	}
 	if len(q.execs) != 1 || !strings.Contains(q.execs[0].sql, "INSERT INTO labels") {
 		t.Fatalf("应 INSERT 自身这条，got %+v", q.execs)
 	}
-	if got := q.execs[0].args[2]; got != "tag" {
+	if got := q.execs[0].args[4]; got != "tag" {
 		t.Errorf("INSERT 要落 kind 列，got %v", got)
 	}
 }
@@ -359,5 +362,42 @@ func TestMergeRecipeRemapsCategoryAndLabels(t *testing.T) {
 	}
 	if labelInserts != 1 {
 		t.Errorf("重复的 label_id 要去重成一条，got %d：%+v", labelInserts, q.execs)
+	}
+}
+
+// --- Task 2：范围解析 ---
+
+// scope_id 是客户端给出的形状：「p:<uid>」个人、「t:<teamId>」团队，其余一律拒绝。
+func TestParseScope(t *testing.T) {
+	cases := []struct {
+		name         string
+		scopeID      string
+		wantTeam     string
+		wantPersonal string
+		wantErr      bool
+	}{
+		{name: "团队范围", scopeID: "t:team-1", wantTeam: "team-1"},
+		{name: "个人范围", scopeID: "p:user-1", wantPersonal: "user-1"},
+		{name: "空串", scopeID: "", wantErr: true},
+		{name: "未知前缀", scopeID: "x:abc", wantErr: true},
+		{name: "团队缺 id", scopeID: "t:", wantErr: true},
+		{name: "个人缺 id", scopeID: "p:", wantErr: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			teamID, personalUser, err := parseScope(c.scopeID)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("parseScope(%q) 应报错，got team=%q personal=%q", c.scopeID, teamID, personalUser)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseScope(%q): %v", c.scopeID, err)
+			}
+			if teamID != c.wantTeam || personalUser != c.wantPersonal {
+				t.Errorf("parseScope(%q) = (%q, %q), want (%q, %q)", c.scopeID, teamID, personalUser, c.wantTeam, c.wantPersonal)
+			}
+		})
 	}
 }

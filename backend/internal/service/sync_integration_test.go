@@ -763,3 +763,76 @@ func TestPullRecoversFromServerGenerationRollback(t *testing.T) {
 		t.Errorf("游标应退回当前世代的 MAX(server_seq) %d，got %d", maxSeq, resp.ServerSeq)
 	}
 }
+
+// seedTeam 建一个团队并把 ownerID 写成 owner。
+func seedTeam(t *testing.T, pool *pgxpool.Pool, ownerID string) string {
+	t.Helper()
+	var id string
+	if err := pool.QueryRow(context.Background(),
+		`INSERT INTO teams (name, created_by) VALUES ($1, $2) RETURNING id`,
+		"team-"+uuid.NewString(), ownerID).Scan(&id); err != nil {
+		t.Fatalf("插入团队失败: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO team_members (team_id, user_id, role) VALUES ($1, $2, 'owner')`, id, ownerID); err != nil {
+		t.Fatalf("插入团队成员失败: %v", err)
+	}
+	return id
+}
+
+// Review Focus ⑤：两个家庭各录一个「生抽」不能被并成一条。同名合并只在同一范围内发生。
+func TestMergeDictScopedSameName(t *testing.T) {
+	pool := filesTestDB(t)
+	svc := NewSyncService(pool)
+	ctx := context.Background()
+
+	a := seedUser(t, pool)
+	team1 := seedTeam(t, pool, a)
+	team2 := seedTeam(t, pool, a)
+
+	now := time.Now().UTC()
+	id1 := "i-" + uuid.NewString()
+	id2 := "i-" + uuid.NewString()
+
+	got1, err := svc.mergeDict(ctx, pool, ingredientSpec, scope{TeamID: &team1, OwnerID: a},
+		dictEntity{ID: id1, Name: "生抽", CreatedAt: now, UpdatedAt: now})
+	if err != nil {
+		t.Fatalf("mergeDict team1: %v", err)
+	}
+	got2, err := svc.mergeDict(ctx, pool, ingredientSpec, scope{TeamID: &team2, OwnerID: a},
+		dictEntity{ID: id2, Name: "生抽", CreatedAt: now, UpdatedAt: now})
+	if err != nil {
+		t.Fatalf("mergeDict team2: %v", err)
+	}
+	if got1 != id1 || got2 != id2 {
+		t.Fatalf("两个范围的同名食材不该合并：got %q / %q, want %q / %q", got1, got2, id1, id2)
+	}
+
+	rows, err := pool.Query(ctx,
+		`SELECT id, team_id::text FROM ingredients WHERE name = '生抽' ORDER BY id`)
+	if err != nil {
+		t.Fatalf("查询食材失败: %v", err)
+	}
+	defer rows.Close()
+	type row struct{ id, team string }
+	var got []row
+	for rows.Next() {
+		var it row
+		if err := rows.Scan(&it.id, &it.team); err != nil {
+			t.Fatalf("扫描失败: %v", err)
+		}
+		got = append(got, it)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("遍历失败: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("应留下两条「生抽」，got %+v", got)
+	}
+	want := map[string]string{id1: team1, id2: team2}
+	for _, it := range got {
+		if want[it.id] != it.team {
+			t.Errorf("食材 %s 的 team_id = %s, want %s", it.id, it.team, want[it.id])
+		}
+	}
+}
