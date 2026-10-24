@@ -12,7 +12,11 @@ type SyncPayload struct {
 	Units       []Unit       `json:"units"`
 	Labels      []Label      `json:"labels"`
 	Recipes     []Recipe     `json:"recipes"`
-	Files       []FileRef    `json:"files"`
+
+	InventoryBatches []InventoryBatch `json:"inventory_batches"`
+	InventoryUsages  []InventoryUsage `json:"inventory_usages"`
+
+	Files []FileRef `json:"files"`
 }
 
 // SyncResponse 是一次同步的响应：新游标（客户端下次带回）与本次增量。

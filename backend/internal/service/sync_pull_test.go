@@ -413,7 +413,7 @@ func TestCursorIsSnapshotMax(t *testing.T) {
 	}
 
 	cq := queryLike(t, q, "MAX(s)")
-	for _, table := range []string{"ingredients", "units", "labels", "recipes"} {
+	for _, table := range []string{"ingredients", "units", "labels", "recipes", "inventory_batches", "inventory_usages"} {
 		if !strings.Contains(cq.sql, "MAX(server_seq)") || !strings.Contains(cq.sql, "FROM "+table) {
 			t.Errorf("游标要覆盖 %s（少一条通道就会漏推进），got %s", table, cq.sql)
 		}

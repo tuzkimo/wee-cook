@@ -758,3 +758,190 @@ func TestRecipeScopeIsolation(t *testing.T) {
 		t.Errorf("B 应能看到自己的私人菜谱")
 	}
 }
+
+// --- Task 4：库存进同步 ---
+
+func batchRow(t *testing.T, pool *pgxpool.Pool, id string) (amount float64, owner string, deletedAt *time.Time) {
+	t.Helper()
+	if err := pool.QueryRow(context.Background(),
+		`SELECT amount, owner_id, deleted_at FROM inventory_batches WHERE id = $1`, id).
+		Scan(&amount, &owner, &deletedAt); err != nil {
+		t.Fatalf("查询批次 %s 失败: %v", id, err)
+	}
+	return amount, owner, deletedAt
+}
+
+func newBatch(t *testing.T, scopeID string, updatedAt time.Time) model.InventoryBatch {
+	t.Helper()
+	unit := "u-1"
+	produced := "2026-10-20"
+	expires := "2026-10-30"
+	days := 10
+	return model.InventoryBatch{
+		ID: "b-" + uuid.NewString(), ScopeID: scopeID,
+		IngredientID: "ing-" + uuid.NewString(), Amount: 500, UnitID: &unit,
+		ProducedAt: &produced, ShelfLifeDays: &days, ExpiresAt: &expires,
+		CreatedAt: updatedAt, UpdatedAt: updatedAt,
+	}
+}
+
+// 批次按 updated_at 做 LWW；更新保留原 owner_id（录入者不随推送者变）；软删墓碑生效。
+func TestInventoryBatchLWW(t *testing.T) {
+	pool := filesTestDB(t)
+	svc := NewSyncService(pool)
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+
+	now := time.Now().UTC()
+	batch := newBatch(t, personalScopeID(a), now.Add(-time.Hour))
+	mustPush(t, svc, a, model.SyncPayload{InventoryBatches: []model.InventoryBatch{batch}})
+
+	amount, owner, deletedAt := batchRow(t, pool, batch.ID)
+	if amount != 500 || owner != a || deletedAt != nil {
+		t.Fatalf("首次推送: amount=%v owner=%s deleted_at=%v, want 500 / A / nil", amount, owner, deletedAt)
+	}
+
+	// 更旧的一次推送不得覆盖
+	older := batch
+	older.Amount = 999
+	older.UpdatedAt = now.Add(-2 * time.Hour)
+	mustPush(t, svc, a, model.SyncPayload{InventoryBatches: []model.InventoryBatch{older}})
+	if amount, _, _ := batchRow(t, pool, batch.ID); amount != 500 {
+		t.Errorf("更旧的推送覆盖了新值: amount = %v, want 500", amount)
+	}
+
+	// 更新的推送赢，且 owner_id 保持原录入者（B 在团队里改别人的批次也不换 owner）
+	newer := batch
+	newer.Amount = 250
+	newer.UpdatedAt = now
+	newer.OwnerID = b
+	mustPush(t, svc, a, model.SyncPayload{InventoryBatches: []model.InventoryBatch{newer}})
+	amount, owner, _ = batchRow(t, pool, batch.ID)
+	if amount != 250 {
+		t.Errorf("较新的推送应赢: amount = %v, want 250", amount)
+	}
+	if owner != a {
+		t.Errorf("更新不得改写 owner_id: got %s, want A(%s)", owner, a)
+	}
+
+	// 软删墓碑
+	deleted := newer
+	tombstoneAt := now.Add(time.Minute)
+	deleted.DeletedAt = &tombstoneAt
+	deleted.UpdatedAt = tombstoneAt
+	mustPush(t, svc, a, model.SyncPayload{InventoryBatches: []model.InventoryBatch{deleted}})
+	if _, _, got := batchRow(t, pool, batch.ID); got == nil {
+		t.Error("软删墓碑应落库")
+	}
+}
+
+// 使用记录只增不清：同 id 推两次只有一行；指向已软删批次仍落库；批次不存在 / 范围不一致都跳过。
+func TestUsageAppendOnlyIdempotent(t *testing.T) {
+	pool := filesTestDB(t)
+	svc := NewSyncService(pool)
+	ctx := context.Background()
+	a := seedUser(t, pool)
+
+	now := time.Now().UTC()
+	batch := newBatch(t, personalScopeID(a), now.Add(-time.Hour))
+	mustPush(t, svc, a, model.SyncPayload{InventoryBatches: []model.InventoryBatch{batch}})
+
+	usage := model.InventoryUsage{
+		ID: "us-" + uuid.NewString(), ScopeID: personalScopeID(a),
+		RecipeID: "r-1", BatchID: batch.ID, Amount: 100, UsedAt: now, UpdatedAt: now,
+	}
+	mustPush(t, svc, a, model.SyncPayload{InventoryUsages: []model.InventoryUsage{usage}})
+	mustPush(t, svc, a, model.SyncPayload{InventoryUsages: []model.InventoryUsage{usage}})
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM inventory_usages WHERE id = $1`, usage.ID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("同 id 推两次应只有一行，实际 %d 行", count)
+	}
+
+	// 批次被软删：成员离线期间记下的扣减必须放行，否则余量永远对不上且不会自愈
+	softDeletedAt := now.Add(time.Minute)
+	tombstone := batch
+	tombstone.DeletedAt = &softDeletedAt
+	tombstone.UpdatedAt = softDeletedAt
+	mustPush(t, svc, a, model.SyncPayload{InventoryBatches: []model.InventoryBatch{tombstone}})
+	late := usage
+	late.ID = "us-" + uuid.NewString()
+	mustPush(t, svc, a, model.SyncPayload{InventoryUsages: []model.InventoryUsage{late}})
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM inventory_usages WHERE id = $1`, late.ID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Error("指向已软删批次的记录应落库")
+	}
+
+	// 批次不存在：跳过
+	orphan := usage
+	orphan.ID = "us-" + uuid.NewString()
+	orphan.BatchID = "b-" + uuid.NewString()
+	mustPush(t, svc, a, model.SyncPayload{InventoryUsages: []model.InventoryUsage{orphan}})
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM inventory_usages WHERE id = $1`, orphan.ID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Error("指向不存在批次的记录必须跳过")
+	}
+
+	// 批次在团队范围、记录却报个人范围：跳过（范围必须一致）
+	teamID := seedTeam(t, pool, a)
+	teamBatch := newBatch(t, teamScopeID(teamID), now.Add(-time.Hour))
+	mustPush(t, svc, a, model.SyncPayload{InventoryBatches: []model.InventoryBatch{teamBatch}})
+	mismatched := usage
+	mismatched.ID = "us-" + uuid.NewString()
+	mismatched.BatchID = teamBatch.ID
+	mismatched.ScopeID = personalScopeID(a)
+	mustPush(t, svc, a, model.SyncPayload{InventoryUsages: []model.InventoryUsage{mismatched}})
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM inventory_usages WHERE id = $1`, mismatched.ID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Error("记录范围与批次范围不一致时必须跳过")
+	}
+}
+
+// 非成员推团队批次被跳过；A 的私人批次不出现在 B 的拉取里。
+func TestInventoryScopeIsolation(t *testing.T) {
+	pool := filesTestDB(t)
+	svc := NewSyncService(pool)
+	ctx := context.Background()
+
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+	teamID := seedTeam(t, pool, a)
+
+	now := time.Now().UTC()
+
+	foreign := newBatch(t, teamScopeID(teamID), now)
+	mustPush(t, svc, b, model.SyncPayload{InventoryBatches: []model.InventoryBatch{foreign}})
+	var exists bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM inventory_batches WHERE id = $1)`, foreign.ID).Scan(&exists); err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Error("非成员推的团队批次不该落库")
+	}
+
+	private := newBatch(t, personalScopeID(a), now)
+	mustPush(t, svc, a, model.SyncPayload{InventoryBatches: []model.InventoryBatch{private}})
+
+	findBatch := func(resp *model.SyncResponse, id string) *model.InventoryBatch {
+		for i := range resp.RemoteChanges.InventoryBatches {
+			if resp.RemoteChanges.InventoryBatches[i].ID == id {
+				return &resp.RemoteChanges.InventoryBatches[i]
+			}
+		}
+		return nil
+	}
+	if got := findBatch(mustPull(t, svc, a, 0), private.ID); got == nil {
+		t.Error("A 应能拉到自己的私人批次")
+	}
+	if got := findBatch(mustPull(t, svc, b, 0), private.ID); got != nil {
+		t.Errorf("B 不该看到 A 的私人批次：%+v", got)
+	}
+}

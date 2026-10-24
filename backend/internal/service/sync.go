@@ -220,20 +220,14 @@ func (s *SyncService) mergeDict(ctx context.Context, tx dbQuerier, spec dictSpec
 // 而通用辅助只扫单值 updated_at。
 // shortcut: 整条替换以「只有作者能改」为前提，将来允许协作编辑同一条菜谱时必须回到行级 LWW（spec §7.3）。
 func (s *SyncService) mergeRecipe(ctx context.Context, tx dbQuerier, userID string, sc scope, remap map[string]string, r model.Recipe) error {
-	remapID := func(id string) string {
-		if to, ok := remap[id]; ok {
-			return to
-		}
-		return id
-	}
-	r.CategoryID = remapID(r.CategoryID)
+	r.CategoryID = remapID(remap, r.CategoryID)
 	for i := range r.LabelIDs {
-		r.LabelIDs[i] = remapID(r.LabelIDs[i])
+		r.LabelIDs[i] = remapID(remap, r.LabelIDs[i])
 	}
 	for i := range r.Ingredients {
-		r.Ingredients[i].IngredientID = remapID(r.Ingredients[i].IngredientID)
+		r.Ingredients[i].IngredientID = remapID(remap, r.Ingredients[i].IngredientID)
 		if r.Ingredients[i].UnitID != nil {
-			unitID := remapID(*r.Ingredients[i].UnitID)
+			unitID := remapID(remap, *r.Ingredients[i].UnitID)
 			r.Ingredients[i].UnitID = &unitID
 		}
 	}
@@ -280,6 +274,14 @@ func (s *SyncService) mergeRecipe(ctx context.Context, tx dbQuerier, userID stri
 		return err
 	}
 	return insertRecipeChildren(ctx, tx, r)
+}
+
+// remapID 把被合并掉的字典 id 换成服务器上的有效 id；没有映射就原样返回。
+func remapID(remap map[string]string, id string) string {
+	if to, ok := remap[id]; ok {
+		return to
+	}
+	return id
 }
 
 // 三张子表没有 server_seq、也没有 deleted_at：服务端只保存「当前有效的子行快照」，
@@ -350,12 +352,14 @@ func (s *SyncService) Sync(ctx context.Context, userID string, req model.SyncReq
 	return resp, nil
 }
 
-// maxServerSeqSQL 覆盖全部四条增量通道：游标是它们的最大 server_seq，空库上取 0（而不是 NULL）。
+// maxServerSeqSQL 覆盖全部六条增量通道：游标是它们的最大 server_seq，空库上取 0（而不是 NULL）。
 const maxServerSeqSQL = `SELECT COALESCE(MAX(s), 0) FROM (
 	SELECT MAX(server_seq) AS s FROM ingredients
 	UNION ALL SELECT MAX(server_seq) FROM units
 	UNION ALL SELECT MAX(server_seq) FROM labels
 	UNION ALL SELECT MAX(server_seq) FROM recipes
+	UNION ALL SELECT MAX(server_seq) FROM inventory_batches
+	UNION ALL SELECT MAX(server_seq) FROM inventory_usages
 ) m`
 
 // pull 在同一个只读事务里读完增量再取游标：游标取全库的 MAX(server_seq)，
@@ -468,6 +472,37 @@ func (s *SyncService) mergeLocalChanges(ctx context.Context, tx dbQuerier, userI
 			return fmt.Errorf("merge recipe %s: %w", r.ID, err)
 		}
 	}
+
+	// 库存跟在菜谱之后：批次的 ingredient_id / unit_id 也要按 remap 重写（上面已收集）。
+	for _, b := range req.InventoryBatches {
+		sc, err := s.resolveScope(ctx, tx, userID, b.ScopeID)
+		if errors.Is(err, errScopeInvalid) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		b.IngredientID = remapID(remap, b.IngredientID)
+		if b.UnitID != nil {
+			unitID := remapID(remap, *b.UnitID)
+			b.UnitID = &unitID
+		}
+		if err := s.mergeBatch(ctx, tx, userID, sc, b); err != nil {
+			return fmt.Errorf("merge batch %s: %w", b.ID, err)
+		}
+	}
+	for _, u := range req.InventoryUsages {
+		sc, err := s.resolveScope(ctx, tx, userID, u.ScopeID)
+		if errors.Is(err, errScopeInvalid) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := s.insertUsage(ctx, tx, userID, sc, u); err != nil {
+			return fmt.Errorf("merge usage %s: %w", u.ID, err)
+		}
+	}
 	return nil
 }
 
@@ -487,11 +522,13 @@ func (s *SyncService) mergeOneDict(ctx context.Context, tx dbQuerier, spec dictS
 func (s *SyncService) getRemoteChanges(ctx context.Context, q dbQuerier, userID string, sinceSeq int64) (model.SyncPayload, error) {
 	// 五个集合一律给空切片而不是 nil：客户端拿到响应直接遍历，首轮同步（服务端还没数据）的 null 会炸。
 	payload := model.SyncPayload{
-		Ingredients: []model.Ingredient{},
-		Units:       []model.Unit{},
-		Labels:      []model.Label{},
-		Recipes:     []model.Recipe{},
-		Files:       []model.FileRef{},
+		Ingredients:      []model.Ingredient{},
+		Units:            []model.Unit{},
+		Labels:           []model.Label{},
+		Recipes:          []model.Recipe{},
+		InventoryBatches: []model.InventoryBatch{},
+		InventoryUsages:  []model.InventoryUsage{},
+		Files:            []model.FileRef{},
 	}
 
 	var err error
@@ -507,10 +544,19 @@ func (s *SyncService) getRemoteChanges(ctx context.Context, q dbQuerier, userID 
 	if payload.Recipes, err = queryRecipes(ctx, q, userID, sinceSeq); err != nil {
 		return payload, fmt.Errorf("query recipes: %w", err)
 	}
+	if payload.InventoryBatches, err = queryBatches(ctx, q, userID, sinceSeq); err != nil {
+		return payload, fmt.Errorf("query batches: %w", err)
+	}
+	if payload.InventoryUsages, err = queryUsages(ctx, q, userID, sinceSeq); err != nil {
+		return payload, fmt.Errorf("query usages: %w", err)
+	}
 
-	// 增量菜谱引用的字典行可能 server_seq 早于游标、本次没下发 → 按 id 反查补齐（spec §7.5）。
+	// 增量菜谱 / 批次引用的字典行可能 server_seq 早于游标、本次没下发 → 按 id 反查补齐（spec §7.5）。
 	if err := backfillReferenced(ctx, q, &payload); err != nil {
 		return payload, fmt.Errorf("backfill referenced: %w", err)
+	}
+	if err := backfillInventoryDicts(ctx, q, &payload); err != nil {
+		return payload, fmt.Errorf("backfill inventory dicts: %w", err)
 	}
 
 	// 图片清单只列本次菜谱引用到的、files 表里确实存在的文件名，客户端对本地没有的逐个下载。
