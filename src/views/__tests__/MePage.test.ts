@@ -352,3 +352,13 @@ describe("MePage 用户卡", () => {
     expect(wrapper.get('[data-test="me-user-name"]').text()).toBe("未登录");
   });
 });
+
+describe("MePage 食材库存入口", () => {
+  it("点「食材库存」进入 /inventory", async () => {
+    const wrapper = await page();
+
+    await wrapper.get('[data-test="inventory-row"]').trigger("click");
+
+    expect(mocks.push).toHaveBeenCalledWith("/inventory");
+  });
+});

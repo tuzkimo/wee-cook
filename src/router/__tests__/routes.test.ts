@@ -38,3 +38,11 @@ describe("路由表", () => {
     expect(route?.meta.hideTab).toBe(true);
   });
 });
+
+describe("库存路由", () => {
+  it("/inventory 存在且隐藏 tab 栏", () => {
+    const route = router.getRoutes().find((r) => r.path === "/inventory");
+    expect(route).toBeDefined();
+    expect(route?.meta.hideTab).toBe(true);
+  });
+});

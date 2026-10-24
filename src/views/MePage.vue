@@ -98,6 +98,16 @@ const aiPrivacyHint = computed(() => {
         <ChevronRight :size="16" class="text-text-secondary" />
       </button>
 
+      <button
+        type="button"
+        data-test="inventory-row"
+        class="flex w-full items-center justify-between rounded-xl bg-surface px-4 py-3.5 text-sm transition-colors hover:bg-gray-50 active:bg-gray-100"
+        @click="router.push('/inventory')"
+      >
+        <span class="text-text">食材库存</span>
+        <ChevronRight :size="16" class="text-text-secondary" />
+      </button>
+
       <!-- 未配置服务器：入口 -->
       <button
         v-if="!configured"

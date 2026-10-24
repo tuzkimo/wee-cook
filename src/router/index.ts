@@ -10,6 +10,7 @@ import ServerConfig from "@/views/ServerConfig.vue";
 import LoginPage from "@/views/LoginPage.vue";
 import ProfilePage from "@/views/ProfilePage.vue";
 import UserPage from "@/views/UserPage.vue";
+import InventoryPage from "@/views/InventoryPage.vue";
 
 export default createRouter({
   history: createWebHistory(),
@@ -23,6 +24,7 @@ export default createRouter({
     { path: "/recipe/:id", name: "recipe-detail", component: RecipeDetail, meta: { hideTab: true } },
     { path: "/ai", name: "ai", component: AiPage },
     { path: "/me", name: "me", component: MePage },
+    { path: "/inventory", name: "inventory", component: InventoryPage, meta: { hideTab: true } },
     { path: "/me/server", name: "me-server", component: ServerConfig, meta: { hideTab: true } },
     { path: "/me/login", name: "me-login", component: LoginPage, meta: { hideTab: true } },
     { path: "/me/profile", name: "me-profile", component: ProfilePage, meta: { hideTab: true } },
