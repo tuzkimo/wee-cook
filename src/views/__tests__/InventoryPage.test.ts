@@ -6,6 +6,8 @@ import { freshTestDb } from "@/db/__tests__/sqliteTestDb";
 import InventoryPage from "@/views/InventoryPage.vue";
 import { useIngredientStore } from "@/stores/ingredient";
 import { useInventoryStore } from "@/stores/inventory";
+import { useTeamStore } from "@/stores/team";
+import { activeScope, setActiveScope } from "@/services/scope";
 
 const mocks = vi.hoisted(() => ({ push: vi.fn(), back: vi.fn() }));
 
@@ -203,5 +205,27 @@ describe("InventoryPage", () => {
     await open();
 
     expect(spy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("库存页的范围切换器", () => {
+  it("切到团队范围后只显示该团队的批次", async () => {
+    await seedBatch({ ingredientId: "i-local", ingredientName: "鸡蛋", amount: 100 });
+    await seedBatch({ ingredientId: "i-team", ingredientName: "五花肉", amount: 200 });
+    // seedBatch 都写在 p:local；把「五花肉」那批挪到团队范围，模拟团队库存
+    await db.execute("UPDATE inventory_batches SET scope_id = 't:t1' WHERE ingredient_id = 'i-team'");
+
+    const wrapper = await open();
+    expect(wrapper.text()).toContain("鸡蛋");
+    expect(wrapper.text()).not.toContain("五花肉");
+
+    useTeamStore().switchTo("t1");
+    await flushPromises();
+
+    expect(activeScope.value).toBe("t:t1");
+    expect(wrapper.text()).toContain("五花肉");
+    expect(wrapper.text()).not.toContain("鸡蛋");
+
+    setActiveScope("p:local");
   });
 });

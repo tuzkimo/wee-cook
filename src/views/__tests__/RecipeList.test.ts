@@ -43,6 +43,18 @@ vi.mock("@/services/scope", () => ({
   },
 }));
 // syncVersion 必须 reactive：组件 watch 它来重拉列表。
+// 切换器是另一个组件的事（有自己的用例），这里只给一个不渲染任何东西的替身。
+vi.mock("@/components/TeamSwitcher.vue", () => ({
+  default: { name: "TeamSwitcher", render: () => null },
+}));
+vi.mock("@/stores/team", () => ({
+  useTeamStore: () => ({
+    teams: [],
+    currentTeamId: null,
+    load: vi.fn(async () => {}),
+    restoreCurrentTeam: vi.fn(async () => {}),
+  }),
+}));
 vi.mock("@/stores/auth", async () => {
   const { reactive } = await import("vue");
   mocks.auth = reactive({

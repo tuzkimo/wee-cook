@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted } from "vue";
 import { RouterView, useRoute, useRouter } from "vue-router";
-import { BookOpen, Sparkles, User } from "lucide-vue-next";
+import { BookOpen, Package, Sparkles, User } from "lucide-vue-next";
 import { realDeps, startShareIntake } from "@/services/ai/shareIntake";
 import { useAiChatStore } from "@/stores/aiChat";
 import { useAiSettingsStore } from "@/stores/aiSettings";
@@ -14,6 +14,7 @@ const aiChat = useAiChatStore();
 // AI 项按 aiSettings.tabVisible 过滤（opt-in + 后端状态的三态），菜谱 / 我的两项不动。
 const TABS = computed(() => [
   { path: "/", label: "菜谱", icon: BookOpen },
+  { path: "/inventory", label: "库存", icon: Package },
   ...(aiSettings.tabVisible ? [{ path: "/ai", label: "AI", icon: Sparkles }] : []),
   { path: "/me", label: "我的", icon: User },
 ]);

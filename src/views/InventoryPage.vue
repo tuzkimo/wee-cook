@@ -2,17 +2,19 @@
 // 库存页（spec §6.3）：按食材汇总余量，展开看每批次。
 // 余量全部由 store 从「批次数量 − 使用记录」派生，这一页不自己算账。
 import { computed, onMounted, ref } from "vue";
-import { useRouter } from "vue-router";
 import { Plus, Trash2 } from "lucide-vue-next";
 import AppHeader from "@/components/AppHeader.vue";
 import BatchSheet from "@/components/BatchSheet.vue";
+import TeamSwitcher from "@/components/TeamSwitcher.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import { useInventoryStore } from "@/stores/inventory";
+import { useTeamStore } from "@/stores/team";
 import type { BatchStock, IngredientStock } from "@/types";
 import { expiryState, groupStockRows, localToday, sortStockRows } from "@/utils/inventory";
 
-const router = useRouter();
 const store = useInventoryStore();
+// 团队缓存要就绪，页头的切换器才有选项（未登录时它自己整块不渲染）
+const team = useTeamStore();
 
 const showSheet = ref(false);
 // 展开状态是本页内存态：用数组而不是 Set，改一次就是新数组，模板自然重渲染
@@ -23,8 +25,11 @@ const deleteError = ref("");
 const today = localToday(new Date());
 const rows = computed(() => sortStockRows(groupStockRows(store.batches)));
 
-onMounted(() => {
-  void store.fetchAll();
+onMounted(async () => {
+  // 冷启动：先恢复团队缓存与上次选中的范围，再按范围查库存
+  if (team.teams.length === 0) await team.load().catch(() => {});
+  await team.restoreCurrentTeam();
+  await store.fetchAll();
 });
 
 function toggle(ingredientId: string): void {
@@ -68,7 +73,7 @@ async function confirmDelete(): Promise<void> {
 
 <template>
   <div class="flex h-full flex-col">
-    <AppHeader title="食材库存" show-back @back="router.back()">
+    <AppHeader title="食材库存">
       <template #action>
         <button
           type="button"
@@ -81,6 +86,11 @@ async function confirmDelete(): Promise<void> {
         </button>
       </template>
     </AppHeader>
+
+    <!-- 范围切换器：库存是一本按范围分开的账（spec §10.2） -->
+    <div class="flex shrink-0 items-center border-b border-gray-100 bg-surface px-4 py-2">
+      <TeamSwitcher />
+    </div>
 
     <div class="flex-1 min-h-0 overflow-auto px-4 py-4">
       <p

@@ -4,9 +4,11 @@ import { useRouter } from "vue-router";
 import { Filter, Plus } from "lucide-vue-next";
 import AppHeader from "@/components/AppHeader.vue";
 import RecipeCard from "@/components/RecipeCard.vue";
+import TeamSwitcher from "@/components/TeamSwitcher.vue";
 import { useRecipeStore } from "@/stores/recipe";
 import { useAuthStore } from "@/stores/auth";
 import { useRecipeFilterStore } from "@/stores/recipeFilter";
+import { useTeamStore } from "@/stores/team";
 import { activeScope } from "@/services/scope";
 import { imageSrc } from "@/services/imageStore";
 import { ensureLocalImages } from "@/services/syncFiles";
@@ -16,6 +18,7 @@ import type { RecipeListItem } from "@/types";
 const router = useRouter();
 const store = useRecipeStore();
 const auth = useAuthStore();
+const team = useTeamStore();
 const filterStore = useRecipeFilterStore();
 
 // 封面得走鉴权下载通道补下来（别的设备同步来的菜谱就在内）；
@@ -62,6 +65,9 @@ watch(
 );
 
 onMounted(async () => {
+  // 冷启动：先恢复团队缓存与上次选中的范围，再按范围查列表
+  if (team.teams.length === 0) await team.load().catch(() => {});
+  await team.restoreCurrentTeam();
   await store.fetchAll();
 });
 </script>
@@ -101,6 +107,11 @@ onMounted(async () => {
         </button>
       </template>
     </AppHeader>
+
+    <!-- 范围切换器：与库存页共用同一个全局状态（spec §10.1） -->
+    <div class="flex shrink-0 items-center border-b border-gray-100 bg-surface px-4 py-2">
+      <TeamSwitcher />
+    </div>
 
     <div
       v-if="active"

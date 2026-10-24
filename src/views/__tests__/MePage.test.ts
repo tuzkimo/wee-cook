@@ -353,12 +353,32 @@ describe("MePage 用户卡", () => {
   });
 });
 
-describe("MePage 食材库存入口", () => {
-  it("点「食材库存」进入 /inventory", async () => {
+describe("MePage 我的团队入口", () => {
+  it("库存升为底栏标签后，这一页不再有「食材库存」行", async () => {
     const wrapper = await page();
+    expect(wrapper.find('[data-test="inventory-row"]').exists()).toBe(false);
+  });
 
-    await wrapper.get('[data-test="inventory-row"]').trigger("click");
+  it("已登录时点「我的团队」进入 /me/teams", async () => {
+    const wrapper = await page();
+    // 直接种会话（真 store）：这一行只看 serverUserId，不必真跑一遍登录
+    useAuthStore().serverUser = {
+      id: "u1",
+      username: "u1",
+      nickname: "我",
+      avatar_url: null,
+      created_at: NOW,
+      updated_at: NOW,
+    };
+    await flushPromises();
 
-    expect(mocks.push).toHaveBeenCalledWith("/inventory");
+    await wrapper.get('[data-test="team-row"]').trigger("click");
+
+    expect(mocks.push).toHaveBeenCalledWith("/me/teams");
+  });
+
+  it("未登录时没有「我的团队」行", async () => {
+    const wrapper = await page();
+    expect(wrapper.find('[data-test="team-row"]').exists()).toBe(false);
   });
 });

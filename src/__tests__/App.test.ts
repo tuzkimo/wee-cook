@@ -160,8 +160,8 @@ describe("App 外壳", () => {
   // 三态之一：opt-in 关着 ⇒ 用户没同意，AI 入口不该出现。
   it("opt-in 未开启时不渲染 AI tab", () => {
     const tabs = mountApp().findAll("nav a");
-    expect(tabs.map((t) => t.text())).toEqual(["菜谱", "我的"]);
-    expect(tabs.map((t) => t.attributes("href"))).toEqual(["/", "/me"]);
+    expect(tabs.map((t) => t.text())).toEqual(["菜谱", "库存", "我的"]);
+    expect(tabs.map((t) => t.attributes("href"))).toEqual(["/", "/inventory", "/me"]);
   });
 
   it("opt-in 开启且后端启用时渲染三个 tab", async () => {
@@ -175,8 +175,8 @@ describe("App 外壳", () => {
     await flushPromises();
 
     const tabs = wrapper.findAll("nav a");
-    expect(tabs.map((t) => t.text())).toEqual(["菜谱", "AI", "我的"]);
-    expect(tabs.map((t) => t.attributes("href"))).toEqual(["/", "/ai", "/me"]);
+    expect(tabs.map((t) => t.text())).toEqual(["菜谱", "库存", "AI", "我的"]);
+    expect(tabs.map((t) => t.attributes("href"))).toEqual(["/", "/inventory", "/ai", "/me"]);
   });
 
   // 三态之三：「探不到」不等于「没启用」—— 一次断网不能把入口永久藏掉。
@@ -185,7 +185,12 @@ describe("App 外壳", () => {
     const wrapper = mountApp();
     await flushPromises();
 
-    expect(wrapper.findAll("nav a").map((t) => t.text())).toEqual(["菜谱", "AI", "我的"]);
+    expect(wrapper.findAll("nav a").map((t) => t.text())).toEqual([
+      "菜谱",
+      "库存",
+      "AI",
+      "我的",
+    ]);
   });
 
   it("状态栏占位高度有 1.5rem 最小值（桌面 env() 为 0 时顶栏不贴边）", () => {
@@ -199,10 +204,12 @@ describe("App 外壳", () => {
     mocks.route.path = "/ai";
     const wrapper = mountApp();
     await flushPromises();
+    // 菜谱 / 库存 / AI / 我的 —— AI 在第 3 位
     const tabs = wrapper.findAll("nav a");
-    expect(tabs[1].classes()).toContain("text-primary");
+    expect(tabs[2].classes()).toContain("text-primary");
     expect(tabs[0].classes()).toContain("text-text-secondary");
-    expect(tabs[2].classes()).toContain("text-text-secondary");
+    expect(tabs[1].classes()).toContain("text-text-secondary");
+    expect(tabs[3].classes()).toContain("text-text-secondary");
   });
 
   it("meta.hideTab 时没有 tab 栏，且内容区补上底部安全区", () => {

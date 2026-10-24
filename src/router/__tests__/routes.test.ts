@@ -15,8 +15,8 @@ describe("路由表", () => {
     }
   });
 
-  it("三个 tab 页不隐藏 tab 栏", () => {
-    for (const path of ["/", "/ai", "/me"]) {
+  it("四个 tab 页不隐藏 tab 栏", () => {
+    for (const path of ["/", "/inventory", "/ai", "/me"]) {
       const route = router.getRoutes().find((r) => r.path === path);
       expect(route, path).toBeDefined();
       expect(route?.meta.hideTab, path).toBeUndefined();
@@ -39,11 +39,21 @@ describe("路由表", () => {
   });
 });
 
+describe("团队路由", () => {
+  it("两条团队路由存在且隐藏 tab 栏", () => {
+    for (const path of ["/me/teams", "/me/teams/:id"]) {
+      const route = router.getRoutes().find((r) => r.path === path);
+      expect(route, path).toBeDefined();
+      expect(route?.meta.hideTab, path).toBe(true);
+    }
+  });
+});
+
 describe("库存路由", () => {
-  it("/inventory 存在且隐藏 tab 栏", () => {
+  it("/inventory 是一级 tab 页（不再隐藏 tab 栏）", () => {
     const route = router.getRoutes().find((r) => r.path === "/inventory");
     expect(route).toBeDefined();
-    expect(route?.meta.hideTab).toBe(true);
+    expect(route?.meta.hideTab).toBeUndefined();
   });
 
   it("/recipe/:id/cook 存在、隐藏 tab 栏且不会被 /recipe/:id 抢走", () => {

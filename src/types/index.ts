@@ -1,5 +1,20 @@
 export type LabelKind = "category" | "tag";
 
+/** 我加入的一个团队（GET /teams 的行，spec §9）。 */
+export interface TeamSummary {
+  id: string;
+  name: string;
+  role: "owner" | "member";
+  member_count: number;
+}
+
+export interface TeamMember {
+  user_id: string;
+  nickname: string;
+  username: string;
+  role: "owner" | "member";
+}
+
 export interface Recipe {
   id: string;
   name: string;

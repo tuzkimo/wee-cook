@@ -98,13 +98,15 @@ const aiPrivacyHint = computed(() => {
         <ChevronRight :size="16" class="text-text-secondary" />
       </button>
 
+      <!-- 库存已升为底栏标签（spec §10.2），这一页只剩「我的团队」 -->
       <button
+        v-if="auth.serverUserId !== null"
         type="button"
-        data-test="inventory-row"
+        data-test="team-row"
         class="flex w-full items-center justify-between rounded-xl bg-surface px-4 py-3.5 text-sm transition-colors hover:bg-gray-50 active:bg-gray-100"
-        @click="router.push('/inventory')"
+        @click="router.push('/me/teams')"
       >
-        <span class="text-text">食材库存</span>
+        <span class="text-text">我的团队</span>
         <ChevronRight :size="16" class="text-text-secondary" />
       </button>
 
