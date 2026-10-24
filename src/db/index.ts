@@ -117,6 +117,31 @@ const DDL = [
     deleted_at      TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS idx_ai_messages_session ON ai_messages(session_id)`,
+  // 库存只存本地（spec §4.1）：不进同步载荷。三个业务外键刻意不写 REFERENCES ——
+  // 同步的字典合并与缓存菜谱清理会物理 DELETE 那些行，真外键换来的只有同步卡死（spec §4.15）。
+  `CREATE TABLE IF NOT EXISTS inventory_batches (
+    id              TEXT PRIMARY KEY,
+    ingredient_id   TEXT NOT NULL,
+    amount          REAL NOT NULL CHECK (amount > 0),
+    unit_id         TEXT,
+    produced_at     TEXT,
+    shelf_life_days INTEGER,
+    expires_at      TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    deleted_at      TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS inventory_usages (
+    id          TEXT PRIMARY KEY,
+    recipe_id   TEXT NOT NULL,
+    batch_id    TEXT NOT NULL,
+    amount      REAL NOT NULL CHECK (amount > 0),
+    used_at     TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    deleted_at  TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_inventory_batches_ing  ON inventory_batches(ingredient_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_inventory_usages_batch ON inventory_usages(batch_id)`,
 ];
 
 /** 真 DDL 的唯一来源，测试直接调它。 */

@@ -108,3 +108,62 @@ export interface RecipeInput {
   steps: { text: string; image_path: string | null }[];
   ingredients: { ingredient_id: string; amount: number | null; unit_id: string | null }[];
 }
+
+export interface InventoryBatch {
+  id: string;
+  ingredient_id: string;
+  amount: number;
+  unit_id: string | null;
+  produced_at: string | null;
+  shelf_life_days: number | null;
+  expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+/** 批次 + 派生出来的余量。余量永不落库（spec §4.2）。 */
+export interface BatchStock {
+  batch: InventoryBatch;
+  ingredient_name: string;
+  unit_name: string | null;
+  remaining: number;
+}
+
+/** 库存页一行 = 一个食材，按单位拆成若干份额（不同单位不混算，spec §4.4） */
+export interface IngredientStock {
+  ingredient_id: string;
+  ingredient_name: string;
+  parts: { unit_id: string | null; unit_name: string | null; remaining: number }[];
+  /** 余量 > 0 的批次里最早的过期日，用于临期标记与排序；全为空则 null */
+  soonest_expires_at: string | null;
+  /** 所有份额余量都 ≤ 0 */
+  usedUp: boolean;
+}
+
+/** 录入批次的提交形状 */
+export interface BatchInput {
+  ingredient_id: string;
+  amount: number;
+  unit_id: string | null;
+  produced_at: string | null;
+  shelf_life_days: number | null;
+  expires_at: string | null;
+}
+
+/** 制作表单的一行（预填自菜谱食材，可改数量与单位） */
+export interface CookLine {
+  ingredient_id: string;
+  ingredient_name: string;
+  unit_id: string | null;
+  /** 页面上选中的单位名，只用于结果态显示，不落库 */
+  unit_name: string | null;
+  amount: number;
+}
+
+export interface CookResult {
+  /** 实际扣掉的量（可能小于表单填的） */
+  deducted: { ingredient_name: string; unit_name: string | null; amount: number }[];
+  /** 扣不满的行 */
+  shortfall: { ingredient_name: string; unit_name: string | null; missing: number }[];
+}

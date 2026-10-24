@@ -110,3 +110,74 @@ describe("AI 会话与消息表", () => {
     expect(rows.map((row) => row.name)).toEqual(["idx_ai_messages_session"]);
   });
 });
+
+const INVENTORY_TABLES = ["inventory_batches", "inventory_usages"];
+
+describe("库存表", () => {
+  it("两张表都建出来了", async () => {
+    const { db } = await freshTestDb();
+    const rows = await db.select<{ name: string }[]>(
+      "SELECT name FROM sqlite_master WHERE type = 'table'",
+    );
+    const names = rows.map((row) => row.name);
+    for (const table of INVENTORY_TABLES) expect(names, table).toContain(table);
+  });
+
+  it("按业务表规则带 id/updated_at/deleted_at", async () => {
+    const { db } = await freshTestDb();
+    for (const table of INVENTORY_TABLES) {
+      const columns = await db.select<{ name: string }[]>(`PRAGMA table_info(${table})`);
+      const names = columns.map((column) => column.name);
+      expect(names, table).toContain("id");
+      expect(names, table).toContain("updated_at");
+      expect(names, table).toContain("deleted_at");
+    }
+  });
+
+  it("inventory_batches.amount 拒绝 0 与负数", async () => {
+    const { db } = await freshTestDb();
+    const now = new Date().toISOString();
+    await db.execute(
+      "INSERT INTO ingredients (id, name, created_at, updated_at, deleted_at) VALUES ('i1', '鸡蛋', ?, ?, NULL)",
+      [now, now],
+    );
+    const insert = `INSERT INTO inventory_batches
+      (id, ingredient_id, amount, unit_id, produced_at, shelf_life_days, expires_at,
+       created_at, updated_at, deleted_at)
+      VALUES (?, 'i1', ?, NULL, NULL, NULL, NULL, ?, ?, NULL)`;
+    await expect(db.execute(insert, ["b0", 0, now, now])).rejects.toThrow();
+    await expect(db.execute(insert, ["b-", -1, now, now])).rejects.toThrow();
+    await expect(db.execute(insert, ["b1", 1, now, now])).resolves.toBeDefined();
+  });
+
+  it("外键列不写 REFERENCES：食材行被物理删除后批次行仍在", async () => {
+    const { db } = await freshTestDb();
+    const now = new Date().toISOString();
+    await db.execute(
+      "INSERT INTO ingredients (id, name, created_at, updated_at, deleted_at) VALUES ('i1', '鸡蛋', ?, ?, NULL)",
+      [now, now],
+    );
+    await db.execute(
+      `INSERT INTO inventory_batches
+       (id, ingredient_id, amount, unit_id, produced_at, shelf_life_days, expires_at,
+        created_at, updated_at, deleted_at)
+       VALUES ('b1', 'i1', 10, NULL, NULL, NULL, NULL, ?, ?, NULL)`,
+      [now, now],
+    );
+    // 同步的字典合并会物理删掉被合并的行（spec §4.15）；真外键会在这里卡死
+    await expect(db.execute("DELETE FROM ingredients WHERE id = 'i1'")).resolves.toBeDefined();
+    const left = await db.select<{ id: string }[]>("SELECT id FROM inventory_batches");
+    expect(left).toHaveLength(1);
+  });
+
+  it("按食材查批次、按批次查使用记录的索引建出来了", async () => {
+    const { db } = await freshTestDb();
+    const rows = await db.select<{ name: string }[]>(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('idx_inventory_batches_ing', 'idx_inventory_usages_batch')",
+    );
+    expect(rows.map((row) => row.name).sort()).toEqual([
+      "idx_inventory_batches_ing",
+      "idx_inventory_usages_batch",
+    ]);
+  });
+});
