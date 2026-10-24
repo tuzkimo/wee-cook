@@ -4,7 +4,7 @@
 // ⚠️ 计时器 / 防熄屏 / 逐步高亮 属于指导模式，已在 `RecipeGuide.vue` 里做，别在这里加。
 import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { Pencil, PhoneCall, Star, Trash2, UserCheck, UserPlus } from "lucide-vue-next";
+import { ChefHat, Pencil, PhoneCall, Star, Trash2, UserCheck, UserPlus } from "lucide-vue-next";
 import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import UserAvatar from "@/components/UserAvatar.vue";
@@ -197,6 +197,16 @@ async function confirmDelete(): Promise<void> {
           </h1>
         </template>
         <template #action>
+          <!-- 做饭不需要编辑权限：别人的菜谱也能点 -->
+          <button
+            type="button"
+            data-test="cook"
+            aria-label="制作"
+            class="flex h-8 w-8 items-center justify-center rounded-full hover:bg-gray-100"
+            @click="router.push(`/recipe/${recipeId}/cook`)"
+          >
+            <ChefHat :size="18" class="text-text-secondary" />
+          </button>
           <button
             type="button"
             data-test="guide"

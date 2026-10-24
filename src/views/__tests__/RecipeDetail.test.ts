@@ -732,3 +732,24 @@ describe("RecipeDetail", () => {
     expect(wrapper.find('[data-test="recipe-favorite"]').exists()).toBe(false);
   });
 });
+
+describe("RecipeDetail 制作入口", () => {
+  it("顶栏有制作按钮，点了进 /recipe/r1/cook", async () => {
+    const wrapper = await page();
+
+    const button = wrapper.get('[data-test="cook"]');
+    // 必须落在共享顶栏里，与指导模式同一行
+    expect(button.element.closest("header")).not.toBeNull();
+    await button.trigger("click");
+
+    expect(mocks.push).toHaveBeenCalledWith("/recipe/r1/cook");
+  });
+
+  it("别人的菜谱也能点制作（做饭不需要编辑权限）", async () => {
+    mocks.getDetail.mockResolvedValue(others());
+
+    const wrapper = await page();
+
+    expect(wrapper.find('[data-test="cook"]').exists()).toBe(true);
+  });
+});

@@ -45,4 +45,10 @@ describe("库存路由", () => {
     expect(route).toBeDefined();
     expect(route?.meta.hideTab).toBe(true);
   });
+
+  it("/recipe/:id/cook 存在、隐藏 tab 栏且不会被 /recipe/:id 抢走", () => {
+    const route = router.getRoutes().find((r) => r.path === "/recipe/:id/cook");
+    expect(route?.meta.hideTab).toBe(true);
+    expect(router.resolve("/recipe/r1/cook").name).toBe("recipe-cook");
+  });
 });

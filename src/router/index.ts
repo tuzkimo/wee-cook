@@ -11,6 +11,7 @@ import LoginPage from "@/views/LoginPage.vue";
 import ProfilePage from "@/views/ProfilePage.vue";
 import UserPage from "@/views/UserPage.vue";
 import InventoryPage from "@/views/InventoryPage.vue";
+import CookPage from "@/views/CookPage.vue";
 
 export default createRouter({
   history: createWebHistory(),
@@ -21,6 +22,7 @@ export default createRouter({
     { path: "/recipe/filter", name: "recipe-filter", component: FilterPage, meta: { hideTab: true } },
     { path: "/recipe/:id/edit", name: "recipe-edit", component: RecipeEdit, meta: { hideTab: true } },
     { path: "/recipe/:id/guide", name: "recipe-guide", component: RecipeGuide, meta: { hideTab: true } },
+    { path: "/recipe/:id/cook", name: "recipe-cook", component: CookPage, meta: { hideTab: true } },
     { path: "/recipe/:id", name: "recipe-detail", component: RecipeDetail, meta: { hideTab: true } },
     { path: "/ai", name: "ai", component: AiPage },
     { path: "/me", name: "me", component: MePage },
