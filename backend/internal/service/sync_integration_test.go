@@ -19,12 +19,17 @@ import (
 	"wee-cook/backend/internal/model"
 )
 
+// personalScopeID / teamScopeID 造客户端形状的 scope_id。
+func personalScopeID(userID string) string { return "p:" + userID }
+
+func teamScopeID(teamID string) string { return "t:" + teamID }
+
 // syncRecipe 造一条待同步的菜谱，三个子集合给空切片而不是 nil：空数组才表达得出「清空」。
-func syncRecipe(id, name string, updatedAt time.Time, isPublic int16) model.Recipe {
+func syncRecipe(id, name string, updatedAt time.Time, scopeID string) model.Recipe {
 	return model.Recipe{
 		ID:          id,
+		ScopeID:     scopeID,
 		Name:        name,
-		IsPublic:    isPublic,
 		CreatedAt:   updatedAt.Add(-time.Hour),
 		UpdatedAt:   updatedAt,
 		Steps:       []model.RecipeStep{},
@@ -112,12 +117,12 @@ func TestTwoDevicesConvergeOnRecipeEdit(t *testing.T) {
 		labelV2  = "lbl-v2"
 	)
 
-	base := syncRecipe(recipeID, "原始菜谱", now.Add(-3*time.Hour), 1)
+	base := syncRecipe(recipeID, "原始菜谱", now.Add(-3*time.Hour), personalScopeID(a))
 	base.Steps = []model.RecipeStep{{ID: stepBase, SortOrder: 0, Text: "原始步骤"}}
 	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{base}})
 
 	// 设备 1 离线期间的修改
-	v1 := syncRecipe(recipeID, "设备1版", now.Add(-2*time.Hour), 1)
+	v1 := syncRecipe(recipeID, "设备1版", now.Add(-2*time.Hour), personalScopeID(a))
 	v1.Steps = []model.RecipeStep{
 		{ID: stepV1, SortOrder: 0, Text: "设备1的步骤"},
 		{ID: stepV1 + "-b", SortOrder: 1, Text: "设备1的步骤2"},
@@ -126,7 +131,7 @@ func TestTwoDevicesConvergeOnRecipeEdit(t *testing.T) {
 	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{v1}})
 
 	// 设备 2 离线期间的修改，时间更晚
-	v2 := syncRecipe(recipeID, "设备2版", now.Add(-1*time.Hour), 1)
+	v2 := syncRecipe(recipeID, "设备2版", now.Add(-1*time.Hour), personalScopeID(a))
 	v2.Steps = []model.RecipeStep{{ID: stepV2, SortOrder: 0, Text: "设备2的步骤"}}
 	v2.LabelIDs = []string{labelV2}
 	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{v2}})
@@ -156,9 +161,9 @@ func TestTwoDevicesConvergeOnRecipeEdit(t *testing.T) {
 	if got.Name != "设备2版" {
 		t.Errorf("拉回来的菜谱名 = %q, want 设备2版", got.Name)
 	}
-	// is_public 是菜谱主人自己的选择，入库后必须原样回传（INSERT 与 UPDATE 两条路径都走过）
-	if got.IsPublic != 1 {
-		t.Errorf("拉回来的 is_public = %d, want 1", got.IsPublic)
+	// 范围入库后必须原样回传（INSERT 与 UPDATE 两条路径都走过）：客户端靠它写本地 scope_id
+	if got.ScopeID != personalScopeID(a) {
+		t.Errorf("拉回来的 scope_id = %q, want %q", got.ScopeID, personalScopeID(a))
 	}
 	if len(got.Steps) != 1 || got.Steps[0].ID != stepV2 {
 		t.Errorf("拉回来的步骤 = %+v, want 只有 %s", got.Steps, stepV2)
@@ -180,12 +185,12 @@ func TestNonOwnerCannotOverwriteRecipe(t *testing.T) {
 
 	now := time.Now().UTC()
 	recipeID := "r-" + uuid.NewString()
-	owned := syncRecipe(recipeID, "A的菜谱", now.Add(-time.Hour), 0)
+	owned := syncRecipe(recipeID, "A的菜谱", now.Add(-time.Hour), personalScopeID(a))
 	owned.Steps = []model.RecipeStep{{ID: "st-a", SortOrder: 0, Text: "A的步骤"}}
 	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{owned}})
 
 	// B 拿着一模一样的 id、伪造 owner_id 与更晚的 updated_at 试图覆盖
-	forged := syncRecipe(recipeID, "被B篡改", now, 0)
+	forged := syncRecipe(recipeID, "被B篡改", now, personalScopeID(b))
 	forged.OwnerID = b
 	forged.Steps = []model.RecipeStep{{ID: "st-b", SortOrder: 0, Text: "B的步骤"}}
 	mustPush(t, svc, b, model.SyncPayload{Recipes: []model.Recipe{forged}})
@@ -244,7 +249,7 @@ func TestConcurrentSyncTransactionsDoNotSkipChanges(t *testing.T) {
 		wg.Add(1)
 		go func(i int, id string) {
 			defer wg.Done()
-			r := syncRecipe(id, fmt.Sprintf("并发菜谱%d", i), time.Now().UTC().Add(time.Duration(i)*time.Second), 0)
+			r := syncRecipe(id, fmt.Sprintf("并发菜谱%d", i), time.Now().UTC().Add(time.Duration(i)*time.Second), personalScopeID(a))
 			if _, err := svc.Sync(ctx, a, model.SyncRequest{
 				LocalChanges: model.SyncPayload{Recipes: []model.Recipe{r}},
 			}); err != nil {
@@ -292,9 +297,9 @@ loop:
 	}
 }
 
-// spec §7.4：字典是全局共享的，同名即同一行。A、B 各自建「五花肉」→
-// 库里只有一行，且 B 的菜谱引用被 remap 到 A 那一行的 id 上。
-func TestDictSameNameDedupesAcrossUsers(t *testing.T) {
+// spec §7.4：同一个范围内（这里是一个账号的两台设备）同名即同一行：库里只有一行，
+// 后建那份的菜谱引用被 remap 到先建那一行的 id 上。跨范围不合并，见 TestMergeDictScopedSameName。
+func TestDictSameNameDedupesWithinScope(t *testing.T) {
 	pool := filesTestDB(t)
 	svc := NewSyncService(pool)
 	ctx := context.Background()
@@ -305,48 +310,35 @@ func TestDictSameNameDedupesAcrossUsers(t *testing.T) {
 
 	ingA := "ing-a-" + uuid.NewString()
 	mustPush(t, svc, a, model.SyncPayload{Ingredients: []model.Ingredient{
-		{ID: ingA, Name: "五花肉", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour)},
+		{ID: ingA, ScopeID: personalScopeID(a), Name: "五花肉", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour)},
 	}})
 
 	ingB := "ing-b-" + uuid.NewString()
 	recipeID := "r-" + uuid.NewString()
-	recipe := syncRecipe(recipeID, "回锅肉", now, 0)
+	recipe := syncRecipe(recipeID, "回锅肉", now, personalScopeID(b))
 	recipe.Ingredients = []model.RecipeIngredient{{ID: "ri-" + uuid.NewString(), IngredientID: ingB, SortOrder: 0}}
 	mustPush(t, svc, b, model.SyncPayload{
-		Ingredients: []model.Ingredient{{ID: ingB, Name: "五花肉", CreatedAt: now, UpdatedAt: now}},
+		Ingredients: []model.Ingredient{{ID: ingB, ScopeID: personalScopeID(b), Name: "五花肉", CreatedAt: now, UpdatedAt: now}},
 		Recipes:     []model.Recipe{recipe},
 	})
 
-	var rowID string
-	if err := pool.QueryRow(ctx, `SELECT id FROM ingredients WHERE name = '五花肉'`).Scan(&rowID); err != nil {
-		t.Fatalf("查询「五花肉」失败: %v", err)
-	}
-	if rowID != ingA {
-		t.Errorf("同名食材应合并到先建的 %s，实际 %s", ingA, rowID)
-	}
 	var count int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM ingredients WHERE name = '五花肉'`).Scan(&count); err != nil {
-		t.Fatal(err)
+		t.Fatalf("查询「五花肉」失败: %v", err)
 	}
-	if count != 1 {
-		t.Errorf("同名食材应只有一行，实际 %d 行", count)
+	if count != 2 {
+		t.Errorf("两个范围的同名食材各留一行，want 2，实际 %d 行", count)
 	}
 
-	// B 被丢弃的那个 id 不能单独存在，且菜谱引用必须被 remap 到存活的那一行
-	var exists bool
-	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM ingredients WHERE id = $1)`, ingB).Scan(&exists); err != nil {
-		t.Fatal(err)
-	}
-	if exists {
-		t.Errorf("被合并掉的食材 id %s 不应单独存在", ingB)
-	}
+	// B 的菜谱引用仍指向自己那条食材（没有跨范围 remap）
 	var gotIngredient string
 	if err := pool.QueryRow(ctx, `SELECT ingredient_id FROM recipe_ingredients WHERE recipe_id = $1`, recipeID).Scan(&gotIngredient); err != nil {
 		t.Fatalf("查询菜谱引用失败: %v", err)
 	}
-	if gotIngredient != ingA {
-		t.Errorf("菜谱引用的 ingredient_id = %s, want %s（引用没有 remap）", gotIngredient, ingA)
+	if gotIngredient != ingB {
+		t.Errorf("菜谱引用的 ingredient_id = %s, want %s（跨范围不该 remap）", gotIngredient, ingB)
 	}
+	_ = ingA
 }
 
 // 私人菜谱只有作者本人可见（spec §7.5 的可见范围）。
@@ -359,7 +351,7 @@ func TestPrivateRecipesInvisibleToOthers(t *testing.T) {
 
 	recipeID := "r-" + uuid.NewString()
 	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{
-		syncRecipe(recipeID, "A的私人菜谱", time.Now().UTC(), 0),
+		syncRecipe(recipeID, "A的私人菜谱", time.Now().UTC(), personalScopeID(a)),
 	}})
 
 	if got := findRecipe(mustPull(t, svc, a, 0).RemoteChanges.Recipes, recipeID); got == nil {
@@ -367,140 +359,6 @@ func TestPrivateRecipesInvisibleToOthers(t *testing.T) {
 	}
 	if got := findRecipe(mustPull(t, svc, b, 0).RemoteChanges.Recipes, recipeID); got != nil {
 		t.Errorf("B 不该看到 A 的私人菜谱")
-	}
-}
-
-// addFavorite 直接往库里插一条收藏：这里要的是「收藏行已存在」这个状态，不关心 server_seq 是否被推进，
-// 所以绕过 CommunityService.Favorite 直接写表。
-func addFavorite(t *testing.T, pool *pgxpool.Pool, userID, recipeID string) {
-	t.Helper()
-	if _, err := pool.Exec(context.Background(),
-		`INSERT INTO favorites (user_id, recipe_id) VALUES ($1, $2)`, userID, recipeID); err != nil {
-		t.Fatalf("插入收藏失败: %v", err)
-	}
-}
-
-// 我收藏的公开菜谱要进我的可见范围（spec §7.3）：收藏之前看不到，收藏之后增量里带完整正文与子行。
-func TestFavoritedPublicRecipeIsPulled(t *testing.T) {
-	pool := filesTestDB(t)
-	svc := NewSyncService(pool)
-
-	a := seedUser(t, pool)
-	b := seedUser(t, pool)
-	now := time.Now().UTC()
-	recipeID := "r-" + uuid.NewString()
-
-	recipe := syncRecipe(recipeID, "A的公开菜", now.Add(-time.Hour), 1)
-	recipe.Steps = []model.RecipeStep{{ID: "st-fav", SortOrder: 0, Text: "A的步骤"}}
-	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{recipe}})
-
-	// 收藏之前：公开菜谱对 B 不可见（只有作者本人）
-	if got := findRecipe(mustPull(t, svc, b, 0).RemoteChanges.Recipes, recipeID); got != nil {
-		t.Fatalf("收藏之前 B 不该看到公开菜谱，实际: %+v", got)
-	}
-
-	// A 收藏自己的、B 收藏 A 的：两人的可见范围都要含这条
-	addFavorite(t, pool, a, recipeID)
-	addFavorite(t, pool, b, recipeID)
-
-	got := findRecipe(mustPull(t, svc, b, 0).RemoteChanges.Recipes, recipeID)
-	if got == nil {
-		t.Fatalf("B 收藏后，增量里应拉到 %s", recipeID)
-	}
-	if got.OwnerID != a {
-		t.Errorf("拉回来的 owner_id = %s, want A(%s)", got.OwnerID, a)
-	}
-	if len(got.Steps) != 1 || got.Steps[0].ID != "st-fav" {
-		t.Errorf("收藏拉回来的菜谱要带完整正文，got %+v", got.Steps)
-	}
-}
-
-// 隐私回归网（spec §7.3）：作者取消公开后，收藏行还在，但正文与子行都不能再下发给收藏者。
-// 断言必须落到 RemoteChanges.Recipes 找不到该 id，不能只看 FavoriteRecipeIDs。
-func TestUnpublishedRecipeBodyIsNotPulled(t *testing.T) {
-	pool := filesTestDB(t)
-	svc := NewSyncService(pool)
-
-	a := seedUser(t, pool)
-	b := seedUser(t, pool)
-	now := time.Now().UTC()
-	recipeID := "r-" + uuid.NewString()
-	const stepID = "st-unpub"
-
-	published := syncRecipe(recipeID, "A的公开菜", now.Add(-time.Hour), 1)
-	published.Steps = []model.RecipeStep{{ID: stepID, SortOrder: 0, Text: "A的步骤"}}
-	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{published}})
-	addFavorite(t, pool, b, recipeID)
-
-	// 取消公开前：收藏者看得到正文与子行
-	before := mustPull(t, svc, b, 0)
-	if findRecipe(before.RemoteChanges.Recipes, recipeID) == nil {
-		t.Fatalf("取消公开前，收藏者应能看到 %s", recipeID)
-	}
-
-	// A 取消公开。子行原样带着，方便断言「子行没下发」而不是「子行被清空了」。
-	unpublished := syncRecipe(recipeID, "A的公开菜", now, 0)
-	unpublished.Steps = []model.RecipeStep{{ID: stepID, SortOrder: 0, Text: "A的步骤"}}
-	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{unpublished}})
-
-	after := mustPull(t, svc, b, before.ServerSeq)
-	if got := findRecipe(after.RemoteChanges.Recipes, recipeID); got != nil {
-		t.Errorf("取消公开后，收藏者的增量里不该再有这条菜谱：%+v", got)
-	}
-	for _, r := range after.RemoteChanges.Recipes {
-		for _, st := range r.Steps {
-			if st.ID == stepID {
-				t.Errorf("取消公开后不该下发它的子行 %s（隐私泄漏）", stepID)
-			}
-		}
-	}
-}
-
-// `favorite_recipe_ids` 是客户端「整表替换本地收藏」的唯一依据，所以它必须与正文可见范围同口径：
-// 作者取消公开就不再算有效收藏，重新公开又回来。
-func TestFavoriteRecipeIDsExcludeUnpublished(t *testing.T) {
-	pool := filesTestDB(t)
-	svc := NewSyncService(pool)
-
-	a := seedUser(t, pool)
-	b := seedUser(t, pool)
-	c := seedUser(t, pool)
-	now := time.Now().UTC()
-	recipeID := "r-" + uuid.NewString()
-
-	published := syncRecipe(recipeID, "A的公开菜", now.Add(-time.Hour), 1)
-	published.Steps = []model.RecipeStep{{ID: "st-" + uuid.NewString(), SortOrder: 0, Text: "A的步骤"}}
-	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{published}})
-	addFavorite(t, pool, b, recipeID)
-
-	// 没有收藏的人拿到空切片而不是 nil
-	if got := mustPull(t, svc, c, 0).FavoriteRecipeIDs; got == nil {
-		t.Error("没有收藏时 FavoriteRecipeIDs 应是空切片而不是 nil")
-	}
-
-	first := mustPull(t, svc, b, 0)
-	if !slices.Contains(first.FavoriteRecipeIDs, recipeID) {
-		t.Fatalf("公开时收藏集合应含 %s，got %v", recipeID, first.FavoriteRecipeIDs)
-	}
-
-	// 作者取消公开：收藏行还在，但这条不再算「有效收藏」
-	unpublished := syncRecipe(recipeID, "A的公开菜", now, 0)
-	unpublished.Steps = published.Steps
-	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{unpublished}})
-
-	second := mustPull(t, svc, b, first.ServerSeq)
-	if slices.Contains(second.FavoriteRecipeIDs, recipeID) {
-		t.Errorf("取消公开后收藏集合不该含 %s，got %v", recipeID, second.FavoriteRecipeIDs)
-	}
-
-	// 重新公开：收藏关系没被删，它自动回到收藏集合，正文也自动回到客户端
-	republished := syncRecipe(recipeID, "A的公开菜", now.Add(time.Minute), 1)
-	republished.Steps = published.Steps
-	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{republished}})
-
-	third := mustPull(t, svc, b, second.ServerSeq)
-	if !slices.Contains(third.FavoriteRecipeIDs, recipeID) {
-		t.Errorf("重新公开后收藏集合应又含 %s，got %v", recipeID, third.FavoriteRecipeIDs)
 	}
 }
 
@@ -598,7 +456,7 @@ func TestSyncReadPhaseIsSingleSnapshot(t *testing.T) {
 	// R1 引用一张已登记的图，读阶段的 queryFiles 才会真的去查 files
 	file := newFileName()
 	fileRef := file
-	r1 := syncRecipe("r-"+uuid.NewString(), "快照菜谱", time.Now().UTC().Add(-time.Hour), 0)
+	r1 := syncRecipe("r-"+uuid.NewString(), "快照菜谱", time.Now().UTC().Add(-time.Hour), personalScopeID(a))
 	r1.CoverPath = &fileRef
 	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{r1}})
 	if _, err := pool.Exec(ctx, `INSERT INTO files (name, owner_id, size) VALUES ($1, $2, 1)`, file, a); err != nil {
@@ -638,8 +496,8 @@ func TestSyncReadPhaseIsSingleSnapshot(t *testing.T) {
 	// 快照已建立，此刻提交一条新菜谱
 	r2ID := "r-" + uuid.NewString()
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO recipes (id, owner_id, is_public, name, cover_path, category_id, created_at, updated_at)
-		VALUES ($1, $2, 0, '并发提交', NULL, '', NOW(), NOW())`, r2ID, a); err != nil {
+		INSERT INTO recipes (id, owner_id, name, cover_path, category_id, created_at, updated_at)
+		VALUES ($1, $2, '并发提交', NULL, '', NOW(), NOW())`, r2ID, a); err != nil {
 		t.Fatalf("插入并发菜谱失败: %v", err)
 	}
 	var r2Seq int64
@@ -704,7 +562,7 @@ func TestSyncWritePhaseSerializesOnAdvisoryLock(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		_, err := svc.Sync(ctx, a, model.SyncRequest{LocalChanges: model.SyncPayload{
-			Recipes: []model.Recipe{syncRecipe(recipeID, "被锁挡住的菜谱", time.Now().UTC(), 0)},
+			Recipes: []model.Recipe{syncRecipe(recipeID, "被锁挡住的菜谱", time.Now().UTC(), personalScopeID(a))},
 		}})
 		done <- err
 	}()
@@ -745,7 +603,7 @@ func TestPullRecoversFromServerGenerationRollback(t *testing.T) {
 
 	recipeID := "r-" + uuid.NewString()
 	mustPush(t, svc, a, model.SyncPayload{
-		Recipes: []model.Recipe{syncRecipe(recipeID, "世代回退后的菜谱", time.Now().UTC(), 0)},
+		Recipes: []model.Recipe{syncRecipe(recipeID, "世代回退后的菜谱", time.Now().UTC(), personalScopeID(a))},
 	})
 
 	maxSeq, err := maxServerSeq(ctx, pool)
@@ -834,5 +692,69 @@ func TestMergeDictScopedSameName(t *testing.T) {
 		if want[it.id] != it.team {
 			t.Errorf("食材 %s 的 team_id = %s, want %s", it.id, it.team, want[it.id])
 		}
+	}
+}
+
+// Review Focus ①：范围就是权限边界。B 冒用 A 的个人范围整条跳过；B 在自己的团队里建的菜谱
+// 落库归属该团队，队友互相可见；各自的私人菜谱互不可见（spec §6 / §8.2）。
+func TestRecipeScopeIsolation(t *testing.T) {
+	pool := filesTestDB(t)
+	svc := NewSyncService(pool)
+	ctx := context.Background()
+
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+	teamID := seedTeam(t, pool, a)
+	seedTeamMember(t, pool, teamID, b)
+
+	now := time.Now().UTC()
+
+	// B 冒用 A 的个人范围
+	foreignID := "r-" + uuid.NewString()
+	mustPush(t, svc, b, model.SyncPayload{Recipes: []model.Recipe{
+		syncRecipe(foreignID, "冒用A的范围", now, personalScopeID(a)),
+	}})
+	var exists bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM recipes WHERE id = $1)`, foreignID).Scan(&exists); err != nil {
+		t.Fatalf("查询菜谱失败: %v", err)
+	}
+	if exists {
+		t.Error("越权范围的菜谱不该落库")
+	}
+
+	// B 在自己的团队里建菜谱：落库且归属该团队
+	teamRecipeB := "r-" + uuid.NewString()
+	mustPush(t, svc, b, model.SyncPayload{Recipes: []model.Recipe{
+		syncRecipe(teamRecipeB, "B在团队里建的", now, teamScopeID(teamID)),
+	}})
+	var teamOfB *string
+	if err := pool.QueryRow(ctx, `SELECT team_id::text FROM recipes WHERE id = $1`, teamRecipeB).Scan(&teamOfB); err != nil {
+		t.Fatalf("团队菜谱 %s 应落库: %v", teamRecipeB, err)
+	}
+	if teamOfB == nil || *teamOfB != teamID {
+		t.Errorf("团队菜谱的 team_id = %v, want %s", teamOfB, teamID)
+	}
+
+	// A 在同团队建的菜谱，B 拉得到
+	teamRecipeA := "r-" + uuid.NewString()
+	mustPush(t, svc, a, model.SyncPayload{Recipes: []model.Recipe{
+		syncRecipe(teamRecipeA, "A在团队里建的", now, teamScopeID(teamID)),
+	}})
+	if got := findRecipe(mustPull(t, svc, b, 0).RemoteChanges.Recipes, teamRecipeA); got == nil {
+		t.Errorf("团队成员 B 应拉到队友的菜谱 %s", teamRecipeA)
+	} else if got.ScopeID != teamScopeID(teamID) {
+		t.Errorf("团队菜谱的 scope_id = %q, want %q", got.ScopeID, teamScopeID(teamID))
+	}
+
+	// B 的私人菜谱不出现在 A 的拉取里
+	bPrivate := "r-" + uuid.NewString()
+	mustPush(t, svc, b, model.SyncPayload{Recipes: []model.Recipe{
+		syncRecipe(bPrivate, "B的私人菜谱", now, personalScopeID(b)),
+	}})
+	if got := findRecipe(mustPull(t, svc, a, 0).RemoteChanges.Recipes, bPrivate); got != nil {
+		t.Errorf("A 不该看到 B 的私人菜谱：%+v", got)
+	}
+	if got := findRecipe(mustPull(t, svc, b, 0).RemoteChanges.Recipes, bPrivate); got == nil {
+		t.Errorf("B 应能看到自己的私人菜谱")
 	}
 }

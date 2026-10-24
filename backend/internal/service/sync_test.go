@@ -204,8 +204,8 @@ func TestMergeRecipeInsertsWithUploaderAsOwner(t *testing.T) {
 	now := time.Now().UTC()
 	q := newSyncQuerier(fakeRow{scanErr: pgx.ErrNoRows})
 
-	err := NewSyncService(nil).mergeRecipe(context.Background(), q, "user-1", nil,
-		model.Recipe{ID: "r-1", OwnerID: "attacker", Name: "红烧肉", CategoryID: "c-1", IsPublic: 1,
+	err := NewSyncService(nil).mergeRecipe(context.Background(), q, "user-1", testScope("user-1"), nil,
+		model.Recipe{ID: "r-1", OwnerID: "attacker", Name: "红烧肉", CategoryID: "c-1",
 			CreatedAt: now, UpdatedAt: now})
 	if err != nil {
 		t.Fatalf("mergeRecipe: %v", err)
@@ -213,9 +213,9 @@ func TestMergeRecipeInsertsWithUploaderAsOwner(t *testing.T) {
 	if got := execLike(t, q, "INSERT INTO recipes").args[1]; got != "user-1" {
 		t.Errorf("owner_id 必须取当前用户，got %v", got)
 	}
-	// INSERT 参数顺序：id, owner_id, is_public, name, ...
-	if got := execLike(t, q, "INSERT INTO recipes").args[2]; got != int16(1) {
-		t.Errorf("is_public 应落请求里的值，got %v", got)
+	// INSERT 参数顺序：id, owner_id, team_id, name, ...；个人范围的 team_id 必须是 NULL
+	if got, ok := execLike(t, q, "INSERT INTO recipes").args[2].(*string); !ok || got != nil {
+		t.Errorf("个人范围的 team_id 应为 NULL，got %v", execLike(t, q, "INSERT INTO recipes").args[2])
 	}
 	for _, e := range q.execs {
 		for _, a := range e.args {
@@ -229,9 +229,9 @@ func TestMergeRecipeInsertsWithUploaderAsOwner(t *testing.T) {
 // 库里那行是别人的 → 越权写入静默跳过，不报错也不产生任何写入。
 func TestMergeRecipeSkipsWhenNotOwner(t *testing.T) {
 	remote := time.Now().UTC()
-	q := newSyncQuerier(fakeRow{vals: []any{"owner-other", remote}})
+	q := newSyncQuerier(fakeRow{vals: []any{"owner-other", nil, remote}})
 
-	err := NewSyncService(nil).mergeRecipe(context.Background(), q, "user-1", nil,
+	err := NewSyncService(nil).mergeRecipe(context.Background(), q, "user-1", testScope("user-1"), nil,
 		model.Recipe{ID: "r-1", Name: "别人的菜", CategoryID: "c-1", UpdatedAt: remote.Add(time.Hour)})
 	if err != nil {
 		t.Fatalf("越权跳过不该报错：%v", err)
@@ -253,9 +253,9 @@ func TestMergeRecipeSkipsOlder(t *testing.T) {
 		{"相同", remote},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			q := newSyncQuerier(fakeRow{vals: []any{"user-1", remote}})
+			q := newSyncQuerier(fakeRow{vals: []any{"user-1", nil, remote}})
 
-			err := NewSyncService(nil).mergeRecipe(context.Background(), q, "user-1", nil,
+			err := NewSyncService(nil).mergeRecipe(context.Background(), q, "user-1", testScope("user-1"), nil,
 				model.Recipe{ID: "r-1", Name: "红烧肉", CategoryID: "c-1", UpdatedAt: tc.incoming})
 			if err != nil {
 				t.Fatalf("mergeRecipe: %v", err)
@@ -273,9 +273,9 @@ func TestMergeRecipeSkipsOlder(t *testing.T) {
 // 更新命中时三张子表整组替换：UPDATE 父行 → DELETE 全部子行 → 按 incoming 重插。
 func TestMergeRecipeReplacesChildrenWholesale(t *testing.T) {
 	remote := time.Now().UTC()
-	q := newSyncQuerier(fakeRow{vals: []any{"user-1", remote}})
+	q := newSyncQuerier(fakeRow{vals: []any{"user-1", nil, remote}})
 
-	err := NewSyncService(nil).mergeRecipe(context.Background(), q, "user-1", nil, model.Recipe{
+	err := NewSyncService(nil).mergeRecipe(context.Background(), q, "user-1", testScope("user-1"), nil, model.Recipe{
 		ID: "r-1", Name: "红烧肉", CategoryID: "c-1", UpdatedAt: remote.Add(time.Minute),
 		Steps:       []model.RecipeStep{{ID: "s-1", SortOrder: 1, Text: "切肉"}},
 		Ingredients: []model.RecipeIngredient{{ID: "ri-1", IngredientID: "i-1", SortOrder: 1}},
@@ -316,7 +316,7 @@ func TestMergeRecipeRemapsIngredientReference(t *testing.T) {
 	q := newSyncQuerier(fakeRow{scanErr: pgx.ErrNoRows})
 	unit := "u-X"
 
-	err := NewSyncService(nil).mergeRecipe(context.Background(), q, "user-1",
+	err := NewSyncService(nil).mergeRecipe(context.Background(), q, "user-1", testScope("user-1"),
 		map[string]string{"ing-X": "ing-Y", "u-X": "u-Y"},
 		model.Recipe{ID: "r-1", Name: "红烧肉", CategoryID: "c-1", CreatedAt: now, UpdatedAt: now,
 			Ingredients: []model.RecipeIngredient{{ID: "ri-1", IngredientID: "ing-X", UnitID: &unit, SortOrder: 1}}})
@@ -339,7 +339,7 @@ func TestMergeRecipeRemapsCategoryAndLabels(t *testing.T) {
 	now := time.Now().UTC()
 	q := newSyncQuerier(fakeRow{scanErr: pgx.ErrNoRows})
 
-	err := NewSyncService(nil).mergeRecipe(context.Background(), q, "user-1",
+	err := NewSyncService(nil).mergeRecipe(context.Background(), q, "user-1", testScope("user-1"),
 		map[string]string{"X": "Y"},
 		model.Recipe{ID: "r-1", Name: "红烧肉", CategoryID: "X", CreatedAt: now, UpdatedAt: now,
 			LabelIDs: []string{"X", "X"}})
@@ -347,7 +347,7 @@ func TestMergeRecipeRemapsCategoryAndLabels(t *testing.T) {
 		t.Fatalf("mergeRecipe: %v", err)
 	}
 
-	// INSERT 参数顺序：id, owner_id, is_public, name, cover_path, category_id, ...
+	// INSERT 参数顺序：id, owner_id, team_id, name, cover_path, category_id, ...
 	if got := execLike(t, q, "INSERT INTO recipes").args[5]; got != "Y" {
 		t.Errorf("category_id 应重写为 Y，got %v", got)
 	}

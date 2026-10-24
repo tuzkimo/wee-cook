@@ -35,6 +35,14 @@ func (r fakeRow) Scan(dest ...any) error {
 			*d = v.(time.Time)
 		case *string:
 			*d = v.(string)
+		case **string:
+			// 可空字符串列（team_id）：nil 表示 SQL NULL
+			if v == nil {
+				*d = nil
+			} else {
+				got := v.(string)
+				*d = &got
+			}
 		case *bool:
 			*d = v.(bool)
 		}

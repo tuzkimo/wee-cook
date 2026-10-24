@@ -209,11 +209,11 @@ func TestRemoteRecipesFilteredToMyVisibleScope(t *testing.T) {
 			}
 
 			rq := queryLike(t, q, "FROM recipes")
-			if !strings.Contains(rq.sql, recipesVisibleScope) {
-				t.Errorf("菜谱增量查询必须带可见范围 %q，got %s", recipesVisibleScope, rq.sql)
+			if !strings.Contains(rq.sql, visibleRecipesSQL) {
+				t.Errorf("菜谱增量查询必须带可见范围 %q，got %s", visibleRecipesSQL, rq.sql)
 			}
-			if strings.Contains(rq.sql, "team_id") {
-				t.Errorf("团队已删除，可见范围不该再出现 team_id：%s", rq.sql)
+			if !strings.Contains(rq.sql, "team_members") {
+				t.Errorf("可见范围必须含「我加入的团队」那一支：%s", rq.sql)
 			}
 			if len(rq.args) != 2 || rq.args[1] != userID {
 				t.Errorf("可见范围只该有「游标 + 当前用户」两个参数，且 $2 绑当前用户；got %+v", rq.args)
@@ -264,7 +264,7 @@ func TestBackfillAddsReferencedDictRows(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	q := &pullQuerier{rows: map[string][][]any{
-		"FROM recipes r":                      {{"r-1", "me", int16(0), "红烧肉", nil, "cat-1", now, now, nil, "测试", "data:image/jpeg;base64,AV"}},
+		"FROM recipes r":                      {{"r-1", "me", nil, "红烧肉", nil, "cat-1", now, now, nil, "测试", "data:image/jpeg;base64,AV"}},
 		"FROM recipe_steps":                   {{"r-1", "s-1", 1, "切肉", nil}},
 		"FROM recipe_ingredients":             {{"r-1", "ri-1", "ing-1", 200.0, "unit-1", 1}},
 		"FROM recipe_labels":                  {{"r-1", "lab-1"}},
@@ -341,8 +341,8 @@ func TestFilesListedOnlyForReturnedRecipes(t *testing.T) {
 	q := &pullQuerier{
 		rows: map[string][][]any{
 			"FROM recipes r": {
-				{"r-1", "me", int16(0), "红烧肉", "a.jpg", "cat-1", now, now, nil, "测试", nil},
-				{"r-2", "me", int16(0), "糖醋排骨", "a.jpg", "cat-1", now, now, nil, "测试", nil}, // 与 r-1 同一张封面：去重
+				{"r-1", "me", nil, "红烧肉", "a.jpg", "cat-1", now, now, nil, "测试", nil},
+				{"r-2", "me", nil, "糖醋排骨", "a.jpg", "cat-1", now, now, nil, "测试", nil}, // 与 r-1 同一张封面：去重
 			},
 			"FROM recipe_steps": {
 				{"r-1", "s-1", 1, "切肉", "b.jpg"},
@@ -397,7 +397,7 @@ func TestCursorIsSnapshotMax(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	q := &pullQuerier{rows: map[string][][]any{
-		"FROM recipes r": {{"r-1", "me", int16(0), "红烧肉", nil, "cat-1", now, now, nil, "测试", nil}},
+		"FROM recipes r": {{"r-1", "me", nil, "红烧肉", nil, "cat-1", now, now, nil, "测试", nil}},
 		"MAX(s)":         {{int64(431)}},
 	}}
 
@@ -439,9 +439,9 @@ func TestMergeLocalChangesOrderAndRemap(t *testing.T) {
 
 	err := NewSyncService(nil).mergeLocalChanges(ctx, q, "user-1",
 		model.SyncPayload{
-			Ingredients: []model.Ingredient{{ID: "i-X", Name: "盐", CreatedAt: now, UpdatedAt: now}},
+			Ingredients: []model.Ingredient{{ID: "i-X", ScopeID: "p:user-1", Name: "盐", CreatedAt: now, UpdatedAt: now}},
 			Recipes: []model.Recipe{
-				{ID: "r-1", Name: "我的菜", CategoryID: "cat-1", CreatedAt: now, UpdatedAt: now,
+				{ID: "r-1", ScopeID: "p:user-1", Name: "我的菜", CategoryID: "cat-1", CreatedAt: now, UpdatedAt: now,
 					Ingredients: []model.RecipeIngredient{{ID: "ri-1", IngredientID: "i-X", SortOrder: 1}}},
 			},
 		})

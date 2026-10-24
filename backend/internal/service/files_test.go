@@ -76,8 +76,14 @@ func seedUser(t *testing.T, pool *pgxpool.Pool) string {
 	return id
 }
 
-// seedRecipe 插入一条菜谱；coverPath 为 nil 表示无封面，deleted 决定 deleted_at。
+// seedRecipe 插入一条个人菜谱（team_id 为空）；coverPath 为 nil 表示无封面，deleted 决定 deleted_at。
 func seedRecipe(t *testing.T, pool *pgxpool.Pool, ownerID string, coverPath *string, deleted bool) string {
+	t.Helper()
+	return seedTeamRecipe(t, pool, ownerID, nil, coverPath, deleted)
+}
+
+// seedTeamRecipe 插入一条菜谱；teamID 为 nil 是个人菜谱，否则是团队菜谱。
+func seedTeamRecipe(t *testing.T, pool *pgxpool.Pool, ownerID string, teamID *string, coverPath *string, deleted bool) string {
 	t.Helper()
 	var deletedAt *time.Time
 	if deleted {
@@ -86,23 +92,21 @@ func seedRecipe(t *testing.T, pool *pgxpool.Pool, ownerID string, coverPath *str
 	}
 	id := "r-" + uuid.NewString()
 	if _, err := pool.Exec(context.Background(), `
-		INSERT INTO recipes (id, owner_id, is_public, name, cover_path, category_id, created_at, updated_at, deleted_at)
-		VALUES ($1, $2, 0, '红烧肉', $3, 'cat-1', NOW(), NOW(), $4)`,
-		id, ownerID, coverPath, deletedAt); err != nil {
+		INSERT INTO recipes (id, owner_id, team_id, name, cover_path, category_id, created_at, updated_at, deleted_at)
+		VALUES ($1, $2, $3, '红烧肉', $4, 'cat-1', NOW(), NOW(), $5)`,
+		id, ownerID, teamID, coverPath, deletedAt); err != nil {
 		t.Fatalf("插入菜谱失败: %v", err)
 	}
 	return id
 }
 
-// seedPublicRecipe 在 seedRecipe 之上把 is_public 置 1。不改 seedRecipe 签名：它有十几个调用点，
-// 大部分在清单外的文件里，加参数会牵动它们。
-func seedPublicRecipe(t *testing.T, pool *pgxpool.Pool, ownerID string, coverPath *string, deleted bool) string {
+// seedTeamMember 把 userID 加进团队，角色固定 member。
+func seedTeamMember(t *testing.T, pool *pgxpool.Pool, teamID, userID string) {
 	t.Helper()
-	id := seedRecipe(t, pool, ownerID, coverPath, deleted)
-	if _, err := pool.Exec(context.Background(), `UPDATE recipes SET is_public = 1 WHERE id = $1`, id); err != nil {
-		t.Fatalf("置为公开失败: %v", err)
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO team_members (team_id, user_id, role) VALUES ($1, $2, 'member')`, teamID, userID); err != nil {
+		t.Fatalf("插入团队成员失败: %v", err)
 	}
-	return id
 }
 
 func seedStepImage(t *testing.T, pool *pgxpool.Pool, recipeID, imagePath string) {
@@ -173,16 +177,51 @@ func TestCanReadSoftDeletedRecipeFile(t *testing.T) {
 	assertCanRead(t, svc, a, file, true)
 }
 
-// 公开菜谱是共享给「同一个服务器上的所有登录用户」的，图片必须跟着菜谱走（spec §5 / §8）。
-func TestCanReadPublicRecipeImageByStranger(t *testing.T) {
+// 团队菜谱是共享给「这个家庭的全部成员」的，图片跟着菜谱走（spec §6）：队友能读。
+func TestCanReadTeamRecipeImageByTeamMember(t *testing.T) {
 	svc, pool := newFileService(t)
 	a := seedUser(t, pool)
 	b := seedUser(t, pool)
+	teamID := seedTeam(t, pool, a)
+	seedTeamMember(t, pool, teamID, b)
+
 	file := newFileName()
-	seedPublicRecipe(t, pool, a, &file, false)
+	seedTeamRecipe(t, pool, a, &teamID, &file, false)
 
 	assertCanRead(t, svc, a, file, true)
 	assertCanRead(t, svc, b, file, true)
+}
+
+// 不在团队里的登录用户读不到（社区那套「同服务器全部可见」已经被删掉）。
+func TestCanReadTeamRecipeImageByNonMemberIsFalse(t *testing.T) {
+	svc, pool := newFileService(t)
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+	teamID := seedTeam(t, pool, a)
+
+	file := newFileName()
+	seedStepImage(t, pool, seedTeamRecipe(t, pool, a, &teamID, nil, false), file)
+
+	assertCanRead(t, svc, a, file, true)
+	assertCanRead(t, svc, b, file, false)
+}
+
+// 解散（软删 teams 行）后成员就读不到团队菜谱的图了：可见团队按 deleted_at IS NULL 过滤。
+func TestCanReadDissolvedTeamRecipeImageIsFalse(t *testing.T) {
+	svc, pool := newFileService(t)
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+	teamID := seedTeam(t, pool, a)
+	seedTeamMember(t, pool, teamID, b)
+
+	file := newFileName()
+	seedTeamRecipe(t, pool, a, &teamID, &file, false)
+	if _, err := pool.Exec(context.Background(), `UPDATE teams SET deleted_at = NOW() WHERE id = $1`, teamID); err != nil {
+		t.Fatalf("解散团队失败: %v", err)
+	}
+
+	assertCanRead(t, svc, a, file, false)
+	assertCanRead(t, svc, b, file, false)
 }
 
 func TestCanReadPrivateRecipeImageByStrangerIsFalse(t *testing.T) {
@@ -196,16 +235,21 @@ func TestCanReadPrivateRecipeImageByStrangerIsFalse(t *testing.T) {
 	assertCanRead(t, svc, b, file, false)
 }
 
-// deleted_at 只筛公开那条分支：公开菜谱删了，陌生人读不到；作者仍读得到。
-func TestCanReadDeletedPublicRecipeImageByStrangerIsFalse(t *testing.T) {
+// 删掉的团队菜谱：队友仍读得到图（可见范围不带 deleted_at），非成员读不到。
+func TestCanReadDeletedTeamRecipeImage(t *testing.T) {
 	svc, pool := newFileService(t)
 	a := seedUser(t, pool)
 	b := seedUser(t, pool)
+	c := seedUser(t, pool)
+	teamID := seedTeam(t, pool, a)
+	seedTeamMember(t, pool, teamID, b)
+
 	file := newFileName()
-	seedPublicRecipe(t, pool, a, &file, true)
+	seedTeamRecipe(t, pool, a, &teamID, &file, true)
 
 	assertCanRead(t, svc, a, file, true)
-	assertCanRead(t, svc, b, file, false)
+	assertCanRead(t, svc, b, file, true)
+	assertCanRead(t, svc, c, file, false)
 }
 
 func TestCanReadUnknownFileIsFalse(t *testing.T) {

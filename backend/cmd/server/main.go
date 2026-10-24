@@ -45,7 +45,6 @@ func main() {
 		log.Fatalf("创建 FILES_DIR %s: %v", cfg.FilesDir, err)
 	}
 	fileSvc := service.NewFileService(pool, cfg.FilesDir, cfg.MaxFileBytes)
-	communitySvc := service.NewCommunityService(pool)
 	aiSvc := service.NewAIService(cfg)
 
 	srv := &http.Server{
@@ -54,7 +53,6 @@ func main() {
 			auth:      handler.NewAuthHandler(authSvc),
 			sync:      handler.NewSyncHandler(syncSvc),
 			file:      handler.NewFileHandler(fileSvc),
-			community: handler.NewCommunityHandler(communitySvc),
 			ai:        handler.NewAIHandler(aiSvc),
 		}),
 		ReadTimeout:  15 * time.Second,

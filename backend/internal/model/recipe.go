@@ -19,7 +19,8 @@ type RecipeIngredient struct {
 }
 
 // Recipe 整条同步。OwnerID 只在响应里有意义，请求里带的值一律丢弃（服务端赋值，spec §7.1）。
-// IsPublic 0 = 私有（默认），1 = 公开到社区；由菜谱主人的客户端写入。
+// ScopeID 是客户端给出的范围形状：'p:<uid>' 个人、't:<teamId>' 团队。服务端落成 team_id + owner_id，
+// 回传时按库里的 team_id / owner_id 重新拼出同形状的值，客户端直接拿它写本地 scope_id（spec §8.1）。
 // OwnerNickname 只在响应里有意义（服务端 JOIN users 取），供客户端离线显示作者（spec §7.1）。
 // OwnerAvatarURL 同理，可空：没设头像的作者是 NULL，客户端回退到默认头像。
 // 三个子集合不加 omitempty：空数组要能表达「清空」。
@@ -28,7 +29,7 @@ type Recipe struct {
 	OwnerID        string             `json:"owner_id"`
 	OwnerNickname  string             `json:"owner_nickname"`
 	OwnerAvatarURL *string            `json:"owner_avatar_url"`
-	IsPublic       int16              `json:"is_public"`
+	ScopeID        string             `json:"scope_id"`
 	Name           string             `json:"name"`
 	CoverPath      *string            `json:"cover_path"`
 	CategoryID     string             `json:"category_id"`

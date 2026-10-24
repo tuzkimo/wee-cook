@@ -219,7 +219,7 @@ func (s *SyncService) mergeDict(ctx context.Context, tx dbQuerier, spec dictSpec
 // LWW 骨架不复用通用辅助：父行必须在同一次 FOR UPDATE 里同时拿到 owner_id 与 updated_at，
 // 而通用辅助只扫单值 updated_at。
 // shortcut: 整条替换以「只有作者能改」为前提，将来允许协作编辑同一条菜谱时必须回到行级 LWW（spec §7.3）。
-func (s *SyncService) mergeRecipe(ctx context.Context, tx dbQuerier, userID string, remap map[string]string, r model.Recipe) error {
+func (s *SyncService) mergeRecipe(ctx context.Context, tx dbQuerier, userID string, sc scope, remap map[string]string, r model.Recipe) error {
 	remapID := func(id string) string {
 		if to, ok := remap[id]; ok {
 			return to
@@ -239,17 +239,18 @@ func (s *SyncService) mergeRecipe(ctx context.Context, tx dbQuerier, userID stri
 	}
 
 	var remoteOwner string
+	var remoteTeamID *string
 	var remoteUpdatedAt time.Time
 	err := tx.QueryRow(ctx,
-		"SELECT owner_id, updated_at FROM recipes WHERE id = $1 FOR UPDATE", r.ID).
-		Scan(&remoteOwner, &remoteUpdatedAt)
+		"SELECT owner_id, team_id::text, updated_at FROM recipes WHERE id = $1 FOR UPDATE", r.ID).
+		Scan(&remoteOwner, &remoteTeamID, &remoteUpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO recipes (id, owner_id, is_public, name, cover_path, category_id, created_at, updated_at, deleted_at)
+			`INSERT INTO recipes (id, owner_id, team_id, name, cover_path, category_id, created_at, updated_at, deleted_at)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 			// owner_id 取当前用户：请求里带的 OwnerID 是客户端可伪造的，一律丢弃（spec §7.1）。
-			// is_public 取请求里的值：菜谱的主人就是当前用户，公开与否是他的选择。
-			r.ID, userID, r.IsPublic, r.Name, r.CoverPath, r.CategoryID, r.CreatedAt, r.UpdatedAt, r.DeletedAt,
+			// team_id 取解析好的范围：个人范围落 NULL，团队范围落团队 id。
+			r.ID, userID, sc.TeamID, r.Name, r.CoverPath, r.CategoryID, r.CreatedAt, r.UpdatedAt, r.DeletedAt,
 		); err != nil {
 			return err
 		}
@@ -261,13 +262,17 @@ func (s *SyncService) mergeRecipe(ctx context.Context, tx dbQuerier, userID stri
 	if remoteOwner != userID {
 		return nil
 	}
+	// 范围在更新时不改（不做菜谱换本）：库里那条不在这次推送的范围里就整条跳过。
+	if !sameTeam(remoteTeamID, sc.TeamID) {
+		return nil
+	}
 	if !r.UpdatedAt.After(remoteUpdatedAt) {
 		return nil
 	}
 	if _, err := tx.Exec(ctx,
-		`UPDATE recipes SET is_public=$1, name=$2, cover_path=$3, category_id=$4, updated_at=$5, deleted_at=$6,
-		        server_seq = nextval('global_server_seq') WHERE id=$7`,
-		r.IsPublic, r.Name, r.CoverPath, r.CategoryID, r.UpdatedAt, r.DeletedAt, r.ID,
+		`UPDATE recipes SET name=$1, cover_path=$2, category_id=$3, updated_at=$4, deleted_at=$5,
+		        server_seq = nextval('global_server_seq') WHERE id=$6`,
+		r.Name, r.CoverPath, r.CategoryID, r.UpdatedAt, r.DeletedAt, r.ID,
 	); err != nil {
 		return err
 	}
@@ -375,13 +380,7 @@ func (s *SyncService) pull(ctx context.Context, q dbQuerier, userID string, sinc
 			return nil, fmt.Errorf("getRemoteChanges (generation rollback): %w", err)
 		}
 	}
-	// 收藏集合只在这之后取一次：正常增量与回退重读两条路径都带得上同一份收藏集合。
-	// 它与增量走同一个只读快照。
-	favoriteIDs, err := s.favoriteRecipeIDs(ctx, q, userID)
-	if err != nil {
-		return nil, fmt.Errorf("read favorite recipe ids: %w", err)
-	}
-	return &model.SyncResponse{ServerSeq: cursor, RemoteChanges: remote, FavoriteRecipeIDs: favoriteIDs}, nil
+	return &model.SyncResponse{ServerSeq: cursor, RemoteChanges: remote}, nil
 }
 
 func maxServerSeq(ctx context.Context, q dbQuerier) (int64, error) {
@@ -390,19 +389,6 @@ func maxServerSeq(ctx context.Context, q dbQuerier) (int64, error) {
 		return 0, err
 	}
 	return cursor, nil
-}
-
-// favoriteRecipeIDs 是「我当前有效的收藏」：JOIN recipes 筛掉作者已取消公开或已软删的（spec §7.3）。
-// 返回空切片而不是 nil：客户端拿它整表替换本地收藏，JSON 里的 [] 与 null 含义不同（是「一条都不剩了」）。
-func (s *SyncService) favoriteRecipeIDs(ctx context.Context, q dbQuerier, userID string) ([]string, error) {
-	return queryList(ctx, q,
-		`SELECT f.recipe_id FROM favorites f JOIN recipes r ON r.id = f.recipe_id
-		 WHERE f.user_id = $1 AND r.is_public = 1 AND r.deleted_at IS NULL`,
-		[]any{userID}, func(rows pgx.Rows) (string, error) {
-			var id string
-			err := rows.Scan(&id)
-			return id, err
-		})
 }
 
 // applyLocalChanges 在一个写事务里落地客户端改动（spec §7.2）。
@@ -471,7 +457,14 @@ func (s *SyncService) mergeLocalChanges(ctx context.Context, tx dbQuerier, userI
 	}
 
 	for _, r := range req.Recipes {
-		if err := s.mergeRecipe(ctx, tx, userID, remap, r); err != nil {
+		sc, err := s.resolveScope(ctx, tx, userID, r.ScopeID)
+		if errors.Is(err, errScopeInvalid) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := s.mergeRecipe(ctx, tx, userID, sc, remap, r); err != nil {
 			return fmt.Errorf("merge recipe %s: %w", r.ID, err)
 		}
 	}
@@ -527,21 +520,35 @@ func (s *SyncService) getRemoteChanges(ctx context.Context, q dbQuerier, userID 
 	return payload, nil
 }
 
-// recipesVisibleScope 是菜谱增量的可见范围，写进 SQL 而不是发完再筛：我的 ∪ 我收藏的（spec §7.3）。$2 = 我。
-// 收藏分支必须同筛 is_public 与 deleted_at：收藏行在作者取消公开后仍保留，不筛就会继续下发私有正文（隐私泄漏）。
-// 外层 `r.id` 必须带前缀：queryRecipes 的 LEFT JOIN users 也有一列 id，裸写 id 会 42702（owner_id 两表都无，可裸写）。
-const recipesVisibleScope = "(owner_id = $2) OR r.id IN (SELECT f.recipe_id FROM favorites f JOIN recipes r2 ON r2.id = f.recipe_id WHERE f.user_id = $2 AND r2.is_public = 1 AND r2.deleted_at IS NULL)"
+// visibleRecipesSQL 是「我看得见的菜谱」：我的个人菜谱 ∪ 我加入且未解散团队的菜谱。$2 = 我。
+// 同步增量（queryRecipes）与图片读权限（FileService.CanRead）共用这一条，两条通道的可见范围不会漂移。
+// 外层 r.id 必须带前缀：queryRecipes 的 LEFT JOIN users 也有一列 id，裸写 id 会 42702
+// （owner_id / team_id 两表都无，可裸写）。
+const visibleRecipesSQL = "((team_id IS NULL AND owner_id = $2) OR r.team_id IN (SELECT tm.team_id FROM team_members tm JOIN teams t ON t.id = tm.team_id AND t.deleted_at IS NULL WHERE tm.user_id = $2))"
 
-// recipeSelectColumns 是菜谱行的列清单（含作者昵称与头像）：增量与社区详情都用它，
-// 两处返回的菜谱形状才会一致（客户端可以拿同一份落库逻辑处理）。
-const recipeSelectColumns = `r.id, r.owner_id, r.is_public, r.name, r.cover_path, r.category_id, r.created_at, r.updated_at, r.deleted_at, u.nickname, u.avatar_url`
+// sameTeam 比较两个可空团队 id（nil = 个人范围）。
+func sameTeam(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
 
-// scanRecipeRow 从 recipeSelectColumns 的一行扫出菜谱。
+// recipeSelectColumns 是菜谱行的列清单（含作者昵称与头像）。
+const recipeSelectColumns = `r.id, r.owner_id, r.team_id::text, r.name, r.cover_path, r.category_id, r.created_at, r.updated_at, r.deleted_at, u.nickname, u.avatar_url`
+
+// scanRecipeRow 从 recipeSelectColumns 的一行扫出菜谱，并把 team_id / owner_id 拼回客户端形状的 scope_id。
 // 子集合给空切片：JSON 里的空数组才表达得出「清空」（model.Recipe 的契约）。
 func scanRecipeRow(rows pgx.Rows) (model.Recipe, error) {
 	var r model.Recipe
-	err := rows.Scan(&r.ID, &r.OwnerID, &r.IsPublic, &r.Name, &r.CoverPath, &r.CategoryID,
+	var teamID *string
+	err := rows.Scan(&r.ID, &r.OwnerID, &teamID, &r.Name, &r.CoverPath, &r.CategoryID,
 		&r.CreatedAt, &r.UpdatedAt, &r.DeletedAt, &r.OwnerNickname, &r.OwnerAvatarURL)
+	if teamID != nil {
+		r.ScopeID = "t:" + *teamID
+	} else {
+		r.ScopeID = "p:" + r.OwnerID
+	}
 	r.Steps, r.Ingredients, r.LabelIDs = []model.RecipeStep{}, []model.RecipeIngredient{}, []string{}
 	return r, err
 }
@@ -552,7 +559,7 @@ func queryRecipes(ctx context.Context, q dbQuerier, userID string, sinceSeq int6
 	recipes, err := queryList(ctx, q,
 		`SELECT `+recipeSelectColumns+`
 		 FROM recipes r LEFT JOIN users u ON u.id = r.owner_id
-		 WHERE r.server_seq > $1 AND (`+recipesVisibleScope+`)`,
+		 WHERE r.server_seq > $1 AND `+visibleRecipesSQL,
 		[]any{sinceSeq, userID}, scanRecipeRow)
 	if err != nil {
 		return nil, err

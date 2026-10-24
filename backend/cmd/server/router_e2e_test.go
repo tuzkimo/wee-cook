@@ -84,7 +84,6 @@ func newE2ERouter(t *testing.T) (*e2eEnv, http.Handler) {
 		auth:      handler.NewAuthHandler(service.NewAuthService(env.pool, testJWTSecret)),
 		sync:      handler.NewSyncHandler(service.NewSyncService(env.pool)),
 		file:      handler.NewFileHandler(service.NewFileService(env.pool, dir, 5<<20)),
-		community: handler.NewCommunityHandler(service.NewCommunityService(env.pool)),
 	})
 	return env, router
 }
@@ -172,7 +171,7 @@ func TestEndToEndRegisterSyncUploadDownload(t *testing.T) {
 	var pushed model.SyncResponse
 	e2eDecode(t, e2ePostJSON(t, h, "/api/v1/sync", token, model.SyncRequest{
 		LocalChanges: model.SyncPayload{Recipes: []model.Recipe{{
-			ID: recipeID, Name: "端到端菜谱", CoverPath: &coverRef,
+			ID: recipeID, ScopeID: "p:" + userID, Name: "端到端菜谱", CoverPath: &coverRef,
 			CreatedAt: now, UpdatedAt: now,
 			Steps: []model.RecipeStep{}, Ingredients: []model.RecipeIngredient{}, LabelIDs: []string{},
 		}}},
@@ -214,7 +213,7 @@ func TestEndToEndNonOwnerCannotEdit(t *testing.T) {
 	recipeID := "r-" + uuid.NewString()
 	now := time.Now().UTC()
 	original := model.Recipe{
-		ID: recipeID, Name: "A的原始菜谱",
+		ID: recipeID, ScopeID: "p:" + userA, Name: "A的原始菜谱",
 		CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour),
 		Steps:       []model.RecipeStep{{ID: "st-a", SortOrder: 0, Text: "A的步骤"}},
 		Ingredients: []model.RecipeIngredient{}, LabelIDs: []string{},
@@ -225,6 +224,7 @@ func TestEndToEndNonOwnerCannotEdit(t *testing.T) {
 
 	// B 伪造 owner_id 与更晚的时间去覆盖
 	forged := original
+	forged.ScopeID = "p:" + userB
 	forged.Name = "被B篡改"
 	forged.OwnerID = userB
 	forged.UpdatedAt = now
@@ -254,12 +254,3 @@ func TestEndToEndNonOwnerCannotEdit(t *testing.T) {
 	}
 }
 
-// 社区列表未带 token 必须 401：证明 /community/recipes 真的挂在受保护组里（404 说明没挂）。
-func TestEndToEndCommunityRequiresAuth(t *testing.T) {
-	_, h := newE2ERouter(t)
-
-	rec := e2eDo(t, h, "GET", "/api/v1/community/recipes", "", nil)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("无 token 访问社区列表: got %d, want 401；响应体: %s", rec.Code, rec.Body.String())
-	}
-}
