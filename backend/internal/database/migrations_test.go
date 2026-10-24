@@ -21,16 +21,22 @@ func tableExists(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table st
 	return ok
 }
 
-// recipeColumn 报告 recipes 表上是否有该名字的列。
-func recipeColumn(ctx context.Context, t *testing.T, pool *pgxpool.Pool, column string) bool {
+// columnExists 报告某表上是否有该名字的列。
+func columnExists(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table, column string) bool {
 	t.Helper()
 	var ok bool
 	if err := pool.QueryRow(ctx,
-		"SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name = 'recipes' AND column_name = $1)",
-		column).Scan(&ok); err != nil {
+		"SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name = $1 AND column_name = $2)",
+		table, column).Scan(&ok); err != nil {
 		t.Fatal(err)
 	}
 	return ok
+}
+
+// recipeColumn 报告 recipes 表上是否有该名字的列。
+func recipeColumn(ctx context.Context, t *testing.T, pool *pgxpool.Pool, column string) bool {
+	t.Helper()
+	return columnExists(ctx, t, pool, "recipes", column)
 }
 
 // startPostgres 起一个临时 postgres 容器并返回连接串（testcontainers / Ryuk 负责回收）。
@@ -71,7 +77,7 @@ func TestMigrationsCreateAllTables(t *testing.T) {
 	for _, table := range []string{
 		"users", "recipes", "recipe_steps",
 		"recipe_ingredients", "recipe_labels", "ingredients", "units", "labels", "files",
-		"favorites", "follows",
+		"teams", "team_members", "inventory_batches", "inventory_usages",
 	} {
 		var exists bool
 		if err := pool.QueryRow(context.Background(),
@@ -83,24 +89,41 @@ func TestMigrationsCreateAllTables(t *testing.T) {
 		}
 	}
 
-	// teams 与 team_members 必须不存在了
-	if tableExists(context.Background(), t, pool, "teams") || tableExists(context.Background(), t, pool, "team_members") {
-		t.Error("团队表应已删除")
+	// 社区表必须不存在了
+	for _, table := range []string{"favorites", "follows"} {
+		if tableExists(context.Background(), t, pool, table) {
+			t.Errorf("%s 表应已删除", table)
+		}
 	}
 
-	// recipes 带 is_public、不带 team_id
-	var dataType, isNullable, columnDefault string
-	if err := pool.QueryRow(context.Background(),
-		`SELECT data_type, is_nullable, column_default FROM information_schema.columns
-		 WHERE table_name = 'recipes' AND column_name = 'is_public'`).
-		Scan(&dataType, &isNullable, &columnDefault); err != nil {
-		t.Fatalf("recipes.is_public 应存在: %v", err)
+	// recipes 带 team_id、不带 is_public
+	if !recipeColumn(context.Background(), t, pool, "team_id") {
+		t.Error("recipes 应有 team_id 列")
 	}
-	if dataType != "smallint" || isNullable != "NO" || columnDefault != "0" {
-		t.Errorf("recipes.is_public = %s / %s / %s, want smallint / NO / 0", dataType, isNullable, columnDefault)
+	if recipeColumn(context.Background(), t, pool, "is_public") {
+		t.Error("recipes 不应再有 is_public 列")
 	}
-	if recipeColumn(context.Background(), t, pool, "team_id") {
-		t.Error("recipes 不应再有 team_id 列")
+
+	// 字典三表带范围列：team_id 可空（个人字典），owner_id 记录个人字典的归属
+	for _, table := range []string{"ingredients", "units", "labels"} {
+		if !columnExists(context.Background(), t, pool, table, "team_id") {
+			t.Errorf("%s 应有 team_id 列", table)
+		}
+		if !columnExists(context.Background(), t, pool, table, "owner_id") {
+			t.Errorf("%s 应有 owner_id 列", table)
+		}
+	}
+
+	// 库存两张表：批次有 produced_at / expires_at，使用记录只有 used_at（没有 created_at）
+	for _, column := range []string{"owner_id", "team_id", "ingredient_id", "amount", "unit_id", "produced_at", "shelf_life_days", "expires_at", "server_seq"} {
+		if !columnExists(context.Background(), t, pool, "inventory_batches", column) {
+			t.Errorf("inventory_batches 应有 %s 列", column)
+		}
+	}
+	for _, column := range []string{"owner_id", "team_id", "recipe_id", "batch_id", "amount", "used_at", "updated_at", "deleted_at", "server_seq"} {
+		if !columnExists(context.Background(), t, pool, "inventory_usages", column) {
+			t.Errorf("inventory_usages 应有 %s 列", column)
+		}
 	}
 
 	// 三张子表按规格不带 deleted_at（AGENTS.md 的确认例外）
@@ -115,17 +138,10 @@ func TestMigrationsCreateAllTables(t *testing.T) {
 		}
 	}
 
-	// favorites / follows 是「一方的订阅关系」，按规格不带 id / updated_at / deleted_at（AGENTS.md 的确认例外）
-	for _, table := range []string{"favorites", "follows"} {
-		for _, column := range []string{"id", "updated_at", "deleted_at"} {
-			var exists bool
-			if err := pool.QueryRow(context.Background(),
-				"SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name=$1 AND column_name=$2)", table, column).Scan(&exists); err != nil {
-				t.Fatal(err)
-			}
-			if exists {
-				t.Errorf("%s 不应有 %s 列", table, column)
-			}
+	// team_members 是关系表，按规格不带 id / updated_at / deleted_at（AGENTS.md 的确认例外）
+	for _, column := range []string{"id", "updated_at", "deleted_at"} {
+		if columnExists(context.Background(), t, pool, "team_members", column) {
+			t.Errorf("team_members 不应有 %s 列", column)
 		}
 	}
 }

@@ -1,4 +1,4 @@
--- 初始表结构（规格 §6.2）
+-- 初始表结构（规格 §7.2）：团队 + 范围列 + 库存两表
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE SEQUENCE IF NOT EXISTS global_server_seq;
 
@@ -13,10 +13,30 @@ CREATE TABLE users (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- 团队 = 家庭。团队列表只走 REST，不进同步载荷。
+CREATE TABLE teams (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(100) NOT NULL,
+    created_by UUID REFERENCES users(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at TIMESTAMPTZ
+);
+
+-- 关系表：退组 / 移除就是删行，所以不带 id / updated_at / deleted_at（AGENTS.md 的确认例外）
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    role VARCHAR(20) NOT NULL DEFAULT 'member',
+    joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (team_id, user_id)
+);
+
+-- team_id 是范围：NULL = 个人菜谱（只有 owner_id 能看能改），否则团队成员共享
 CREATE TABLE recipes (
     id TEXT PRIMARY KEY,                       -- 客户端生成的 UUID 字符串，不用 uuid 类型
     owner_id UUID NOT NULL REFERENCES users(id),
-    is_public SMALLINT NOT NULL DEFAULT 0,     -- 0 = 私有（默认），1 = 公开到社区
+    team_id UUID REFERENCES teams(id),
     name TEXT NOT NULL,
     cover_path TEXT,                           -- 裸文件名，不是路径
     category_id TEXT NOT NULL,
@@ -52,9 +72,12 @@ CREATE TABLE recipe_labels (
     PRIMARY KEY (recipe_id, label_id)
 );
 
--- 字典表：没有同名唯一约束，去重靠「同名合并到旧 id」（§7.4），撞约束会让整批写入回滚
+-- 字典表：没有同名唯一约束，去重靠「同范围内同名合并到旧 id」（§7.4），撞约束会让整批写入回滚。
+-- 范围：team_id IS NULL 且 owner_id = 那个人 → 个人字典；team_id = T → 团队字典（owner_id 为空）。
 CREATE TABLE ingredients (
     id TEXT PRIMARY KEY,
+    team_id UUID REFERENCES teams(id),
+    owner_id UUID REFERENCES users(id),
     name TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -64,6 +87,8 @@ CREATE TABLE ingredients (
 
 CREATE TABLE units (
     id TEXT PRIMARY KEY,
+    team_id UUID REFERENCES teams(id),
+    owner_id UUID REFERENCES users(id),
     name TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -73,6 +98,8 @@ CREATE TABLE units (
 
 CREATE TABLE labels (
     id TEXT PRIMARY KEY,
+    team_id UUID REFERENCES teams(id),
+    owner_id UUID REFERENCES users(id),
     name TEXT NOT NULL,
     kind TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -81,19 +108,36 @@ CREATE TABLE labels (
     server_seq BIGINT NOT NULL DEFAULT nextval('global_server_seq')
 );
 
--- 收藏与关注：只由本人改写的订阅关系，不是业务实体，所以不带 id / updated_at / deleted_at
--- （AGENTS.md 已记录的确认例外）。取消订阅就是删行，全量下发 + 整表替换，软删与 LWW 都用不上。
-CREATE TABLE favorites (
-    user_id    UUID NOT NULL REFERENCES users(id),
-    recipe_id  TEXT NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (user_id, recipe_id)
+-- 库存：余量永远由「批次数量 − 未删除的使用记录」派生，不落列（库存设计 §4）。
+-- 不建指向字典 / 菜谱的外键：字典同名合并会物理删行，真外键只会让同步卡死。
+CREATE TABLE inventory_batches (
+    id TEXT PRIMARY KEY,
+    owner_id UUID NOT NULL REFERENCES users(id),   -- 录入者
+    team_id UUID REFERENCES teams(id),             -- NULL = 个人库存
+    ingredient_id TEXT NOT NULL,
+    amount DOUBLE PRECISION NOT NULL CHECK (amount > 0),
+    unit_id TEXT,
+    produced_at TEXT,                              -- YYYY-MM-DD
+    shelf_life_days INT,
+    expires_at TEXT,                               -- YYYY-MM-DD
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    deleted_at TIMESTAMPTZ,
+    server_seq BIGINT NOT NULL DEFAULT nextval('global_server_seq')
 );
-CREATE TABLE follows (
-    follower_id UUID NOT NULL REFERENCES users(id),
-    followee_id UUID NOT NULL REFERENCES users(id),
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (follower_id, followee_id)
+
+-- 使用记录只增不清：used_at 就是发生时间，不另设 created_at
+CREATE TABLE inventory_usages (
+    id TEXT PRIMARY KEY,
+    owner_id UUID NOT NULL REFERENCES users(id),   -- 扣减者
+    team_id UUID REFERENCES teams(id),             -- 与批次同值，服务端校验不一致就跳过
+    recipe_id TEXT NOT NULL,
+    batch_id TEXT NOT NULL,
+    amount DOUBLE PRECISION NOT NULL CHECK (amount > 0),
+    used_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    deleted_at TIMESTAMPTZ,
+    server_seq BIGINT NOT NULL DEFAULT nextval('global_server_seq')
 );
 
 -- files 不参与鉴权：读权限看「有没有一条我可见的菜谱引用了它」（§8.1）
@@ -104,17 +148,25 @@ CREATE TABLE files (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE INDEX idx_team_members_user ON team_members(user_id);
 CREATE INDEX idx_recipes_owner ON recipes(owner_id);
+CREATE INDEX idx_recipes_team ON recipes(team_id);
 CREATE INDEX idx_recipes_server_seq ON recipes(server_seq);
 CREATE INDEX idx_recipes_cover_path ON recipes(cover_path);
--- favorites 按 user_id 的查询已被主键覆盖；反过来按菜谱反查（图片读权限、取消公开的排查）需要这条
-CREATE INDEX idx_favorites_recipe ON favorites(recipe_id);
 CREATE INDEX idx_recipe_steps_recipe ON recipe_steps(recipe_id);
 CREATE INDEX idx_recipe_steps_image_path ON recipe_steps(image_path);
 CREATE INDEX idx_recipe_ingredients_recipe ON recipe_ingredients(recipe_id);
 CREATE INDEX idx_ingredients_name ON ingredients(name);
+CREATE INDEX idx_ingredients_team_name ON ingredients(team_id, name);
 CREATE INDEX idx_ingredients_server_seq ON ingredients(server_seq);
 CREATE INDEX idx_units_name ON units(name);
+CREATE INDEX idx_units_team_name ON units(team_id, name);
 CREATE INDEX idx_units_server_seq ON units(server_seq);
 CREATE INDEX idx_labels_name ON labels(name);
+CREATE INDEX idx_labels_team_name ON labels(team_id, name);
 CREATE INDEX idx_labels_server_seq ON labels(server_seq);
+CREATE INDEX idx_inventory_batches_server_seq ON inventory_batches(server_seq);
+CREATE INDEX idx_inventory_batches_team ON inventory_batches(team_id);
+CREATE INDEX idx_inventory_usages_server_seq ON inventory_usages(server_seq);
+CREATE INDEX idx_inventory_usages_team ON inventory_usages(team_id);
+CREATE INDEX idx_inventory_usages_batch ON inventory_usages(batch_id);
