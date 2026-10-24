@@ -10,10 +10,15 @@ import CookPage from "@/views/CookPage.vue";
 const mocks = vi.hoisted(() => ({
   push: vi.fn(),
   back: vi.fn(),
+  keyboardInset: { value: 0 },
   routeParams: { id: "r1" } as Record<string, string>,
   getDetail: vi.fn(),
   fetchAll: vi.fn(async () => {}),
   commitCook: vi.fn(),
+}));
+
+vi.mock("@/composables/useKeyboardInset", () => ({
+  useKeyboardInset: () => mocks.keyboardInset,
 }));
 
 vi.mock("vue-router", () => ({
@@ -100,8 +105,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   availability.clear();
   const units = useUnitStore();
-  vi.spyOn(units, "fetchAll").mockResolvedValue();
-  units.items = [unitRow("g", "g"), unitRow("ge", "个"), unitRow("jin", "斤")];
+  // 真路径：页面必须自己 fetchAll 才有单位名（不靠测试预先塞 items）
+  vi.spyOn(units, "fetchAll").mockImplementation(async () => {
+    units.items = [unitRow("g", "g"), unitRow("ge", "个"), unitRow("jin", "斤")];
+  });
   mocks.getDetail.mockResolvedValue(detail());
 });
 
@@ -289,5 +296,51 @@ describe("CookPage 改单位", () => {
 
     expect(unitTextOf(wrapper, "五花肉")).toContain("g");
     expect(availableOf(wrapper, "五花肉")).toBe("库存 500 g");
+  });
+});
+
+describe("CookPage 健壮性", () => {
+  it("进页面自己把单位字典查回来", async () => {
+    availability.set("i1", [{ unit_id: "g", remaining: 500 }]);
+
+    await open();
+
+    expect(useUnitStore().fetchAll).toHaveBeenCalledTimes(1);
+  });
+
+  it("同一食材在菜谱里出现两行时，两行各自独立可改", async () => {
+    const duplicated = detail();
+    duplicated.ingredients = [duplicated.ingredients[0], { ...duplicated.ingredients[0], id: "ri3" }];
+    mocks.getDetail.mockResolvedValue(duplicated);
+    availability.set("i1", [{ unit_id: "ge", remaining: 5 }]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const wrapper = await open();
+
+    const inputs = wrapper.findAll('[data-test="cook-amount"]');
+    await inputs[0].setValue("5");
+
+    expect((inputs[0].element as HTMLInputElement).value).toBe("5");
+    expect((inputs[1].element as HTMLInputElement).value).toBe("2");
+    // 重复的 key 会让 Vue 警告并在重排时把值放错行
+    expect(warn.mock.calls.flat().join(" ")).not.toContain("Duplicate keys");
+    warn.mockRestore();
+  });
+
+  it("菜谱取不到时给错误提示，不是空白页", async () => {
+    mocks.getDetail.mockRejectedValue(new Error("菜谱不存在"));
+
+    const wrapper = await open();
+
+    expect(wrapper.get('[data-test="cook-load-error"]').text()).toContain("菜谱不存在");
+  });
+
+  it("软键盘弹起时确认按钮栏被顶起来", async () => {
+    availability.set("i1", [{ unit_id: "ge", remaining: 5 }]);
+    mocks.keyboardInset.value = 300;
+    const wrapper = await open();
+
+    const bar = wrapper.get('[data-test="cook-actions"]').element as HTMLElement;
+    expect(bar.style.paddingBottom).toContain("300px");
+    mocks.keyboardInset.value = 0;
   });
 });

@@ -4,6 +4,7 @@
 import { computed, onMounted, ref, toValue } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import AppHeader from "@/components/AppHeader.vue";
+import { useKeyboardInset } from "@/composables/useKeyboardInset";
 import RefSheet from "@/components/RefSheet.vue";
 import { useUnitStore } from "@/stores/ingredient";
 import { useInventoryStore } from "@/stores/inventory";
@@ -32,15 +33,33 @@ const error = ref("");
 const confirming = ref(false);
 const showUnitSheet = ref(false);
 const unitRowIndex = ref(0);
+const loadError = ref("");
+const keyboardInset = useKeyboardInset();
+// 键盘高度 + 常规内边距 + 手势条安全区，与 RefSheet / FilterPage 同一套（Android 上 h-dvh 不收缩）
+const actionsPadBottom = computed(
+  () => `calc(${keyboardInset.value}px + 0.75rem + env(safe-area-inset-bottom))`,
+);
 
 /** 该食材各单位余量，进页面查一次，改单位时不再查库 */
 let availability = new Map<string, { unit_id: string | null; remaining: number }[]>();
 
 onMounted(async () => {
   const id = recipeId.value;
-  if (!id) return;
+  if (!id) {
+    loadError.value = "菜谱不存在";
+    return;
+  }
+  // 单位名全靠这张字典：不查回来，切到别的单位时只能显示「选单位」
+  await unitStore.fetchAll();
   await inventoryStore.fetchAll();
-  const detail = await recipeStore.getDetail(id);
+  let detail;
+  try {
+    detail = await recipeStore.getDetail(id);
+  } catch (failure: unknown) {
+    // 缓存的社区菜谱会被同步物理删除，这里不能白屏
+    loadError.value = failure instanceof Error && failure.message ? failure.message : "菜谱不存在";
+    return;
+  }
   availability = inventoryStore.remainingByIngredient(detail.ingredients.map((line) => line.ingredient_id));
   rows.value = detail.ingredients.map((line) => {
     const parts = availability.get(line.ingredient_id) ?? [];
@@ -159,7 +178,7 @@ async function confirm(): Promise<void> {
           没有可扣的库存，这次没有记账
         </p>
       </div>
-      <div class="shrink-0 px-4 py-3">
+      <div data-test="cook-actions" class="shrink-0 px-4 py-3" :style="{ paddingBottom: actionsPadBottom }">
         <button
           type="button"
           data-test="cook-done"
@@ -173,7 +192,14 @@ async function confirm(): Promise<void> {
 
     <template v-else>
       <div class="flex-1 min-h-0 overflow-auto px-4 py-4">
-        <p class="mb-3 text-xs text-text-secondary">按实际用量改，填 0 表示这次不用这样</p>
+        <p
+          v-if="loadError"
+          data-test="cook-load-error"
+          class="rounded-xl bg-danger/10 px-4 py-3 text-sm text-danger"
+        >
+          {{ loadError }}
+        </p>
+        <p v-else class="mb-3 text-xs text-text-secondary">按实际用量改，填 0 表示这次不用这样</p>
 
         <p
           v-if="error"
@@ -186,7 +212,7 @@ async function confirm(): Promise<void> {
         <ul class="flex flex-col gap-2">
           <li
             v-for="(row, index) in rows"
-            :key="row.ingredient_id"
+            :key="`${row.ingredient_id}-${index}`"
             data-test="cook-row"
             class="rounded-xl bg-surface px-4 py-3"
           >
@@ -224,7 +250,7 @@ async function confirm(): Promise<void> {
         </p>
       </div>
 
-      <div class="shrink-0 px-4 py-3">
+      <div data-test="cook-actions" class="shrink-0 px-4 py-3" :style="{ paddingBottom: actionsPadBottom }">
         <button
           type="button"
           data-test="cook-confirm"

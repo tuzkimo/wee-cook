@@ -216,6 +216,24 @@ describe("BatchSheet", () => {
     spy.mockRestore();
   });
 
+  it("保存中再点一次不会重复写库", async () => {
+    await openForm();
+    const store = useInventoryStore();
+    let release!: () => void;
+    const spy = vi
+      .spyOn(store, "addBatch")
+      .mockImplementation(() => new Promise<void>((resolve) => (release = resolve)));
+    await el('[data-test="batch-amount"]').setValue("100");
+
+    await el('[data-test="batch-save"]').trigger("click");
+    await el('[data-test="batch-save"]').trigger("click");
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    release();
+    await flushPromises();
+    spy.mockRestore();
+  });
+
   it("重新打开时从选食材开始，不残留上一轮输入", async () => {
     const wrapper = await openForm();
     await el('[data-test="batch-amount"]').setValue("999");

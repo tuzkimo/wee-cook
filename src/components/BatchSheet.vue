@@ -32,6 +32,8 @@ const expiresAt = ref("");
 const expiryTouched = ref(false);
 const showUnitSheet = ref(false);
 const error = ref("");
+// 保存中禁用按钮：双击会真的买两批一样的东西
+const saving = ref(false);
 
 const ingredientName = computed(
   () => toValue(ingredientStore.items).find((item) => item.id === ingredientId.value)?.name ?? "",
@@ -57,6 +59,7 @@ watch(
     expiresAt.value = "";
     expiryTouched.value = false;
     error.value = "";
+    saving.value = false;
   },
   { immediate: true },
 );
@@ -98,7 +101,9 @@ function pickUnit(ids: string[]): void {
 }
 
 async function save(): Promise<void> {
+  if (saving.value) return;
   error.value = "";
+  saving.value = true;
   try {
     await inventoryStore.addBatch({
       ingredient_id: ingredientId.value,
@@ -108,10 +113,12 @@ async function save(): Promise<void> {
       shelf_life_days: shelfLifeDays(),
       expires_at: expiresAt.value || null,
     });
+    saving.value = false;
   } catch (saveError: unknown) {
     // 校验与写库错误都由 store 给出中文文案，这里不重复一份规则
     error.value =
       saveError instanceof Error && saveError.message ? saveError.message : "保存失败，请重试";
+    saving.value = false;
     return;
   }
   emit("saved");
@@ -204,10 +211,11 @@ async function save(): Promise<void> {
 
         <button
           data-test="batch-save"
-          class="mt-3 w-full rounded-xl bg-primary py-3 text-base font-semibold text-white transition-colors hover:bg-primary-dark"
+          :disabled="saving"
+          class="mt-3 w-full rounded-xl bg-primary py-3 text-base font-semibold text-white transition-colors hover:bg-primary-dark disabled:opacity-50"
           @click="save"
         >
-          保存
+          {{ saving ? "保存中…" : "保存" }}
         </button>
       </div>
     </Transition>

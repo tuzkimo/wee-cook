@@ -165,6 +165,14 @@ describe("groupStockRows", () => {
     expect(rows[0].parts.map((part) => part.unit_name)).toEqual(["g", "个"]);
   });
 
+  it("同食材的份额按单位名排序，与批次入库顺序无关", () => {
+    const rows = groupStockRows([
+      stock({ id: "b1", ingredient_id: "i1", unit_id: "jin", unit: "斤", remaining: 1 }),
+      stock({ id: "b2", ingredient_id: "i1", unit_id: "g", unit: "g", remaining: 500 }),
+    ]);
+    expect(rows[0].parts.map((part) => part.unit_name)).toEqual(["g", "斤"]);
+  });
+
   it("不同食材各成一行", () => {
     const rows = groupStockRows([
       stock({ id: "b1", ingredient_id: "i1", name: "鸡蛋", unit_id: null, remaining: 2 }),

@@ -108,6 +108,13 @@ export function groupStockRows(batches: BatchStock[]): IngredientStock[] {
   }
   for (const row of byIngredient.values()) {
     row.usedUp = row.parts.every((part) => part.remaining <= 0);
+    // 份额顺序由单位名决定，不靠 SQL 的随机 tie-break（同名同毫秒的批次顺序不稳定）
+    row.parts.sort((a, b) => {
+      const nameA = a.unit_name ?? "";
+      const nameB = b.unit_name ?? "";
+      if (nameA !== nameB) return nameA < nameB ? -1 : 1;
+      return 0;
+    });
   }
   return [...byIngredient.values()];
 }
