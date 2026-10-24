@@ -159,3 +159,56 @@ describe("refStore 工厂", () => {
     expect(units.items.some((item) => item.name === "鸡蛋")).toBe(false);
   });
 });
+
+describe("库存引用守卫", () => {
+  /** 直接插一条批次：本用例验的是守卫，不经过 inventory store */
+  async function seedBatch(over: { ingredientId?: string; unitId?: string }): Promise<void> {
+    const now = new Date().toISOString();
+    await db.execute(
+      `INSERT INTO inventory_batches
+         (id, ingredient_id, amount, unit_id, produced_at, shelf_life_days, expires_at,
+          created_at, updated_at, deleted_at)
+       VALUES (?, ?, 100, ?, NULL, NULL, NULL, ?, ?, NULL)`,
+      [crypto.randomUUID(), over.ingredientId ?? "", over.unitId ?? null, now, now],
+    );
+  }
+
+  it("有库存批次的食材不能删", async () => {
+    const store = useIngredientStore();
+    const egg = await store.add("鸡蛋");
+    await seedBatch({ ingredientId: egg.id });
+    await store.fetchAll();
+
+    await expect(store.remove(egg.id)).rejects.toThrow("「鸡蛋」还有库存，先删掉批次再删食材");
+    const rows = await db.select<{ deleted_at: string | null }[]>(
+      "SELECT deleted_at FROM ingredients WHERE id = ?",
+      [egg.id],
+    );
+    expect(rows[0].deleted_at).toBeNull();
+  });
+
+  it("有库存批次的单位不能删", async () => {
+    const units = useUnitStore();
+    const gram = await units.add("克");
+    await seedBatch({ unitId: gram.id });
+    await units.fetchAll();
+
+    await expect(units.remove(gram.id)).rejects.toThrow("「克」还有库存，先删掉批次再删单位");
+  });
+
+  it("批次软删后食材可以正常删除", async () => {
+    const store = useIngredientStore();
+    const egg = await store.add("鸡蛋");
+    const now = new Date().toISOString();
+    await db.execute(
+      `INSERT INTO inventory_batches
+         (id, ingredient_id, amount, unit_id, produced_at, shelf_life_days, expires_at,
+          created_at, updated_at, deleted_at)
+       VALUES ('b1', ?, 100, NULL, NULL, NULL, NULL, ?, ?, ?)`,
+      [egg.id, now, now, now],
+    );
+    await store.fetchAll();
+
+    await expect(store.remove(egg.id)).resolves.toBeUndefined();
+  });
+});

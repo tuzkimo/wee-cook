@@ -615,3 +615,42 @@ describe("recipePayloadFor", () => {
     expect(payload?.owner_nickname).toBe("小明");
   });
 });
+
+describe("字典合并时库存批次跟着重指", () => {
+  /** 本地先有一条引用旧 id 的批次，合并后它必须指向合并后的 id，否则库存静默消失 */
+  async function seed(db: Db): Promise<void> {
+    await db.execute(
+      "INSERT INTO ingredients (id,name,created_at,updated_at,deleted_at) VALUES ('ing-old','盐',?,?,NULL)",
+      [T0, T0],
+    );
+    await db.execute(
+      "INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES ('unit-old','克',?,?,NULL)",
+      [T0, T0],
+    );
+    await db.execute(
+      `INSERT INTO inventory_batches
+         (id, ingredient_id, amount, unit_id, produced_at, shelf_life_days, expires_at,
+          created_at, updated_at, deleted_at)
+       VALUES ('b1','ing-old',100,'unit-old',NULL,NULL,NULL,?,?,NULL)`,
+      [T0, T0],
+    );
+  }
+
+  it("食材与单位合并后批次指向合并后的 id", async () => {
+    const { db } = await freshTestDb();
+    await seed(db);
+
+    await applyRemoteChanges(
+      remote({
+        ingredients: [{ id: "ing-new", name: "盐", created_at: T0, updated_at: T0, deleted_at: null }],
+        units: [{ id: "unit-new", name: "克", created_at: T0, updated_at: T0, deleted_at: null }],
+      }),
+      db,
+    );
+
+    expect(await db.select("SELECT ingredient_id, unit_id FROM inventory_batches WHERE id = 'b1'"))
+      .toEqual([{ ingredient_id: "ing-new", unit_id: "unit-new" }]);
+    expect(await db.select("SELECT id FROM ingredients")).toEqual([{ id: "ing-new" }]);
+    expect(await db.select("SELECT id FROM units")).toEqual([{ id: "unit-new" }]);
+  });
+});

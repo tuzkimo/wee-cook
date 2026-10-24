@@ -103,9 +103,14 @@ export function createRefStore(opts: { table: RefTable; label: string }): OwnedR
   async function remove(id: string): Promise<void> {
     const db = getDb();
     const count = await countRecipes(id);
+    const name = items.value.find((item) => item.id === id)?.name ?? "";
     if (count > 0) {
-      const name = items.value.find((item) => item.id === id)?.name ?? "";
       throw new Error(`有 ${count} 道菜谱在用「${name}」，不能删除`);
+    }
+    // 库存批次只存本地，删掉字典行会让它永远查不出名字（spec §4.17）
+    const stocked = await countStocked(id);
+    if (stocked > 0) {
+      throw new Error(`「${name}」还有库存，先删掉批次再删${label}`);
     }
     const now = new Date().toISOString();
     await db.execute(`UPDATE ${table} SET deleted_at = ?, updated_at = ? WHERE id = ?`, [
@@ -143,6 +148,15 @@ export function createRefStore(opts: { table: RefTable; label: string }): OwnedR
        FROM recipe_ingredients ri
        JOIN recipes r ON r.id = ri.recipe_id AND r.deleted_at IS NULL
        WHERE ri.${refColumn} = ? AND ri.deleted_at IS NULL`,
+      [id],
+    );
+    return rows[0]?.count ?? 0;
+  }
+
+  async function countStocked(id: string): Promise<number> {
+    const rows = await getDb().select<{ count: number }[]>(
+      `SELECT COUNT(*) AS count FROM inventory_batches
+       WHERE ${refColumn} = ? AND deleted_at IS NULL`,
       [id],
     );
     return rows[0]?.count ?? 0;

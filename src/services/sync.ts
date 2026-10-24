@@ -155,7 +155,11 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
         findDupParams: [item.name],
         writeSql: "INSERT INTO ingredients (id,name,created_at,updated_at,deleted_at) VALUES (?,?,?,?,?)",
         writeParams: [item.id, item.name, toIsoTimestamp(item.created_at), updatedAt, normDeleted(item.deleted_at)],
-        repointSql: ["UPDATE recipe_ingredients SET ingredient_id = ? WHERE ingredient_id = ?"],
+        repointSql: [
+          "UPDATE recipe_ingredients SET ingredient_id = ? WHERE ingredient_id = ?",
+          // 库存批次只存本地，合并掉字典行后不重指就会永远查不出名字（spec §4.16）
+          "UPDATE inventory_batches SET ingredient_id = ? WHERE ingredient_id = ?",
+        ],
       });
       if (oldId !== null) remap.set(oldId, item.id);
     } else if (compareTimestamp(item.updated_at, local[0].updated_at) > 0) {
@@ -171,7 +175,11 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
           findDupParams: [item.name, item.id],
           writeSql: "UPDATE ingredients SET name=?, updated_at=?, deleted_at=? WHERE id=?",
           writeParams: [item.name, updatedAt, null, item.id],
-          repointSql: ["UPDATE recipe_ingredients SET ingredient_id = ? WHERE ingredient_id = ?"],
+          repointSql: [
+          "UPDATE recipe_ingredients SET ingredient_id = ? WHERE ingredient_id = ?",
+          // 库存批次只存本地，合并掉字典行后不重指就会永远查不出名字（spec §4.16）
+          "UPDATE inventory_batches SET ingredient_id = ? WHERE ingredient_id = ?",
+        ],
         });
         if (oldId !== null) remap.set(oldId, item.id);
       } else {
@@ -201,7 +209,10 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
         findDupParams: [item.name],
         writeSql: "INSERT INTO units (id,name,created_at,updated_at,deleted_at) VALUES (?,?,?,?,?)",
         writeParams: [item.id, item.name, toIsoTimestamp(item.created_at), updatedAt, normDeleted(item.deleted_at)],
-        repointSql: ["UPDATE recipe_ingredients SET unit_id = ? WHERE unit_id = ?"],
+        repointSql: [
+          "UPDATE recipe_ingredients SET unit_id = ? WHERE unit_id = ?",
+          "UPDATE inventory_batches SET unit_id = ? WHERE unit_id = ?",
+        ],
       });
       if (oldId !== null) remap.set(oldId, item.id);
     } else if (compareTimestamp(item.updated_at, local[0].updated_at) > 0) {
@@ -214,7 +225,10 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
           findDupParams: [item.name, item.id],
           writeSql: "UPDATE units SET name=?, updated_at=?, deleted_at=? WHERE id=?",
           writeParams: [item.name, updatedAt, null, item.id],
-          repointSql: ["UPDATE recipe_ingredients SET unit_id = ? WHERE unit_id = ?"],
+          repointSql: [
+          "UPDATE recipe_ingredients SET unit_id = ? WHERE unit_id = ?",
+          "UPDATE inventory_batches SET unit_id = ? WHERE unit_id = ?",
+        ],
         });
         if (oldId !== null) remap.set(oldId, item.id);
       } else {
