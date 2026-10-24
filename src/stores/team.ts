@@ -2,7 +2,7 @@ import { computed, ref, type Ref } from "vue";
 import { defineStore } from "pinia";
 import { getDb } from "@/db";
 import * as api from "@/services/team";
-import { LOCAL_SCOPE, scopeFor, setActiveScope } from "@/services/scope";
+import { LOCAL_SCOPE, activeScope, personalScope, scopeFor, setActiveScope } from "@/services/scope";
 import { clearSyncCursorFor, requestSyncNow } from "@/services/sync";
 import { useAuthStore } from "@/stores/auth";
 import { useIngredientStore, useUnitStore } from "@/stores/ingredient";
@@ -38,6 +38,11 @@ export const useTeamStore = defineStore("team", () => {
     // 缓存的团队已经不在列表里（被解散 / 被移除）→ 回落「我的菜谱」
     if (currentTeamId.value && !rows.some((team) => team.id === currentTeamId.value)) {
       switchTo(null);
+    } else if (currentTeamId.value === null && activeScope.value === LOCAL_SCOPE) {
+      // 登录前是游客范围，登录后要落在个人范围（否则一屏空态）。
+      // 这里不走 switchTo：它会把「上次选中的团队」这个持久化键抹掉，冷启动恢复就没了。
+      setActiveScope(personalScope(uid));
+      void refreshScopedStores();
     }
   }
 
@@ -150,12 +155,17 @@ export const useTeamStore = defineStore("team", () => {
     else localStorage.removeItem(PERSIST_PREFIX + uid);
   }
 
-  /** 冷启动恢复上次选中的范围；那个团队已不在缓存里就回落「我的菜谱」。 */
+  /**
+   * 冷启动恢复上次选中的范围；那个团队已不在缓存里就回落「我的菜谱」。
+   *
+   * 没有保存过范围时**也要 `switchTo(null)`**：登录前的活动范围是 `p:local`，认领之后那里一行都没有，
+   * 不切到 `p:<uid>` 用户看到的是一屏空态（spec §10.3）。
+   */
   async function restoreCurrentTeam(): Promise<void> {
     const uid = authUserId();
     if (!uid) return;
     const saved = localStorage.getItem(PERSIST_PREFIX + uid);
-    if (saved && teams.value.some((team) => team.id === saved)) switchTo(saved);
+    switchTo(saved && teams.value.some((team) => team.id === saved) ? saved : null);
   }
 
   /** teams 表是 GET /teams 的全量快照：整表替换，不做增量合并。 */

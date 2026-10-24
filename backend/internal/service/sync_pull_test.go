@@ -223,13 +223,14 @@ func TestRemoteRecipesFilteredToMyVisibleScope(t *testing.T) {
 }
 
 // 三张字典表是全局共享的：增量查询只按游标过滤，不带 owner/team 条件，也不多收参数。
-func TestRemoteDictsHaveNoScopeFilter(t *testing.T) {
+// spec §8.4：字典也按范围下发（个人 ∪ 我加入的团队），不再全服务器共享一份。
+func TestRemoteDictsAreScopeFiltered(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	q := &pullQuerier{rows: map[string][][]any{
-		"FROM ingredients WHERE server_seq": {{"i-1", "盐", now, now, nil}},
-		"FROM units WHERE server_seq":       {{"u-1", "克", now, now, nil}},
-		"FROM labels WHERE server_seq":      {{"l-1", "川菜", "tag", now, now, nil}},
+		"FROM ingredients r WHERE": {{"i-1", nil, "me", "盐", now, now, nil}},
+		"FROM units r WHERE":       {{"u-1", nil, "me", "克", now, now, nil}},
+		"FROM labels r WHERE":      {{"l-1", nil, "me", "川菜", "tag", now, now, nil}},
 	}}
 
 	payload, err := NewSyncService(nil).getRemoteChanges(ctx, q, "me", 7)
@@ -238,13 +239,16 @@ func TestRemoteDictsHaveNoScopeFilter(t *testing.T) {
 	}
 
 	for _, table := range []string{"ingredients", "units", "labels"} {
-		qq := queryLike(t, q, "FROM "+table+" WHERE server_seq")
-		if strings.Contains(qq.sql, "owner_id") || strings.Contains(qq.sql, "team_id") {
-			t.Errorf("%s 是全局字典，增量查询不该带归属过滤：%s", table, qq.sql)
+		qq := queryLike(t, q, "FROM "+table+" r WHERE")
+		if !strings.Contains(qq.sql, visibleRecipesSQL) {
+			t.Errorf("%s 的增量查询必须带范围条件 %q：%s", table, visibleRecipesSQL, qq.sql)
 		}
-		if len(qq.args) != 1 || qq.args[0] != int64(7) {
-			t.Errorf("%s 的增量查询只该带游标一个参数，got %+v", table, qq.args)
+		if len(qq.args) != 2 || qq.args[0] != int64(7) || qq.args[1] != "me" {
+			t.Errorf("%s 的增量查询要带「游标 + 我」两个参数，got %+v", table, qq.args)
 		}
+	}
+	if len(payload.Ingredients) != 1 || payload.Ingredients[0].ScopeID != "p:me" {
+		t.Errorf("下发的字典行要按 owner_id 拼出 scope_id，got %+v", payload.Ingredients)
 	}
 
 	if len(payload.Ingredients) != 1 || payload.Ingredients[0].ID != "i-1" {
@@ -268,10 +272,10 @@ func TestBackfillAddsReferencedDictRows(t *testing.T) {
 		"FROM recipe_steps":                   {{"r-1", "s-1", 1, "切肉", nil}},
 		"FROM recipe_ingredients":             {{"r-1", "ri-1", "ing-1", 200.0, "unit-1", 1}},
 		"FROM recipe_labels":                  {{"r-1", "lab-1"}},
-		"FROM labels WHERE server_seq":        {{"lab-1", "标签", "tag", now, now, nil}},
-		"FROM labels WHERE id = ANY($1)":      {{"cat-1", "家常菜", "category", now, now, nil}},
-		"FROM ingredients WHERE id = ANY($1)": {{"ing-1", "五花肉", now, now, nil}},
-		"FROM units WHERE id = ANY($1)":       {{"unit-1", "克", now, now, nil}},
+		"FROM labels r WHERE r.server_seq":        {{"lab-1", nil, "me", "标签", "tag", now, now, nil}},
+		"FROM labels r WHERE r.id = ANY($1)":      {{"cat-1", nil, "me", "家常菜", "category", now, now, nil}},
+		"FROM ingredients r WHERE r.id = ANY($1)": {{"ing-1", nil, "me", "五花肉", now, now, nil}},
+		"FROM units r WHERE r.id = ANY($1)":       {{"unit-1", nil, "me", "克", now, now, nil}},
 	}}
 
 	payload, err := NewSyncService(nil).getRemoteChanges(ctx, q, "me", 100)
@@ -298,9 +302,9 @@ func TestBackfillAddsReferencedDictRows(t *testing.T) {
 		sub  string
 		want []string
 	}{
-		{"FROM ingredients WHERE id = ANY($1)", []string{"ing-1"}},
-		{"FROM units WHERE id = ANY($1)", []string{"unit-1"}},
-		{"FROM labels WHERE id = ANY($1)", []string{"cat-1"}},
+		{"FROM ingredients r WHERE r.id = ANY($1)", []string{"ing-1"}},
+		{"FROM units r WHERE r.id = ANY($1)", []string{"unit-1"}},
+		{"FROM labels r WHERE r.id = ANY($1)", []string{"cat-1"}},
 	} {
 		got, ok := queryLike(t, q, tc.sub).args[0].([]string)
 		if !ok || !slices.Equal(got, tc.want) {

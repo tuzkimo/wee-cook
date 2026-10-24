@@ -90,7 +90,7 @@ func TestMergeDictSkipsOlder(t *testing.T) {
 		{"相同", remote},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			q := newSyncQuerier(fakeRow{vals: []any{remote}})
+			q := newSyncQuerier(fakeRow{vals: []any{remote, nil, "u1"}})
 
 			id, err := NewSyncService(nil).mergeDict(context.Background(), q, unitSpec, testScope("u1"),
 				dictEntity{ID: "u-1", Name: "克", UpdatedAt: tc.incoming})
@@ -401,3 +401,42 @@ func TestParseScope(t *testing.T) {
 		})
 	}
 }
+
+// Review Focus ⑤ 的回归网：按主键命中的字典行如果不在本次推送的范围里，整条跳过。
+// 不查这一条，客户端只要知道别人家里的食材 id，就能把它改名 / 软删（跨家庭写权限泄漏）。
+func TestMergeDictSkipsOutOfScopeRow(t *testing.T) {
+	now := time.Now().UTC()
+	foreignTeam := "team-other"
+
+	cases := []struct {
+		name            string
+		remoteTeamID    *string
+		remoteOwnerID   *string
+		wantWrites      bool
+		wantEffectiveID string
+	}{
+		{name: "别人家里的同名行", remoteTeamID: &foreignTeam, remoteOwnerID: nil, wantWrites: false, wantEffectiveID: ""},
+		{name: "别人个人范围的行", remoteTeamID: nil, remoteOwnerID: strPtr("other"), wantWrites: false, wantEffectiveID: ""},
+		{name: "我自己范围的行", remoteTeamID: nil, remoteOwnerID: strPtr("u1"), wantWrites: true, wantEffectiveID: "i-1"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			q := newSyncQuerier(fakeRow{vals: []any{now.Add(-time.Minute), c.remoteTeamID, c.remoteOwnerID}})
+
+			id, err := NewSyncService(nil).mergeDict(context.Background(), q, ingredientSpec, testScope("u1"),
+				dictEntity{ID: "i-1", Name: "盐", UpdatedAt: now})
+			if err != nil {
+				t.Fatalf("mergeDict: %v", err)
+			}
+			if id != c.wantEffectiveID {
+				t.Errorf("有效 id = %q, want %q", id, c.wantEffectiveID)
+			}
+			if wrote := len(q.execs) > 0; wrote != c.wantWrites {
+				t.Errorf("写库 = %v, want %v（execs: %+v）", wrote, c.wantWrites, q.execs)
+			}
+		})
+	}
+}
+
+func strPtr(v string) *string { return &v }

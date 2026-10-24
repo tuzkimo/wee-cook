@@ -162,9 +162,17 @@ func (spec dictSpec) updateArgs(ent dictEntity, id string) []any {
 // 同键查询必须带范围：两个家庭各有一个「生抽」是两条记录，不带范围就会并成一条（spec §7.2）。
 // 返回的 id 与入参 id 不同时，调用方要把所有引用重写到这个 id 上（spec §7.2 第 2/3 步）。
 func (s *SyncService) mergeDict(ctx context.Context, tx dbQuerier, spec dictSpec, sc scope, ent dictEntity) (string, error) {
+	// 主键命中时也要校验范围：主键查不到范围条件，不查就会让客户端改到别人家里的同名行
+	// （改范围 = 改它的 name / deleted_at），这是跨家庭的写权限泄漏（spec §8.2 / §8.4）。
 	var remoteUpdatedAt time.Time
+	var remoteTeamID *string
+	var remoteOwnerID *string
 	err := tx.QueryRow(ctx,
-		"SELECT updated_at FROM "+spec.table+" WHERE id = $1 FOR UPDATE", ent.ID).Scan(&remoteUpdatedAt)
+		"SELECT updated_at, team_id::text, owner_id::text FROM "+spec.table+" WHERE id = $1 FOR UPDATE", ent.ID).
+		Scan(&remoteUpdatedAt, &remoteTeamID, &remoteOwnerID)
+	if err == nil && !dictRowInScope(remoteTeamID, remoteOwnerID, sc) {
+		return "", nil
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		conds := make([]string, len(spec.keyColumns))
 		keyArgs := make([]any, len(spec.keyColumns))
@@ -532,13 +540,13 @@ func (s *SyncService) getRemoteChanges(ctx context.Context, q dbQuerier, userID 
 	}
 
 	var err error
-	if payload.Ingredients, err = queryIngredients(ctx, q, sinceSeq); err != nil {
+	if payload.Ingredients, err = queryIngredients(ctx, q, userID, sinceSeq); err != nil {
 		return payload, fmt.Errorf("query ingredients: %w", err)
 	}
-	if payload.Units, err = queryUnits(ctx, q, sinceSeq); err != nil {
+	if payload.Units, err = queryUnits(ctx, q, userID, sinceSeq); err != nil {
 		return payload, fmt.Errorf("query units: %w", err)
 	}
-	if payload.Labels, err = queryLabels(ctx, q, sinceSeq); err != nil {
+	if payload.Labels, err = queryLabels(ctx, q, userID, sinceSeq); err != nil {
 		return payload, fmt.Errorf("query labels: %w", err)
 	}
 	if payload.Recipes, err = queryRecipes(ctx, q, userID, sinceSeq); err != nil {
@@ -552,10 +560,10 @@ func (s *SyncService) getRemoteChanges(ctx context.Context, q dbQuerier, userID 
 	}
 
 	// 增量菜谱 / 批次引用的字典行可能 server_seq 早于游标、本次没下发 → 按 id 反查补齐（spec §7.5）。
-	if err := backfillReferenced(ctx, q, &payload); err != nil {
+	if err := backfillReferenced(ctx, q, userID, &payload); err != nil {
 		return payload, fmt.Errorf("backfill referenced: %w", err)
 	}
-	if err := backfillInventoryDicts(ctx, q, &payload); err != nil {
+	if err := backfillInventoryDicts(ctx, q, userID, &payload); err != nil {
 		return payload, fmt.Errorf("backfill inventory dicts: %w", err)
 	}
 
@@ -571,6 +579,15 @@ func (s *SyncService) getRemoteChanges(ctx context.Context, q dbQuerier, userID 
 // 外层 r.id 必须带前缀：queryRecipes 的 LEFT JOIN users 也有一列 id，裸写 id 会 42702
 // （owner_id / team_id 两表都无，可裸写）。
 const visibleRecipesSQL = "((team_id IS NULL AND owner_id = $2) OR r.team_id IN (SELECT tm.team_id FROM team_members tm JOIN teams t ON t.id = tm.team_id AND t.deleted_at IS NULL WHERE tm.user_id = $2))"
+
+// dictRowInScope 判断库里那行字典是否落在本次推送的范围内：
+// 团队范围只比 team_id（owner_id 是「谁先推上来的」，任一成员都算），个人范围要求 team_id 为空且 owner 是我。
+func dictRowInScope(teamID, ownerID *string, sc scope) bool {
+	if sc.TeamID != nil {
+		return teamID != nil && *teamID == *sc.TeamID
+	}
+	return teamID == nil && ownerID != nil && *ownerID == sc.OwnerID
+}
 
 // sameTeam 比较两个可空团队 id（nil = 个人范围）。
 func sameTeam(a, b *string) bool {
@@ -699,7 +716,7 @@ func attachRecipeChildren(ctx context.Context, q dbQuerier, recipes []model.Reci
 // backfillReferenced 补齐「增量菜谱引用到、但本次没下发的字典行」：字典行的 server_seq 可能早于
 // 游标（食材是三天前建的、菜谱是今天改的），不补客户端就缺外键行。菜谱子行随父菜谱整条走，不用补。
 // category_id 与 label_ids 都指向 labels（spec §7.4）。
-func backfillReferenced(ctx context.Context, q dbQuerier, payload *model.SyncPayload) error {
+func backfillReferenced(ctx context.Context, q dbQuerier, userID string, payload *model.SyncPayload) error {
 	refIngredients, refUnits, refLabels := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, r := range payload.Recipes {
 		refLabels[r.CategoryID] = true
@@ -715,21 +732,21 @@ func backfillReferenced(ctx context.Context, q dbQuerier, payload *model.SyncPay
 	}
 
 	if ids := pendingIDs(refIngredients, payload.Ingredients, func(it model.Ingredient) string { return it.ID }); len(ids) > 0 {
-		extra, err := queryIngredientsByIDs(ctx, q, ids)
+		extra, err := queryIngredientsByIDs(ctx, q, userID, ids)
 		if err != nil {
 			return err
 		}
 		payload.Ingredients = append(payload.Ingredients, extra...)
 	}
 	if ids := pendingIDs(refUnits, payload.Units, func(it model.Unit) string { return it.ID }); len(ids) > 0 {
-		extra, err := queryUnitsByIDs(ctx, q, ids)
+		extra, err := queryUnitsByIDs(ctx, q, userID, ids)
 		if err != nil {
 			return err
 		}
 		payload.Units = append(payload.Units, extra...)
 	}
 	if ids := pendingIDs(refLabels, payload.Labels, func(it model.Label) string { return it.ID }); len(ids) > 0 {
-		extra, err := queryLabelsByIDs(ctx, q, ids)
+		extra, err := queryLabelsByIDs(ctx, q, userID, ids)
 		if err != nil {
 			return err
 		}
@@ -774,54 +791,80 @@ func queryList[T any](ctx context.Context, q dbQuerier, sql string, args []any, 
 	return items, rows.Err()
 }
 
-const dictColumns = `id, name, created_at, updated_at, deleted_at`
-const labelColumns = `id, name, kind, created_at, updated_at, deleted_at`
+// 字典行也要带上范围列：客户端拿 scope_id 决定写进哪个范围，服务端是它唯一的来源。
+const dictColumns = `id, team_id::text, owner_id::text, name, created_at, updated_at, deleted_at`
+const labelColumns = `id, team_id::text, owner_id::text, name, kind, created_at, updated_at, deleted_at`
 
-func queryIngredients(ctx context.Context, q dbQuerier, sinceSeq int64) ([]model.Ingredient, error) {
-	return queryList(ctx, q, "SELECT "+dictColumns+" FROM ingredients WHERE server_seq > $1",
-		[]any{sinceSeq}, scanIngredient)
+// 字典的可见范围与菜谱一致（spec §8.4）：个人范围是我自己的，团队范围是我加入且未解散团队的。
+// 别名取 r 是为了复用 visibleRecipesSQL —— 三张字典表的列名与它要求的完全一致。
+func queryIngredients(ctx context.Context, q dbQuerier, userID string, sinceSeq int64) ([]model.Ingredient, error) {
+	return queryList(ctx, q,
+		"SELECT "+dictColumns+" FROM ingredients r WHERE r.server_seq > $1 AND "+visibleRecipesSQL,
+		[]any{sinceSeq, userID}, scanIngredient)
 }
 
-func queryIngredientsByIDs(ctx context.Context, q dbQuerier, ids []string) ([]model.Ingredient, error) {
-	return queryList(ctx, q, "SELECT "+dictColumns+" FROM ingredients WHERE id = ANY($1)",
-		[]any{ids}, scanIngredient)
+func queryIngredientsByIDs(ctx context.Context, q dbQuerier, userID string, ids []string) ([]model.Ingredient, error) {
+	return queryList(ctx, q,
+		"SELECT "+dictColumns+" FROM ingredients r WHERE r.id = ANY($1) AND "+visibleRecipesSQL,
+		[]any{ids, userID}, scanIngredient)
 }
 
-func queryUnits(ctx context.Context, q dbQuerier, sinceSeq int64) ([]model.Unit, error) {
-	return queryList(ctx, q, "SELECT "+dictColumns+" FROM units WHERE server_seq > $1",
-		[]any{sinceSeq}, scanUnit)
+func queryUnits(ctx context.Context, q dbQuerier, userID string, sinceSeq int64) ([]model.Unit, error) {
+	return queryList(ctx, q,
+		"SELECT "+dictColumns+" FROM units r WHERE r.server_seq > $1 AND "+visibleRecipesSQL,
+		[]any{sinceSeq, userID}, scanUnit)
 }
 
-func queryUnitsByIDs(ctx context.Context, q dbQuerier, ids []string) ([]model.Unit, error) {
-	return queryList(ctx, q, "SELECT "+dictColumns+" FROM units WHERE id = ANY($1)",
-		[]any{ids}, scanUnit)
+func queryUnitsByIDs(ctx context.Context, q dbQuerier, userID string, ids []string) ([]model.Unit, error) {
+	return queryList(ctx, q,
+		"SELECT "+dictColumns+" FROM units r WHERE r.id = ANY($1) AND "+visibleRecipesSQL,
+		[]any{ids, userID}, scanUnit)
 }
 
-func queryLabels(ctx context.Context, q dbQuerier, sinceSeq int64) ([]model.Label, error) {
-	return queryList(ctx, q, "SELECT "+labelColumns+" FROM labels WHERE server_seq > $1",
-		[]any{sinceSeq}, scanLabel)
+func queryLabels(ctx context.Context, q dbQuerier, userID string, sinceSeq int64) ([]model.Label, error) {
+	return queryList(ctx, q,
+		"SELECT "+labelColumns+" FROM labels r WHERE r.server_seq > $1 AND "+visibleRecipesSQL,
+		[]any{sinceSeq, userID}, scanLabel)
 }
 
-func queryLabelsByIDs(ctx context.Context, q dbQuerier, ids []string) ([]model.Label, error) {
-	return queryList(ctx, q, "SELECT "+labelColumns+" FROM labels WHERE id = ANY($1)",
-		[]any{ids}, scanLabel)
+func queryLabelsByIDs(ctx context.Context, q dbQuerier, userID string, ids []string) ([]model.Label, error) {
+	return queryList(ctx, q,
+		"SELECT "+labelColumns+" FROM labels r WHERE r.id = ANY($1) AND "+visibleRecipesSQL,
+		[]any{ids, userID}, scanLabel)
+}
+
+// 三张字典表的扫描形状一致：team_id / owner_id 拼回客户端认的 scope_id（个人范围用 owner）。
+func scanDictScope(teamID, ownerID *string) string {
+	if teamID != nil {
+		return "t:" + *teamID
+	}
+	if ownerID != nil {
+		return "p:" + *ownerID
+	}
+	return ""
 }
 
 func scanIngredient(rows pgx.Rows) (model.Ingredient, error) {
 	var it model.Ingredient
-	err := rows.Scan(&it.ID, &it.Name, &it.CreatedAt, &it.UpdatedAt, &it.DeletedAt)
+	var teamID, ownerID *string
+	err := rows.Scan(&it.ID, &teamID, &ownerID, &it.Name, &it.CreatedAt, &it.UpdatedAt, &it.DeletedAt)
+	it.ScopeID = scanDictScope(teamID, ownerID)
 	return it, err
 }
 
 func scanUnit(rows pgx.Rows) (model.Unit, error) {
 	var it model.Unit
-	err := rows.Scan(&it.ID, &it.Name, &it.CreatedAt, &it.UpdatedAt, &it.DeletedAt)
+	var teamID, ownerID *string
+	err := rows.Scan(&it.ID, &teamID, &ownerID, &it.Name, &it.CreatedAt, &it.UpdatedAt, &it.DeletedAt)
+	it.ScopeID = scanDictScope(teamID, ownerID)
 	return it, err
 }
 
 func scanLabel(rows pgx.Rows) (model.Label, error) {
 	var it model.Label
-	err := rows.Scan(&it.ID, &it.Name, &it.Kind, &it.CreatedAt, &it.UpdatedAt, &it.DeletedAt)
+	var teamID, ownerID *string
+	err := rows.Scan(&it.ID, &teamID, &ownerID, &it.Name, &it.Kind, &it.CreatedAt, &it.UpdatedAt, &it.DeletedAt)
+	it.ScopeID = scanDictScope(teamID, ownerID)
 	return it, err
 }
 

@@ -77,7 +77,8 @@ export const useInventoryStore = defineStore("inventory", () => {
       },
       ingredient_name: row.ingredient_name,
       unit_name: row.unit_name,
-      remaining: row.amount - row.used,
+      // 并发扣减会把同一批次扣两次（spec §8.7 有意不解决）：余量按 0 兜底，不显示负数
+      remaining: Math.max(0, row.amount - row.used),
     }));
   }
 

@@ -379,3 +379,18 @@ describe("库存按范围隔离", () => {
     expect(payload?.inventory_batches?.[0].deleted_at).not.toBeNull();
   });
 });
+
+describe("并发扣减的兜底显示", () => {
+  it("使用记录超过批次数量时余量按 0 兜底（不显示负数）", async () => {
+    const egg = await newIngredient();
+    const store = useInventoryStore();
+    await store.addBatch(batch({ ingredient_id: egg, amount: 100 }));
+    const id = store.batches[0].batch.id;
+    // 模拟两人几乎同时扣同一批次（spec §8.7：有意不解决，只兜底）
+    await insertUsage(id, 150);
+
+    await store.fetchAll();
+
+    expect(store.batches[0].remaining).toBe(0);
+  });
+});

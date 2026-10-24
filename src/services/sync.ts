@@ -573,11 +573,17 @@ export function setLastSyncedAtFor(uid: string | null, seq: string): void {
 }
 
 /**
- * 把游标清 0，让下一轮同步从零全量重拉（spec §12.10）。
- * 只有一个全局游标：新建 / 加入团队后，那个团队里 server_seq 早于游标的行否则永远拉不下来。
+ * 清游标 + 记一枚「下次必须从 0 拉」的标记（spec §12.10）。
+ *
+ * 只删 localStorage 不够：在途的那轮同步结束时会把新游标写回去（`setLastSyncedAtFor`），
+ * 排队补跑的那轮就带着一个高游标出发，新团队里 server_seq 早于它的行永远拉不下来。
+ * 标记在 doSync 里被读到就强制 sinceSeq=0，成功后才清掉。
  */
+const forceFullPullFor = new Set<string>();
+
 export function clearSyncCursorFor(uid: string | null): void {
   localStorage.removeItem(cursorKeyFor(uid));
+  if (uid) forceFullPullFor.add(uid);
 }
 
 /** 一次性迁移：本轮新增的 owner_avatar_url 只有「被重新下发的行」才会补上，
@@ -759,19 +765,6 @@ function rememberAndDownloadFiles(uid: string, refs: FileRef[]): void {
     });
 }
 
-/**
- * 把 `GET /community/recipes/{id}` 的详情载荷落进本地库（spec §11.1：浏览过的公开菜谱走本地缓存，
- * 详情页 / 图片 / 字典解析都复用现有落库与下载通道）。
- *
- * 走 applyRemoteChanges 的 LWW 合并而不是自己写 INSERT：远端的字典行与子行快照可能和本地
- * 已有数据同键，合并规则必须与 /sync 完全一致。图片下载不 await，失败只影响封面。
- */
-export async function cacheCommunityChanges(changes: SyncPayload, db: Db = getDb()): Promise<void> {
-  await applyRemoteChanges(changes, db);
-  const uid = getCurrentServerUserId();
-  if (uid) rememberAndDownloadFiles(uid, changes.files ?? []);
-}
-
 // 同步失败后按指数退避重新武装定时器：5s → 10s → 20s → 60s（上限）。
 function scheduleRetry(): void {
   if (syncTimer) clearTimeout(syncTimer);
@@ -835,7 +828,9 @@ async function doSync(): Promise<boolean> {
     filesPending = true;
   }
 
-  const lastSyncedAt = getLastSyncedAtFor(uid);
+  // 建团 / 入团 / 登录认领之后必须先全量重拉一次（标记见 clearSyncCursorFor）
+  const forceFullPull = forceFullPullFor.has(uid);
+  const lastSyncedAt = forceFullPull ? null : getLastSyncedAtFor(uid);
   const lastServerSeq = lastSyncedAt === null ? 0 : parseInt(lastSyncedAt, 10);
 
   let res: Awaited<ReturnType<typeof apiFetch<SyncResponse>>>;
@@ -884,6 +879,7 @@ async function doSync(): Promise<boolean> {
   rememberAndDownloadFiles(uid, res.data.remote_changes.files ?? []);
 
   setLastSyncedAtFor(uid, String(res.data.server_seq));
+  forceFullPullFor.delete(uid);
   pendingByUid.set(uid, emptyPayload());
   persistPending(uid);
   try {

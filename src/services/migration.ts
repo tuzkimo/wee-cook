@@ -51,10 +51,11 @@ export async function claimLocalScope(userId: string, db: Db = getDb()): Promise
     );
     for (const guest of guests) {
       const withKind = guest.kind === undefined ? "" : " AND kind = ?";
+      // 只认**活行**：合并到一条软删行上，引用会被指到界面里根本不存在的字典行
       const params: unknown[] = [target, guest.name];
       if (guest.kind !== undefined) params.push(guest.kind);
       const dups = await db.select<{ id: string }[]>(
-        `SELECT id FROM ${spec.table} WHERE scope_id = ? AND name = ?${withKind} LIMIT 1`,
+        `SELECT id FROM ${spec.table} WHERE scope_id = ? AND name = ?${withKind} AND deleted_at IS NULL LIMIT 1`,
         params,
       );
       const keep = dups[0]?.id;

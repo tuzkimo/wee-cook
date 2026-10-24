@@ -519,3 +519,26 @@ describe("同步载荷范围", () => {
     ]);
   });
 });
+
+describe("清游标后必须全量重拉", () => {
+  it("在途同步把高游标写回去，也不会让新团队的行漏掉", async () => {
+    setLastSyncedAtFor("u1", "9");
+    // 模拟建团 / 入团：清游标 + 打标记
+    const { clearSyncCursorFor } = await import("@/services/sync");
+    clearSyncCursorFor("u1");
+    // 在途那轮结束后把高游标写回来
+    setLastSyncedAtFor("u1", "12");
+
+    apiFetchMock.mockResolvedValue(okResponse(42));
+    await performSync();
+
+    const body = JSON.parse(String(apiFetchMock.mock.calls[0][1]?.body));
+    expect(body.last_server_seq).toBe(0);
+
+    // 成功之后标记消费掉：下一次又是正常增量
+    apiFetchMock.mockResolvedValue(okResponse(43));
+    await performSync();
+    const second = JSON.parse(String(apiFetchMock.mock.calls[1][1]?.body));
+    expect(second.last_server_seq).toBe(42);
+  });
+});

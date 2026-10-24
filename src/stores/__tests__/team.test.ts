@@ -158,3 +158,39 @@ describe("teamStore", () => {
     expect(mocks.createTeam).not.toHaveBeenCalled();
   });
 });
+
+describe("登录后的活动范围", () => {
+  it("没有保存过范围时，恢复也把活动范围切到个人范围（否则认领后是一屏空态）", async () => {
+    const store = useTeamStore();
+    await store.load();
+    expect(activeScope.value).toBe("p:u1");
+
+    setActiveScope("p:local");
+    await store.restoreCurrentTeam();
+
+    expect(store.currentTeamId).toBeNull();
+    expect(activeScope.value).toBe("p:u1");
+  });
+
+  it("保存过的团队还在缓存里就恢复它", async () => {
+    localStorage.setItem("current_team:u1", "t1");
+    const store = useTeamStore();
+    await store.load();
+
+    await store.restoreCurrentTeam();
+
+    expect(store.currentTeamId).toBe("t1");
+    expect(activeScope.value).toBe("t:t1");
+  });
+
+  it("保存过的团队已经不在缓存里就回落个人范围", async () => {
+    localStorage.setItem("current_team:u1", "gone");
+    const store = useTeamStore();
+    await store.load();
+
+    await store.restoreCurrentTeam();
+
+    expect(store.currentTeamId).toBeNull();
+    expect(activeScope.value).toBe("p:u1");
+  });
+});

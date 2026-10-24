@@ -81,16 +81,27 @@ func (s *TeamService) List(ctx context.Context, userID string) ([]TeamSummary, e
 }
 
 // Create 建团：写 teams + owner 成员两行，建者即 owner。
+// 两行必须在同一个事务里：只写进 teams 而成员行失败，会留下一个没有 owner、
+// 谁都看不见也修不好的团队（只能进库手工删）。
 func (s *TeamService) Create(ctx context.Context, userID, name string) (TeamSummary, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return TeamSummary{}, fmt.Errorf("begin create team: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
 	var id string
-	if err := s.pool.QueryRow(ctx,
+	if err := tx.QueryRow(ctx,
 		`INSERT INTO teams (name, created_by) VALUES ($1, $2) RETURNING id::text`,
 		name, userID).Scan(&id); err != nil {
 		return TeamSummary{}, fmt.Errorf("insert team: %w", err)
 	}
-	if _, err := s.pool.Exec(ctx,
+	if _, err := tx.Exec(ctx,
 		`INSERT INTO team_members (team_id, user_id, role) VALUES ($1, $2, $3)`, id, userID, roleOwner); err != nil {
 		return TeamSummary{}, fmt.Errorf("insert team owner: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return TeamSummary{}, fmt.Errorf("commit create team: %w", err)
 	}
 	return TeamSummary{ID: id, Name: name, Role: roleOwner, MemberCount: 1}, nil
 }

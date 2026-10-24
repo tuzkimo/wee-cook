@@ -118,7 +118,7 @@ func queryUsages(ctx context.Context, q dbQuerier, userID string, sinceSeq int64
 
 // backfillInventoryDicts 补齐「增量批次引用到、但本次没下发的字典行」：与菜谱同一套父行补齐，
 // 不补客户端就缺外键行（批次引用的食材 / 单位可能三天前就建好了）。
-func backfillInventoryDicts(ctx context.Context, q dbQuerier, payload *model.SyncPayload) error {
+func backfillInventoryDicts(ctx context.Context, q dbQuerier, userID string, payload *model.SyncPayload) error {
 	refIngredients, refUnits := map[string]bool{}, map[string]bool{}
 	for _, b := range payload.InventoryBatches {
 		refIngredients[b.IngredientID] = true
@@ -127,14 +127,14 @@ func backfillInventoryDicts(ctx context.Context, q dbQuerier, payload *model.Syn
 		}
 	}
 	if ids := pendingIDs(refIngredients, payload.Ingredients, func(it model.Ingredient) string { return it.ID }); len(ids) > 0 {
-		extra, err := queryIngredientsByIDs(ctx, q, ids)
+		extra, err := queryIngredientsByIDs(ctx, q, userID, ids)
 		if err != nil {
 			return err
 		}
 		payload.Ingredients = append(payload.Ingredients, extra...)
 	}
 	if ids := pendingIDs(refUnits, payload.Units, func(it model.Unit) string { return it.ID }); len(ids) > 0 {
-		extra, err := queryUnitsByIDs(ctx, q, ids)
+		extra, err := queryUnitsByIDs(ctx, q, userID, ids)
 		if err != nil {
 			return err
 		}

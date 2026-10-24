@@ -36,12 +36,15 @@ func (r fakeRow) Scan(dest ...any) error {
 		case *string:
 			*d = v.(string)
 		case **string:
-			// 可空字符串列（team_id）：nil 表示 SQL NULL
-			if v == nil {
+			// 可空字符串列（team_id / owner_id）：nil 表示 SQL NULL，*string 原样写入
+			switch value := v.(type) {
+			case nil:
 				*d = nil
-			} else {
-				got := v.(string)
+			case string:
+				got := value
 				*d = &got
+			case *string:
+				*d = value
 			}
 		case *bool:
 			*d = v.(bool)

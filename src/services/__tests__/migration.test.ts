@@ -322,3 +322,34 @@ describe("triggerFullPushAndSync", () => {
     expect(apiFetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe("认领：同名合并只认活行", () => {
+  it("目标范围只有同名的软删行时，不合并、不删游客那条，直接改范围", async () => {
+    await insertCategory(db);
+    // 目标范围那条「生抽」已软删：合并到它等于把引用指向一条界面里看不见的行
+    await db.execute(
+      "INSERT INTO ingredients (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('i-dead','p:me','生抽',?,?,?)",
+      [T0, T0, T0],
+    );
+    await db.execute(
+      "INSERT INTO ingredients (id,scope_id,name,created_at,updated_at,deleted_at) VALUES ('i-guest','p:local','生抽',?,?,NULL)",
+      [T0, T0],
+    );
+    await insertRecipe(db, "r-guest", "p:local");
+    await db.execute(
+      `INSERT INTO recipe_ingredients (id,recipe_id,ingredient_id,amount,unit_id,sort_order,updated_at,deleted_at)
+       VALUES ('ri1','r-guest','i-guest',1,NULL,0,?,NULL)`,
+      [T0],
+    );
+
+    await claimLocalScope("me");
+
+    expect(await db.select("SELECT id, scope_id FROM ingredients ORDER BY id")).toEqual([
+      { id: "i-dead", scope_id: "p:me" },
+      { id: "i-guest", scope_id: "p:me" },
+    ]);
+    expect(
+      await db.select("SELECT ingredient_id FROM recipe_ingredients WHERE id = 'ri1'"),
+    ).toEqual([{ ingredient_id: "i-guest" }]);
+  });
+});

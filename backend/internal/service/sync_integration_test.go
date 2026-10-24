@@ -945,3 +945,45 @@ func TestInventoryScopeIsolation(t *testing.T) {
 		t.Errorf("B 不该看到 A 的私人批次：%+v", got)
 	}
 }
+
+// Review Focus ⑤：字典也按范围隔离。A 与 B 各属不同家庭，各自的食材互不可见，
+// 且两个家庭同名的「生抽」不会被合并（服务端合并已带范围，下发也必须带）。
+func TestDictPullIsScopeIsolated(t *testing.T) {
+	pool := filesTestDB(t)
+	svc := NewSyncService(pool)
+
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+	teamA := seedTeam(t, pool, a)
+
+	now := time.Now().UTC()
+	mustPush(t, svc, a, model.SyncPayload{Ingredients: []model.Ingredient{
+		{ID: "i-a-" + uuid.NewString(), ScopeID: personalScopeID(a), Name: "盐", CreatedAt: now, UpdatedAt: now},
+	}})
+	mustPush(t, svc, a, model.SyncPayload{Ingredients: []model.Ingredient{
+		{ID: "i-team-" + uuid.NewString(), ScopeID: teamScopeID(teamA), Name: "生抽", CreatedAt: now, UpdatedAt: now},
+	}})
+	mustPush(t, svc, b, model.SyncPayload{Ingredients: []model.Ingredient{
+		{ID: "i-b-" + uuid.NewString(), ScopeID: personalScopeID(b), Name: "糖", CreatedAt: now, UpdatedAt: now},
+	}})
+
+	names := func(userID string) []string {
+		resp := mustPull(t, svc, userID, 0)
+		got := make([]string, 0, len(resp.RemoteChanges.Ingredients))
+		for _, it := range resp.RemoteChanges.Ingredients {
+			got = append(got, it.Name)
+			if it.ScopeID == "" {
+				t.Errorf("下发的字典行必须带 scope_id：%+v", it)
+			}
+		}
+		slices.Sort(got)
+		return got
+	}
+
+	if got := names(a); !slices.Equal(got, []string{"生抽", "盐"}) {
+		t.Errorf("A 的字典增量 = %v, want [生抽 盐]（个人 + 自己的团队）", got)
+	}
+	if got := names(b); !slices.Equal(got, []string{"糖"}) {
+		t.Errorf("B 的字典增量 = %v, want [糖]（看不到 A 的范围）", got)
+	}
+}
