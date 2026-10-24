@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, type Ref } from "vue";
 import { getDb } from "@/db";
+import { activeScope } from "@/services/scope";
 import { enqueueSync } from "@/services/sync";
 import type { Label, LabelKind, LabelWithUsage, WithUsage } from "@/types";
 import type { OwnedRefStore, RefRow } from "@/stores/refStore";
@@ -19,14 +20,17 @@ const KIND_LABEL: Record<LabelKind, string> = { category: "分类", tag: "标签
 
 // 先聚合成「标签 → 未删除菜谱数」再 LEFT JOIN 回主表；分类与标签两条路径 UNION ALL
 // 后 COUNT(DISTINCT recipe_id)，同一道菜两种路径都用也只算一次（规格 §5）。
-const USAGE_COUNTS = `SELECT x.id AS id, COUNT(DISTINCT x.recipe_id) AS cnt FROM (
+// 计数带范围：两个家庭的同名分类各算各的引用（服务端 / 本机都不跨范围）。
+function usageCountsSql(scope: string): string {
+  return `SELECT x.id AS id, COUNT(DISTINCT x.recipe_id) AS cnt FROM (
     SELECT r.category_id AS id, r.id AS recipe_id FROM recipes r
-      WHERE r.deleted_at IS NULL AND r.category_id IS NOT NULL
+      WHERE r.deleted_at IS NULL AND r.category_id IS NOT NULL AND r.scope_id = '${scope}'
     UNION ALL
     SELECT rl.label_id AS id, rl.recipe_id AS recipe_id FROM recipe_labels rl
-      JOIN recipes r2 ON r2.id = rl.recipe_id AND r2.deleted_at IS NULL
+      JOIN recipes r2 ON r2.id = rl.recipe_id AND r2.deleted_at IS NULL AND r2.scope_id = '${scope}'
   ) x
   GROUP BY x.id`;
+}
 
 export const useLabelStore = defineStore("label", (): LabelStore => {
   const labels = ref<LabelWithUsage[]>([]);
@@ -41,10 +45,10 @@ export const useLabelStore = defineStore("label", (): LabelStore => {
       `SELECT l.id, l.name, l.kind, l.created_at, l.updated_at, l.deleted_at,
               COALESCE(u.cnt, 0) AS usage_count
        FROM labels l
-       LEFT JOIN (${USAGE_COUNTS}) u ON u.id = l.id
-       WHERE l.kind = ? AND l.deleted_at IS NULL
+       LEFT JOIN (${usageCountsSql(activeScope.value)}) u ON u.id = l.id
+       WHERE l.scope_id = ? AND l.kind = ? AND l.deleted_at IS NULL
        ORDER BY usage_count DESC, l.name ASC, l.id ASC`,
-      [kind],
+      [activeScope.value, kind],
     );
   }
 
@@ -65,9 +69,9 @@ export const useLabelStore = defineStore("label", (): LabelStore => {
     };
     try {
       await getDb().execute(
-        `INSERT INTO labels (id, name, kind, created_at, updated_at, deleted_at)
-         VALUES (?, ?, ?, ?, ?, NULL)`,
-        [row.id, row.name, kind, now, now],
+        `INSERT INTO labels (id, scope_id, name, kind, created_at, updated_at, deleted_at)
+         VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+        [row.id, activeScope.value, row.name, kind, now, now],
       );
     } catch (error) {
       throw asDuplicateError(error, KIND_LABEL[kind]);
@@ -160,13 +164,17 @@ export const useLabelStore = defineStore("label", (): LabelStore => {
     exceptId?: string,
   ): Promise<void> {
     const db = getDb();
-    const where = "kind = ? AND deleted_at IS NULL AND lower(name) = lower(?)";
+    const where = "scope_id = ? AND kind = ? AND deleted_at IS NULL AND lower(name) = lower(?)";
     const rows = exceptId
       ? await db.select<{ id: string }[]>(
           `SELECT id FROM labels WHERE ${where} AND id != ?`,
-          [kind, name, exceptId],
+          [activeScope.value, kind, name, exceptId],
         )
-      : await db.select<{ id: string }[]>(`SELECT id FROM labels WHERE ${where}`, [kind, name]);
+      : await db.select<{ id: string }[]>(`SELECT id FROM labels WHERE ${where}`, [
+          activeScope.value,
+          kind,
+          name,
+        ]);
     if (rows.length > 0) throw new Error(`同名${KIND_LABEL[kind]}已存在`);
   }
 
@@ -180,7 +188,7 @@ export const useLabelStore = defineStore("label", (): LabelStore => {
 
   async function countRecipes(id: string): Promise<number> {
     const rows = await getDb().select<{ count: number }[]>(
-      `SELECT COALESCE(u.cnt, 0) AS count FROM (${USAGE_COUNTS}) u WHERE u.id = ?`,
+      `SELECT COALESCE(u.cnt, 0) AS count FROM (${usageCountsSql(activeScope.value)}) u WHERE u.id = ?`,
       [id],
     );
     return rows[0]?.count ?? 0;

@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { setDb, type Db } from "@/db";
 import { freshTestDb } from "@/db/__tests__/sqliteTestDb";
 import { useIngredientStore, useUnitStore } from "@/stores/ingredient";
+import { setActiveScope } from "@/services/scope";
 import type { RefRow } from "@/stores/refStore";
 import type { WithUsage } from "@/types";
 
@@ -21,12 +22,12 @@ async function seedRecipe(ingredientIds: string[]): Promise<string> {
   const now = new Date().toISOString();
   const categoryId = crypto.randomUUID();
   await db.execute(
-    "INSERT INTO labels (id, name, kind, created_at, updated_at, deleted_at) VALUES (?, ?, 'category', ?, ?, NULL)",
+    "INSERT INTO labels (id, scope_id, name, kind, created_at, updated_at, deleted_at) VALUES (?, 'p:local', ?, 'category', ?, ?, NULL)",
     [categoryId, categoryId, now, now],
   );
   const recipeId = crypto.randomUUID();
   await db.execute(
-    "INSERT INTO recipes (id, name, cover_path, category_id, created_at, updated_at, deleted_at) VALUES (?, '菜', NULL, ?, ?, ?, NULL)",
+    "INSERT INTO recipes (id, scope_id, name, cover_path, category_id, created_at, updated_at, deleted_at) VALUES (?, 'p:local', '菜', NULL, ?, ?, ?, NULL)",
     [recipeId, categoryId, now, now],
   );
   for (let i = 0; i < ingredientIds.length; i++) {
@@ -166,9 +167,9 @@ describe("库存引用守卫", () => {
     const now = new Date().toISOString();
     await db.execute(
       `INSERT INTO inventory_batches
-         (id, ingredient_id, amount, unit_id, produced_at, shelf_life_days, expires_at,
+         (id, scope_id, ingredient_id, amount, unit_id, produced_at, shelf_life_days, expires_at,
           created_at, updated_at, deleted_at)
-       VALUES (?, ?, 100, ?, NULL, NULL, NULL, ?, ?, NULL)`,
+       VALUES (?, 'p:local', ?, 100, ?, NULL, NULL, NULL, ?, ?, NULL)`,
       [crypto.randomUUID(), over.ingredientId ?? "", over.unitId ?? null, now, now],
     );
   }
@@ -202,13 +203,80 @@ describe("库存引用守卫", () => {
     const now = new Date().toISOString();
     await db.execute(
       `INSERT INTO inventory_batches
-         (id, ingredient_id, amount, unit_id, produced_at, shelf_life_days, expires_at,
+         (id, scope_id, ingredient_id, amount, unit_id, produced_at, shelf_life_days, expires_at,
           created_at, updated_at, deleted_at)
-       VALUES ('b1', ?, 100, NULL, NULL, NULL, NULL, ?, ?, ?)`,
+       VALUES ('b1', 'p:local', ?, 100, NULL, NULL, NULL, NULL, ?, ?, ?)`,
       [egg.id, now, now, now],
     );
     await store.fetchAll();
 
     await expect(store.remove(egg.id)).resolves.toBeUndefined();
+  });
+});
+
+describe("字典按范围隔离", () => {
+  // spec §7.1：两个家庭各有一个「生抽」互不影响，唯一索引是 (scope_id, name)。
+  it("两个范围各有一个「鸡蛋」互不冲突，fetchAll 只返回当前范围", async () => {
+    const store = useIngredientStore();
+    const now = new Date().toISOString();
+    await db.execute(
+      `INSERT INTO ingredients (id, scope_id, name, created_at, updated_at, deleted_at)
+       VALUES ('i-local', 'p:local', '鸡蛋', ?, ?, NULL),
+              ('i-team', 't:t1', '鸡蛋', ?, ?, NULL)`,
+      [now, now, now, now],
+    );
+
+    setActiveScope("p:local");
+    await store.fetchAll();
+    expect(store.items.map((item) => item.id)).toEqual(["i-local"]);
+
+    setActiveScope("t:t1");
+    await store.fetchAll();
+    expect(store.items.map((item) => item.id)).toEqual(["i-team"]);
+  });
+
+  it("同范围重名报错，跨范围同名不报错", async () => {
+    setActiveScope("p:local");
+    const store = useIngredientStore();
+    await store.add("鸡蛋");
+    await expect(store.add("鸡蛋")).rejects.toThrow(/同名/);
+
+    setActiveScope("t:t1");
+    await expect(store.add("鸡蛋")).resolves.toBeDefined();
+  });
+
+  it("删除前的「有引用不许删」只数同范围的引用", async () => {
+    setActiveScope("p:local");
+    const store = useIngredientStore();
+    const egg = await store.add("鸡蛋");
+    // 另一个范围的菜谱引用了同 id 的食材（同步来的跨范围数据），不该挡住本范围的删除
+    const now = new Date().toISOString();
+    const categoryId = crypto.randomUUID();
+    await db.execute(
+      "INSERT INTO labels (id, scope_id, name, kind, created_at, updated_at, deleted_at) VALUES (?, 't:t1', ?, 'category', ?, ?, NULL)",
+      [categoryId, categoryId, now, now],
+    );
+    const recipeId = crypto.randomUUID();
+    await db.execute(
+      `INSERT INTO recipes (id, scope_id, name, cover_path, category_id, created_at, updated_at, deleted_at)
+       VALUES (?, 't:t1', '菜', NULL, ?, ?, ?, NULL)`,
+      [recipeId, categoryId, now, now],
+    );
+    await db.execute(
+      `INSERT INTO recipe_ingredients (id, recipe_id, ingredient_id, amount, unit_id, sort_order, updated_at, deleted_at)
+       VALUES (?, ?, ?, NULL, NULL, 0, ?, NULL)`,
+      [crypto.randomUUID(), recipeId, egg.id, now],
+    );
+
+    await expect(store.remove(egg.id)).resolves.toBeUndefined();
+  });
+
+  it("add 写入的是当前范围", async () => {
+    setActiveScope("t:t1");
+    await useIngredientStore().add("生抽");
+    const rows = await db.select<{ scope_id: string }[]>(
+      "SELECT scope_id FROM ingredients WHERE name = '生抽'",
+    );
+    expect(rows).toEqual([{ scope_id: "t:t1" }]);
   });
 });

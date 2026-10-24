@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { setDb, type Db } from "@/db";
 import { freshTestDb } from "@/db/__tests__/sqliteTestDb";
 import { useLabelStore } from "@/stores/label";
+import { setActiveScope } from "@/services/scope";
 import type { LabelKind, LabelWithUsage } from "@/types";
 
 let db: Db;
@@ -17,7 +18,7 @@ async function seedLabel(kind: LabelKind, name: string): Promise<string> {
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
   await db.execute(
-    "INSERT INTO labels (id, name, kind, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, NULL)",
+    "INSERT INTO labels (id, scope_id, name, kind, created_at, updated_at, deleted_at) VALUES (?, 'p:local', ?, ?, ?, ?, NULL)",
     [id, name, kind, now, now],
   );
   return id;
@@ -28,8 +29,8 @@ async function seedRecipe(categoryId: string, tagIds: string[] = []): Promise<st
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
   await db.execute(
-    `INSERT INTO recipes (id, name, cover_path, category_id, created_at, updated_at, deleted_at)
-     VALUES (?, ?, NULL, ?, ?, ?, NULL)`,
+    `INSERT INTO recipes (id, scope_id, name, cover_path, category_id, created_at, updated_at, deleted_at)
+     VALUES (?, 'p:local', ?, NULL, ?, ?, ?, NULL)`,
     [id, id, categoryId, now, now],
   );
   for (const tagId of tagIds) {
@@ -234,5 +235,60 @@ describe("labelStore", () => {
     await categories.add("面食");
     expect(categories.items.value.map((item) => item.name)).toContain("面食");
     expect(tags.items.value.map((item) => item.name)).toEqual(["吐司"]);
+  });
+});
+
+describe("分类与标签按范围隔离", () => {
+  it("两个范围各有一个同名分类，fetchAll 只返回当前范围", async () => {
+    const now = new Date().toISOString();
+    await db.execute(
+      `INSERT INTO labels (id, scope_id, name, kind, created_at, updated_at, deleted_at)
+       VALUES ('l-local', 'p:local', '家常', 'category', ?, ?, NULL),
+              ('l-team', 't:t1', '家常', 'category', ?, ?, NULL)`,
+      [now, now, now, now],
+    );
+
+    const store = useLabelStore();
+    setActiveScope("p:local");
+    await store.fetchAll("category");
+    expect(store.labels.map((label) => label.id)).toEqual(["l-local"]);
+
+    setActiveScope("t:t1");
+    await store.fetchAll("category");
+    expect(store.labels.map((label) => label.id)).toEqual(["l-team"]);
+  });
+
+  it("同范围重名报错，跨范围同名不报错", async () => {
+    const store = useLabelStore();
+    setActiveScope("p:local");
+    await store.add("category", "家常");
+    await expect(store.add("category", "家常")).rejects.toThrow(/同名/);
+
+    setActiveScope("t:t1");
+    await expect(store.add("category", "家常")).resolves.toBeDefined();
+  });
+
+  it("使用次数只数同范围菜谱的引用", async () => {
+    const store = useLabelStore();
+    setActiveScope("p:local");
+    const mine = await store.add("category", "家常");
+
+    // 另一个范围里的同名分类 + 引用它的菜谱：不该算进本范围的 usage_count
+    const other = crypto.randomUUID();
+    const otherRecipe = crypto.randomUUID();
+    const now = new Date().toISOString();
+    await db.execute(
+      "INSERT INTO labels (id, scope_id, name, kind, created_at, updated_at, deleted_at) VALUES (?, 't:t1', '家常', 'category', ?, ?, NULL)",
+      [other, now, now],
+    );
+    await db.execute(
+      `INSERT INTO recipes (id, scope_id, name, cover_path, category_id, created_at, updated_at, deleted_at)
+       VALUES (?, 't:t1', '别人家的菜', NULL, ?, ?, ?, NULL)`,
+      [otherRecipe, other, now, now],
+    );
+
+    await store.fetchAll("category");
+    expect(usageOf(store.labels, "家常")).toBe(0);
+    expect(store.labels.map((label) => label.id)).toContain(mine.id);
   });
 });

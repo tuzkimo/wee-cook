@@ -1,5 +1,6 @@
 import { ref, type MaybeRefOrGetter, type Ref } from "vue";
 import { getDb } from "@/db";
+import { activeScope } from "@/services/scope";
 import { enqueueSync } from "@/services/sync";
 import type { WithUsage } from "@/types";
 
@@ -38,8 +39,9 @@ export function createRefStore(opts: { table: RefTable; label: string }): OwnedR
 
   async function fetchAll(): Promise<void> {
     const db = getDb();
+    const scope = activeScope.value;
     // 计数先聚合成「实体 → 未删除菜谱数」再 LEFT JOIN 回主表；写成 JOIN + GROUP BY
-    // 会退化成嵌套循环（规格 §5）。
+    // 会退化成嵌套循环（规格 §5）。引用计数只数同范围的菜谱。
     items.value = await db.select<WithUsage<RefRow>[]>(
       `SELECT t.id, t.name, t.created_at, t.updated_at, t.deleted_at,
               COALESCE(u.cnt, 0) AS usage_count
@@ -47,12 +49,13 @@ export function createRefStore(opts: { table: RefTable; label: string }): OwnedR
        LEFT JOIN (
          SELECT ri.${refColumn} AS id, COUNT(DISTINCT ri.recipe_id) AS cnt
          FROM recipe_ingredients ri
-         JOIN recipes r ON r.id = ri.recipe_id AND r.deleted_at IS NULL
+         JOIN recipes r ON r.id = ri.recipe_id AND r.deleted_at IS NULL AND r.scope_id = ?
          WHERE ri.deleted_at IS NULL
          GROUP BY ri.${refColumn}
        ) u ON u.id = t.id
-       WHERE t.deleted_at IS NULL
+       WHERE t.scope_id = ? AND t.deleted_at IS NULL
        ORDER BY usage_count DESC, t.name ASC, t.id ASC`,
+      [scope, scope],
     );
   }
 
@@ -71,8 +74,9 @@ export function createRefStore(opts: { table: RefTable; label: string }): OwnedR
       deleted_at: null,
     };
     await db.execute(
-      `INSERT INTO ${table} (id, name, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, NULL)`,
-      [row.id, row.name, now, now],
+      `INSERT INTO ${table} (id, scope_id, name, created_at, updated_at, deleted_at)
+       VALUES (?, ?, ?, ?, ?, NULL)`,
+      [row.id, activeScope.value, row.name, now, now],
     );
     const item: WithUsage<RefRow> = { ...row, usage_count: 0 };
     items.value.push(item);
@@ -125,8 +129,9 @@ export function createRefStore(opts: { table: RefTable; label: string }): OwnedR
 
   /** 写入后把该行入队（未登录 / 未配地址时 enqueueSync 自己早退）。 */
   async function enqueueRow(id: string): Promise<void> {
-    const rows = await getDb().select<RefRow[]>(
-      `SELECT id, name, created_at, updated_at, deleted_at FROM ${table} WHERE id = ?`,
+    // scope_id 一起带上：服务端按它把行落到个人 / 团队范围里
+    const rows = await getDb().select<(RefRow & { scope_id: string })[]>(
+      `SELECT id, scope_id, name, created_at, updated_at, deleted_at FROM ${table} WHERE id = ?`,
       [id],
     );
     if (rows.length === 0) return;
@@ -136,8 +141,8 @@ export function createRefStore(opts: { table: RefTable; label: string }): OwnedR
 
   async function assertNameFree(name: string, exceptId?: string): Promise<void> {
     const rows = await getDb().select<{ id: string }[]>(
-      `SELECT id FROM ${table} WHERE name = ? AND deleted_at IS NULL AND id != ?`,
-      [name, exceptId ?? ""],
+      `SELECT id FROM ${table} WHERE scope_id = ? AND name = ? AND deleted_at IS NULL AND id != ?`,
+      [activeScope.value, name, exceptId ?? ""],
     );
     if (rows.length > 0) throw new Error(`同名${label}已存在`);
   }
@@ -146,9 +151,9 @@ export function createRefStore(opts: { table: RefTable; label: string }): OwnedR
     const rows = await getDb().select<{ count: number }[]>(
       `SELECT COUNT(DISTINCT ri.recipe_id) AS count
        FROM recipe_ingredients ri
-       JOIN recipes r ON r.id = ri.recipe_id AND r.deleted_at IS NULL
+       JOIN recipes r ON r.id = ri.recipe_id AND r.deleted_at IS NULL AND r.scope_id = ?
        WHERE ri.${refColumn} = ? AND ri.deleted_at IS NULL`,
-      [id],
+      [activeScope.value, id],
     );
     return rows[0]?.count ?? 0;
   }
@@ -156,8 +161,8 @@ export function createRefStore(opts: { table: RefTable; label: string }): OwnedR
   async function countStocked(id: string): Promise<number> {
     const rows = await getDb().select<{ count: number }[]>(
       `SELECT COUNT(*) AS count FROM inventory_batches
-       WHERE ${refColumn} = ? AND deleted_at IS NULL`,
-      [id],
+       WHERE ${refColumn} = ? AND scope_id = ? AND deleted_at IS NULL`,
+      [id, activeScope.value],
     );
     return rows[0]?.count ?? 0;
   }
