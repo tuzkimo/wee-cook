@@ -200,7 +200,7 @@ async function confirmDelete(): Promise<void> {
 
           <!-- 扣减记录：这批食材被哪次制作扣过（spec §6.7） -->
           <div
-            v-if="(cooks.get(row.ingredient_id) ?? []).length > 0"
+            v-if="expanded.includes(row.ingredient_id) && (cooks.get(row.ingredient_id) ?? []).length > 0"
             class="mt-1 ml-2 flex flex-col border-l border-gray-100 pl-3"
           >
             <p class="py-1 text-xs text-text-secondary">扣减记录</p>

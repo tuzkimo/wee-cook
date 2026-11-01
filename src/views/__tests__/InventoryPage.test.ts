@@ -97,6 +97,26 @@ function rowOf(wrapper: VueWrapper, name: string): DOMWrapper<Element> {
   return found;
 }
 
+/** 菜谱 + 一条制作记录，并把已有使用记录归到它（seedBatch 不写 cook_id） */
+async function seedCookFor(recipeId: string, cookId: string, recipeName: string): Promise<void> {
+  const now = new Date().toISOString();
+  await db.execute(
+    "INSERT OR IGNORE INTO labels (id, scope_id, name, kind, created_at, updated_at) VALUES ('c1','p:local','家常','category',?,?)",
+    [now, now],
+  );
+  await db.execute(
+    `INSERT INTO recipes (id, scope_id, name, category_id, created_at, updated_at)
+     VALUES (?, 'p:local', ?, 'c1', ?, ?)`,
+    [recipeId, recipeName, now, now],
+  );
+  await db.execute(
+    `INSERT INTO cook_records (id, scope_id, owner_id, recipe_id, created_at, updated_at, deleted_at)
+     VALUES (?, 'p:local', NULL, ?, ?, ?, NULL)`,
+    [cookId, recipeId, now, now],
+  );
+  await db.execute("UPDATE inventory_usages SET cook_id = ?", [cookId]);
+}
+
 describe("InventoryPage", () => {
   it("没有任何批次时给空状态", async () => {
     const wrapper = await open();
@@ -198,22 +218,7 @@ describe("InventoryPage", () => {
       unitName: "g",
       used: 200,
     });
-    const now = new Date().toISOString();
-    await db.execute(
-      "INSERT INTO labels (id, scope_id, name, kind, created_at, updated_at) VALUES ('c1','p:local','家常','category',?,?)",
-      [now, now],
-    );
-    await db.execute(
-      `INSERT INTO recipes (id, scope_id, name, category_id, created_at, updated_at)
-       VALUES ('r1','p:local','红烧肉','c1',?,?)`,
-      [now, now],
-    );
-    await db.execute(
-      `INSERT INTO cook_records (id, scope_id, owner_id, recipe_id, created_at, updated_at, deleted_at)
-       VALUES ('cr1','p:local',NULL,'r1',?,?,NULL)`,
-      [now, now],
-    );
-    await db.execute("UPDATE inventory_usages SET cook_id = 'cr1'");
+    await seedCookFor("r1", "cr1", "红烧肉");
 
     const wrapper = await open();
     await rowOf(wrapper, "五花肉").trigger("click");
@@ -223,6 +228,26 @@ describe("InventoryPage", () => {
     expect(usage.text()).toContain("红烧肉");
     await usage.trigger("click");
     expect(mocks.push).toHaveBeenCalledWith("/recipe/r1/cook/cr1");
+  });
+
+  it("收起食材行后扣减记录一起收起", async () => {
+    await seedBatch({
+      ingredientId: "i1",
+      ingredientName: "五花肉",
+      amount: 500,
+      used: 200,
+    });
+    await seedCookFor("r1", "cr1", "红烧肉");
+
+    const wrapper = await open();
+    await rowOf(wrapper, "五花肉").trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-test="stock-usage"]').exists()).toBe(true);
+
+    await rowOf(wrapper, "五花肉").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="stock-usage"]').exists()).toBe(false);
   });
 
   it("没有扣减记录时不渲染扣减块", async () => {

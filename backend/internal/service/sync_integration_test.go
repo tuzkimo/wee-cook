@@ -1001,6 +1001,51 @@ func TestCookRecordMergeAndUsageCookie(t *testing.T) {
 	}
 }
 
+// 只有作者能改自己的制作记录：队友推同 id 的更新（含软删墓碑）整条跳过，与菜谱同一口径。
+func TestCookRecordUpdateOnlyByOwner(t *testing.T) {
+	pool := filesTestDB(t)
+	svc := NewSyncService(pool)
+	ctx := context.Background()
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+	teamID := seedTeam(t, pool, a)
+	seedTeamMember(t, pool, teamID, b)
+
+	now := time.Now().UTC()
+	cr := newCook(teamScopeID(teamID), now)
+	mustPush(t, svc, a, model.SyncPayload{CookRecords: []model.CookRecord{cr}})
+
+	steal := cr
+	steal.RecipeID = "r-stolen"
+	steal.UpdatedAt = now.Add(time.Hour)
+	tombstone := now.Add(time.Hour)
+	steal.DeletedAt = &tombstone
+	mustPush(t, svc, b, model.SyncPayload{CookRecords: []model.CookRecord{steal}})
+
+	var recipeID string
+	var deletedAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT recipe_id, deleted_at FROM cook_records WHERE id = $1`, cr.ID).
+		Scan(&recipeID, &deletedAt); err != nil {
+		t.Fatal(err)
+	}
+	if recipeID != cr.RecipeID || deletedAt != nil {
+		t.Errorf("非作者的更新必须跳过: recipe_id=%s deleted_at=%v", recipeID, deletedAt)
+	}
+
+	// 作者自己改仍然生效
+	mine := cr
+	mine.RecipeID = "r-mine"
+	mine.UpdatedAt = now.Add(2 * time.Hour)
+	mustPush(t, svc, a, model.SyncPayload{CookRecords: []model.CookRecord{mine}})
+	if err := pool.QueryRow(ctx, `SELECT recipe_id FROM cook_records WHERE id = $1`, cr.ID).
+		Scan(&recipeID); err != nil {
+		t.Fatal(err)
+	}
+	if recipeID != "r-mine" {
+		t.Errorf("作者自己的更新应生效: recipe_id=%s, want r-mine", recipeID)
+	}
+}
+
 // 拉取：队友的制作记录带服务端派生的作者昵称，下发的使用记录带 cook_id。
 func TestCookRecordPullWithAuthorAndCookie(t *testing.T) {
 	pool := filesTestDB(t)

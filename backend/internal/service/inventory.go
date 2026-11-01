@@ -55,11 +55,12 @@ func (s *SyncService) mergeBatch(ctx context.Context, tx dbQuerier, userID strin
 // team_id 取解析好的范围；范围不允许变（库里那条不在这次推送的范围里就整条跳过）。
 // 请求里带的作者两列不落库：它们由服务端 JOIN users 派生。
 func (s *SyncService) mergeCookRecord(ctx context.Context, tx dbQuerier, userID string, sc scope, cr model.CookRecord) error {
+	var remoteOwner string
 	var remoteTeamID *string
 	var remoteUpdatedAt time.Time
 	err := tx.QueryRow(ctx,
-		"SELECT team_id::text, updated_at FROM cook_records WHERE id = $1 FOR UPDATE", cr.ID).
-		Scan(&remoteTeamID, &remoteUpdatedAt)
+		"SELECT owner_id, team_id::text, updated_at FROM cook_records WHERE id = $1 FOR UPDATE", cr.ID).
+		Scan(&remoteOwner, &remoteTeamID, &remoteUpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		_, err := tx.Exec(ctx,
 			`INSERT INTO cook_records (id, owner_id, team_id, recipe_id, created_at, updated_at, deleted_at)
@@ -69,6 +70,10 @@ func (s *SyncService) mergeCookRecord(ctx context.Context, tx dbQuerier, userID 
 	}
 	if err != nil {
 		return err
+	}
+	// 只有作者能改：记录是「谁做的」，别人（哪怕是队友）改不了它的菜谱与墓碑
+	if remoteOwner != userID {
+		return nil
 	}
 	if !sameTeam(remoteTeamID, sc.TeamID) {
 		return nil
