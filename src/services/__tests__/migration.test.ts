@@ -95,6 +95,15 @@ async function insertUsage(db: Db, id: string, scope: string, batchId: string): 
   );
 }
 
+async function insertCook(db: Db, id: string, scope: string): Promise<void> {
+  await db.execute(
+    `INSERT INTO cook_records
+       (id,scope_id,owner_id,recipe_id,created_at,updated_at,deleted_at)
+     VALUES (?,?,NULL,'r1',?,?,NULL)`,
+    [id, scope, T0, T0],
+  );
+}
+
 async function owners(db: Db): Promise<Record<string, string | null>> {
   const rows = await db.select<{ id: string; owner_id: string | null }[]>(
     "SELECT id, owner_id FROM recipes ORDER BY id",
@@ -103,7 +112,15 @@ async function owners(db: Db): Promise<Record<string, string | null>> {
 }
 
 async function localScopeRows(db: Db): Promise<number> {
-  const tables = ["recipes", "ingredients", "units", "labels", "inventory_batches", "inventory_usages"];
+  const tables = [
+    "recipes",
+    "ingredients",
+    "units",
+    "labels",
+    "inventory_batches",
+    "inventory_usages",
+    "cook_records",
+  ];
   let total = 0;
   for (const table of tables) {
     const rows = await db.select<{ n: number }[]>(
@@ -147,6 +164,7 @@ describe("claimLocalScope", () => {
     await insertRecipe(db, "r-guest", "p:local");
     await insertBatch(db, "b1", "p:local", "i1");
     await insertUsage(db, "us1", "p:local", "b1");
+    await insertCook(db, "cr1", "p:local");
 
     await claimLocalScope("me");
 
@@ -156,6 +174,9 @@ describe("claimLocalScope", () => {
     ]);
     expect(
       await db.select("SELECT scope_id, owner_id FROM inventory_usages WHERE id = 'us1'"),
+    ).toEqual([{ scope_id: "p:me", owner_id: "me" }]);
+    expect(
+      await db.select("SELECT scope_id, owner_id FROM cook_records WHERE id = 'cr1'"),
     ).toEqual([{ scope_id: "p:me", owner_id: "me" }]);
     expect(await db.select("SELECT scope_id FROM ingredients WHERE id = 'i1'")).toEqual([
       { scope_id: "p:me" },

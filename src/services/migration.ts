@@ -78,7 +78,7 @@ export async function claimLocalScope(userId: string, db: Db = getDb()): Promise
     userId,
     LOCAL_SCOPE,
   ]);
-  for (const table of ["inventory_batches", "inventory_usages"]) {
+  for (const table of ["inventory_batches", "inventory_usages", "cook_records"]) {
     await db.execute(
       `UPDATE ${table} SET scope_id = ?, owner_id = COALESCE(owner_id, ?) WHERE scope_id = ?`,
       [target, userId, LOCAL_SCOPE],

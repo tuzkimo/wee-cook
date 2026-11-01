@@ -9,7 +9,7 @@ import {
   type RecipePayload,
   type SyncPayload,
 } from "@/services/sync";
-import type { InventoryBatch, InventoryUsage } from "@/types";
+import type { CookRecord, InventoryBatch, InventoryUsage } from "@/types";
 
 const T0 = "2026-01-01T00:00:00.000Z";
 const T1 = "2026-01-02T00:00:00.000Z";
@@ -690,6 +690,68 @@ function usage(over: Partial<InventoryUsage> & { id: string }): InventoryUsage {
     ...over,
   };
 }
+
+function record(over: Partial<CookRecord> & { id: string }): CookRecord {
+  return {
+    scope_id: "p:local",
+    owner_id: "u1",
+    recipe_id: "r1",
+    owner_nickname: null,
+    owner_avatar_url: null,
+    created_at: T0,
+    updated_at: T0,
+    deleted_at: null,
+    ...over,
+  };
+}
+
+describe("applyRemoteChanges：制作记录", () => {
+  it("走 LWW：后到的 updated_at 覆盖，旧的不动", async () => {
+    const { db } = await freshTestDb();
+
+    await applyRemoteChanges(remote({ cook_records: [record({ id: "cr1" })] }), db);
+    await applyRemoteChanges(
+      remote({ cook_records: [record({ id: "cr1", recipe_id: "r2", updated_at: T1 })] }),
+      db,
+    );
+    await applyRemoteChanges(
+      remote({ cook_records: [record({ id: "cr1", recipe_id: "r3", updated_at: T0 })] }),
+      db,
+    );
+
+    expect(await db.select("SELECT recipe_id FROM cook_records WHERE id = 'cr1'")).toEqual([
+      { recipe_id: "r2" },
+    ]);
+
+    const T2 = "2026-01-03T00:00:00.000Z";
+    await applyRemoteChanges(
+      remote({
+        cook_records: [record({ id: "cr1", recipe_id: "r2", updated_at: T2, deleted_at: T2 })],
+      }),
+      db,
+    );
+    expect(await db.select("SELECT deleted_at FROM cook_records WHERE id = 'cr1'")).toEqual([
+      { deleted_at: T2 },
+    ]);
+  });
+
+  it("LWW 跳过分支仍刷新作者两列（作者改名不需要重发记录本体）", async () => {
+    const { db } = await freshTestDb();
+
+    await applyRemoteChanges(
+      remote({ cook_records: [record({ id: "cr1", owner_nickname: "老王", updated_at: T1 })] }),
+      db,
+    );
+    await applyRemoteChanges(
+      remote({ cook_records: [record({ id: "cr1", owner_nickname: "王叔", updated_at: T0 })] }),
+      db,
+    );
+
+    expect(await db.select("SELECT owner_nickname FROM cook_records WHERE id = 'cr1'")).toEqual([
+      { owner_nickname: "王叔" },
+    ]);
+  });
+});
 
 describe("applyRemoteChanges：库存", () => {
   it("批次按 LWW：旧的不覆盖新的，软删墓碑落库", async () => {

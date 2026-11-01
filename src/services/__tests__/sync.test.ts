@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setDb, type Db } from "@/db";
 import { freshTestDb } from "@/db/__tests__/sqliteTestDb";
-import type { Unit } from "@/types";
+import type { InventoryUsage, Unit } from "@/types";
 
 // auth store 只在本任务里被读/写三个字段，用可变对象替身即可（真 store 依赖 plugin-store）。
 const authState = vi.hoisted(() => ({
@@ -497,6 +497,20 @@ describe("collectPushPayload 按我的范围收集", () => {
     expect(payload.inventory_usages.map((row) => row.id)).toEqual(["us-mine"]);
   });
 
+  it("制作记录只推 owner_id = 我 的", async () => {
+    await db.execute(
+      `INSERT INTO cook_records
+         (id, scope_id, owner_id, recipe_id, created_at, updated_at, deleted_at) VALUES
+         ('cr-mine','p:u1','u1','r1',?,?,NULL),
+         ('cr-other','p:u2','u2','r2',?,?,NULL)`,
+      [T0, T0, T0, T0],
+    );
+
+    const payload = await collectPushPayload();
+
+    expect(payload.cook_records.map((row) => row.id)).toEqual(["cr-mine"]);
+  });
+
   it("localScopeIds 返回个人范围 + teams 缓存表里的团队", async () => {
     await db.execute(
       `INSERT INTO teams (id, name, role, member_count) VALUES ('t1','自己家','owner',1), ('t2','爸妈家','member',3)`,
@@ -507,6 +521,40 @@ describe("collectPushPayload 按我的范围收集", () => {
 });
 
 describe("同步载荷范围", () => {
+  it("旧待推送队列缺 cook_records 键时归一化成空数组", () => {
+    localStorage.setItem(
+      "pending_sync:u1",
+      JSON.stringify({
+        ingredients: [],
+        units: [],
+        labels: [],
+        recipes: [],
+        inventory_batches: [],
+        inventory_usages: [],
+        files: [],
+      }),
+    );
+    const row: InventoryUsage = {
+      id: "us1",
+      scope_id: "p:u1",
+      owner_id: "u1",
+      cook_id: null,
+      recipe_id: "r1",
+      batch_id: "b1",
+      amount: 10,
+      used_at: T0,
+      updated_at: T0,
+      deleted_at: null,
+    };
+
+    enqueueSync({ inventory_usages: [row] });
+    resetSyncTimers();
+
+    const parsed = JSON.parse(localStorage.getItem("pending_sync:u1") as string);
+    expect(parsed.cook_records).toEqual([]);
+    expect(parsed.inventory_usages).toHaveLength(1);
+  });
+
   it("上行载荷的键集被钉死，AI 会话表不许混进来", () => {
     expect(Object.keys(emptyPayload()).sort()).toEqual([
       "cook_records",

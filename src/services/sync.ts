@@ -419,16 +419,71 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Db = getDb()):
     }
   }
 
+  // --- 制作记录：LWW（先于使用记录合并，使用记录要指向它）---
+  for (const cr of remote.cook_records ?? []) {
+    const local = await db.select<{ updated_at: string }[]>(
+      "SELECT updated_at FROM cook_records WHERE id = ?",
+      [cr.id],
+    );
+    const nickname = cr.owner_nickname ?? null;
+    const avatar = cr.owner_avatar_url ?? null;
+    if (local.length > 0 && compareTimestamp(cr.updated_at, local[0].updated_at) <= 0) {
+      // 本体不动，但作者改了昵称 / 头像只随这次下发走：跳过分支只刷这两列
+      await db.execute(
+        "UPDATE cook_records SET owner_nickname = ?, owner_avatar_url = ? WHERE id = ?",
+        [nickname, avatar, cr.id],
+      );
+      continue;
+    }
+    const updatedAt = toIsoTimestamp(cr.updated_at);
+    if (local.length === 0) {
+      await db.execute(
+        `INSERT INTO cook_records
+           (id,scope_id,owner_id,recipe_id,owner_nickname,owner_avatar_url,
+            created_at,updated_at,deleted_at)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
+        [
+          cr.id,
+          cr.scope_id,
+          cr.owner_id ?? null,
+          cr.recipe_id,
+          nickname,
+          avatar,
+          toIsoTimestamp(cr.created_at),
+          updatedAt,
+          normDeleted(cr.deleted_at),
+        ],
+      );
+    } else {
+      await db.execute(
+        `UPDATE cook_records SET scope_id=?, owner_id=?, recipe_id=?, owner_nickname=?,
+                owner_avatar_url=?, updated_at=?, deleted_at=?
+         WHERE id=?`,
+        [
+          cr.scope_id,
+          cr.owner_id ?? null,
+          cr.recipe_id,
+          nickname,
+          avatar,
+          updatedAt,
+          normDeleted(cr.deleted_at),
+          cr.id,
+        ],
+      );
+    }
+  }
+
   // --- 使用记录：只增不清（INSERT OR IGNORE，不参与 LWW、不软删）---
   for (const u of remote.inventory_usages ?? []) {
     await db.execute(
       `INSERT OR IGNORE INTO inventory_usages
-         (id,scope_id,owner_id,recipe_id,batch_id,amount,used_at,updated_at,deleted_at)
-       VALUES (?,?,?,?,?,?,?,?,?)`,
+         (id,scope_id,owner_id,cook_id,recipe_id,batch_id,amount,used_at,updated_at,deleted_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`,
       [
         u.id,
         u.scope_id,
         u.owner_id ?? null,
+        u.cook_id ?? null,
         u.recipe_id,
         u.batch_id,
         u.amount,
@@ -555,6 +610,7 @@ const PENDING_KEYS = [
   "recipes",
   "inventory_batches",
   "inventory_usages",
+  "cook_records",
 ] as const;
 
 /** 当前登录用户的 id；未登录 / 未初始化时 null。内部调 auth store。 */
@@ -626,7 +682,8 @@ function pendingFor(uid: string | null): SyncPayload {
   if (!p) {
     try {
       const raw = localStorage.getItem(pendingQueueKey(uid));
-      p = raw ? (JSON.parse(raw) as SyncPayload) : emptyPayload();
+      // 旧版本存下的队列没有 cook_records 这类新键：与空载荷合并补全，否则读 p.cook_records.length 就炸
+      p = raw ? { ...emptyPayload(), ...(JSON.parse(raw) as Partial<SyncPayload>) } : emptyPayload();
     } catch {
       p = emptyPayload();
     }
