@@ -189,6 +189,52 @@ describe("InventoryPage", () => {
     expect(left[0].deleted_at).not.toBeNull();
   });
 
+  it("展开食材后显示扣减记录，点击进制作详情", async () => {
+    await seedBatch({
+      ingredientId: "i1",
+      ingredientName: "五花肉",
+      amount: 500,
+      unitId: "g",
+      unitName: "g",
+      used: 200,
+    });
+    const now = new Date().toISOString();
+    await db.execute(
+      "INSERT INTO labels (id, scope_id, name, kind, created_at, updated_at) VALUES ('c1','p:local','家常','category',?,?)",
+      [now, now],
+    );
+    await db.execute(
+      `INSERT INTO recipes (id, scope_id, name, category_id, created_at, updated_at)
+       VALUES ('r1','p:local','红烧肉','c1',?,?)`,
+      [now, now],
+    );
+    await db.execute(
+      `INSERT INTO cook_records (id, scope_id, owner_id, recipe_id, created_at, updated_at, deleted_at)
+       VALUES ('cr1','p:local',NULL,'r1',?,?,NULL)`,
+      [now, now],
+    );
+    await db.execute("UPDATE inventory_usages SET cook_id = 'cr1'");
+
+    const wrapper = await open();
+    await rowOf(wrapper, "五花肉").trigger("click");
+    await flushPromises();
+
+    const usage = wrapper.get('[data-test="stock-usage"]');
+    expect(usage.text()).toContain("红烧肉");
+    await usage.trigger("click");
+    expect(mocks.push).toHaveBeenCalledWith("/recipe/r1/cook/cr1");
+  });
+
+  it("没有扣减记录时不渲染扣减块", async () => {
+    await seedBatch({ ingredientId: "i1", ingredientName: "五花肉", amount: 500 });
+
+    const wrapper = await open();
+    await rowOf(wrapper, "五花肉").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="stock-usage"]').exists()).toBe(false);
+  });
+
   it("点右上角加号打开录入弹层", async () => {
     await useIngredientStore().add("鸡蛋");
     const wrapper = await open();

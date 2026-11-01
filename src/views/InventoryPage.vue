@@ -2,6 +2,7 @@
 // 库存页（spec §6.3）：按食材汇总余量，展开看每批次。
 // 余量全部由 store 从「批次数量 − 使用记录」派生，这一页不自己算账。
 import { computed, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 import { Plus, Trash2 } from "lucide-vue-next";
 import AppHeader from "@/components/AppHeader.vue";
 import BatchSheet from "@/components/BatchSheet.vue";
@@ -9,10 +10,12 @@ import TeamSwitcher from "@/components/TeamSwitcher.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import { useInventoryStore } from "@/stores/inventory";
 import { useTeamStore } from "@/stores/team";
-import type { BatchStock, IngredientStock } from "@/types";
+import type { BatchStock, IngredientCook, IngredientStock } from "@/types";
 import { expiryState, groupStockRows, localToday, sortStockRows } from "@/utils/inventory";
+import { formatLocalDateTime } from "@/utils/time";
 
 const store = useInventoryStore();
+const router = useRouter();
 // 团队缓存要就绪，页头的切换器才有选项（未登录时它自己整块不渲染）
 const team = useTeamStore();
 
@@ -20,6 +23,8 @@ const showSheet = ref(false);
 // 展开状态是本页内存态：用数组而不是 Set，改一次就是新数组，模板自然重渲染
 const expanded = ref<string[]>([]);
 const pendingDelete = ref<BatchStock | null>(null);
+// 展开时按需查一次该食材的扣减记录，收起再展开不重查
+const cooks = ref(new Map<string, IngredientCook[]>());
 const deleteError = ref("");
 
 const today = localToday(new Date());
@@ -32,10 +37,33 @@ onMounted(async () => {
   await store.fetchAll();
 });
 
-function toggle(ingredientId: string): void {
-  expanded.value = expanded.value.includes(ingredientId)
-    ? expanded.value.filter((id) => id !== ingredientId)
-    : [...expanded.value, ingredientId];
+async function toggle(ingredientId: string): Promise<void> {
+  const open = !expanded.value.includes(ingredientId);
+  expanded.value = open
+    ? [...expanded.value, ingredientId]
+    : expanded.value.filter((id) => id !== ingredientId);
+  if (open && !cooks.value.has(ingredientId)) await loadIngredientCooks(ingredientId);
+}
+
+/** 扣减记录查不到时不阻塞库存页：保留空数组即可（整块不渲染） */
+async function loadIngredientCooks(ingredientId: string): Promise<void> {
+  let rows: IngredientCook[] = [];
+  try {
+    rows = await store.fetchIngredientCooks(ingredientId);
+  } catch {
+    rows = [];
+  }
+  cooks.value = new Map(cooks.value).set(ingredientId, rows);
+}
+
+function cookAmountText(item: IngredientCook): string {
+  return item.parts
+    .map((part) => `${trimNumber(part.amount)}${part.unit_name ? ` ${part.unit_name}` : ""}`)
+    .join("、");
+}
+
+function openCook(item: IngredientCook): void {
+  void router.push(`/recipe/${item.record.recipe_id}/cook/${item.record.id}`);
 }
 
 function batchesOf(ingredientId: string): BatchStock[] {
@@ -169,6 +197,29 @@ async function confirmDelete(): Promise<void> {
               </button>
             </li>
           </ul>
+
+          <!-- 扣减记录：这批食材被哪次制作扣过（spec §6.7） -->
+          <div
+            v-if="(cooks.get(row.ingredient_id) ?? []).length > 0"
+            class="mt-1 ml-2 flex flex-col border-l border-gray-100 pl-3"
+          >
+            <p class="py-1 text-xs text-text-secondary">扣减记录</p>
+            <button
+              v-for="item in cooks.get(row.ingredient_id) ?? []"
+              :key="item.record.id"
+              type="button"
+              data-test="stock-usage"
+              class="flex w-full items-center justify-between gap-3 py-2 text-left text-xs transition-colors hover:bg-gray-50"
+              @click="openCook(item)"
+            >
+              <span class="min-w-0 truncate text-text">
+                {{ item.recipe_name ?? "已删除的菜谱" }}
+              </span>
+              <span class="shrink-0 text-text-secondary">
+                {{ formatLocalDateTime(item.record.created_at) }} · {{ cookAmountText(item) }}
+              </span>
+            </button>
+          </div>
         </li>
       </ul>
     </div>
