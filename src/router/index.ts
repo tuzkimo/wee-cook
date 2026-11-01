@@ -13,6 +13,8 @@ import InventoryPage from "@/views/InventoryPage.vue";
 import TeamListPage from "@/views/TeamListPage.vue";
 import TeamMembersPage from "@/views/TeamMembersPage.vue";
 import CookPage from "@/views/CookPage.vue";
+import CookRecords from "@/views/CookRecords.vue";
+import CookRecordDetail from "@/views/CookRecordDetail.vue";
 
 export default createRouter({
   history: createWebHistory(),
@@ -23,7 +25,10 @@ export default createRouter({
     { path: "/recipe/filter", name: "recipe-filter", component: FilterPage, meta: { hideTab: true } },
     { path: "/recipe/:id/edit", name: "recipe-edit", component: RecipeEdit, meta: { hideTab: true } },
     { path: "/recipe/:id/guide", name: "recipe-guide", component: RecipeGuide, meta: { hideTab: true } },
-    { path: "/recipe/:id/cook", name: "recipe-cook", component: CookPage, meta: { hideTab: true } },
+    // 制作三条路由：静态段 new 排在参数段 :cookId 之前（与 /recipe/filter 同一约定）
+    { path: "/recipe/:id/cook", name: "recipe-cook-records", component: CookRecords, meta: { hideTab: true } },
+    { path: "/recipe/:id/cook/new", name: "recipe-cook", component: CookPage, meta: { hideTab: true } },
+    { path: "/recipe/:id/cook/:cookId", name: "recipe-cook-record", component: CookRecordDetail, meta: { hideTab: true } },
     { path: "/recipe/:id", name: "recipe-detail", component: RecipeDetail, meta: { hideTab: true } },
     { path: "/ai", name: "ai", component: AiPage },
     { path: "/me", name: "me", component: MePage },

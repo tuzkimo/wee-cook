@@ -56,9 +56,13 @@ describe("库存路由", () => {
     expect(route?.meta.hideTab).toBeUndefined();
   });
 
-  it("/recipe/:id/cook 存在、隐藏 tab 栏且不会被 /recipe/:id 抢走", () => {
-    const route = router.getRoutes().find((r) => r.path === "/recipe/:id/cook");
-    expect(route?.meta.hideTab).toBe(true);
-    expect(router.resolve("/recipe/r1/cook").name).toBe("recipe-cook");
+  it("制作三条路由存在且隐藏 tab 栏，new 不被 :cookId 抢走", () => {
+    const paths = ["/recipe/:id/cook", "/recipe/:id/cook/new", "/recipe/:id/cook/:cookId"];
+    for (const path of paths) {
+      expect(router.getRoutes().find((r) => r.path === path)?.meta.hideTab, path).toBe(true);
+    }
+    expect(router.resolve("/recipe/r1/cook").name).toBe("recipe-cook-records");
+    expect(router.resolve("/recipe/r1/cook/new").name).toBe("recipe-cook");
+    expect(router.resolve("/recipe/r1/cook/cr1").name).toBe("recipe-cook-record");
   });
 });
