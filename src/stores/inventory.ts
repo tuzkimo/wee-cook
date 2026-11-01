@@ -8,7 +8,11 @@ import type {
   BatchInput,
   BatchStock,
   CookLine,
+  CookRecord,
+  CookRecordAuthor,
+  CookRecordDetail,
   CookResult,
+  IngredientCook,
   InventoryBatch,
   InventoryUsage,
 } from "@/types";
@@ -31,6 +35,27 @@ interface BatchRow {
   unit_name: string | null;
   used: number;
 }
+
+/** 制作记录明细的一行（一条 SQL 分组后的扁平行）。 */
+interface CookDetailRow {
+  id: string;
+  scope_id: string;
+  owner_id: string | null;
+  recipe_id: string;
+  owner_nickname: string | null;
+  owner_avatar_url: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+  recipe_name: string | null;
+  ingredient_name: string | null;
+  unit_name: string | null;
+  amount: number | null;
+}
+
+const COOK_COLUMNS = `cr.id, cr.scope_id, cr.owner_id, cr.recipe_id, cr.owner_nickname,
+  cr.owner_avatar_url, cr.created_at, cr.updated_at, cr.deleted_at, rc.name AS recipe_name,
+  i.name AS ingredient_name, u.name AS unit_name, SUM(us.amount) AS amount`;
 
 /**
  * 库存归范围（个人 / 团队）：所有查询都带 `scope_id = 当前范围`（spec §11.3）。
@@ -150,6 +175,15 @@ export const useInventoryStore = defineStore("inventory", () => {
     const usedThisCook = new Map<string, number>();
     const result: CookResult = { deducted: [], shortfall: [] };
     const now = new Date().toISOString();
+    const cookId = crypto.randomUUID();
+    // 记录先于使用记录写（spec §5）：最坏是「有记录、没扣减」，账不会错
+    await getDb().execute(
+      `INSERT INTO cook_records
+         (id, scope_id, owner_id, recipe_id, owner_nickname, owner_avatar_url,
+          created_at, updated_at, deleted_at)
+       VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, NULL)`,
+      [cookId, activeScope.value, currentOwnerId(), recipeId, now, now],
+    );
     const written: string[] = [];
 
     for (const line of lines) {
@@ -171,12 +205,13 @@ export const useInventoryStore = defineStore("inventory", () => {
         const usageId = crypto.randomUUID();
         await getDb().execute(
           `INSERT INTO inventory_usages
-             (id, scope_id, owner_id, recipe_id, batch_id, amount, used_at, updated_at, deleted_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+             (id, scope_id, owner_id, cook_id, recipe_id, batch_id, amount, used_at, updated_at, deleted_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
           [
             usageId,
             activeScope.value,
             currentOwnerId(),
+            cookId,
             recipeId,
             step.batch_id,
             step.amount,
@@ -205,8 +240,71 @@ export const useInventoryStore = defineStore("inventory", () => {
     }
 
     await fetchAll();
-    await enqueueUsages(written);
+    await enqueueCook(cookId, written);
     return result;
+  }
+
+  /** 该菜谱的制作记录（明细按食材 + 单位跨批次合并，时间倒序）。 */
+  async function fetchCookRecords(recipeId: string): Promise<CookRecordDetail[]> {
+    const rows = await getDb().select<CookDetailRow[]>(
+      `SELECT ${COOK_COLUMNS}
+       FROM cook_records cr
+       LEFT JOIN recipes rc ON rc.id = cr.recipe_id AND rc.deleted_at IS NULL
+       LEFT JOIN inventory_usages us ON us.cook_id = cr.id AND us.deleted_at IS NULL
+       LEFT JOIN inventory_batches b ON b.id = us.batch_id
+       LEFT JOIN ingredients i ON i.id = b.ingredient_id
+       LEFT JOIN units u ON u.id = b.unit_id
+       WHERE cr.scope_id = ? AND cr.deleted_at IS NULL AND cr.recipe_id = ?
+       GROUP BY cr.id, b.ingredient_id, b.unit_id
+       ORDER BY cr.created_at DESC, cr.id`,
+      [activeScope.value, recipeId],
+    );
+    return groupDetails(rows);
+  }
+
+  /** 单条制作记录；不在当前范围或不存在时返回 null。 */
+  async function fetchCookRecord(id: string): Promise<CookRecordDetail | null> {
+    const rows = await getDb().select<CookDetailRow[]>(
+      `SELECT ${COOK_COLUMNS}
+       FROM cook_records cr
+       LEFT JOIN recipes rc ON rc.id = cr.recipe_id AND rc.deleted_at IS NULL
+       LEFT JOIN inventory_usages us ON us.cook_id = cr.id AND us.deleted_at IS NULL
+       LEFT JOIN inventory_batches b ON b.id = us.batch_id
+       LEFT JOIN ingredients i ON i.id = b.ingredient_id
+       LEFT JOIN units u ON u.id = b.unit_id
+       WHERE cr.scope_id = ? AND cr.deleted_at IS NULL AND cr.id = ?
+       GROUP BY cr.id, b.ingredient_id, b.unit_id`,
+      [activeScope.value, id],
+    );
+    return groupDetails(rows)[0] ?? null;
+  }
+
+  /** 某食材被哪些制作扣过（时间倒序；同一记录可能跨多个单位）。 */
+  async function fetchIngredientCooks(ingredientId: string): Promise<IngredientCook[]> {
+    const rows = await getDb().select<CookDetailRow[]>(
+      `SELECT ${COOK_COLUMNS}
+       FROM cook_records cr
+       LEFT JOIN recipes rc ON rc.id = cr.recipe_id AND rc.deleted_at IS NULL
+       JOIN inventory_usages us ON us.cook_id = cr.id AND us.deleted_at IS NULL
+       JOIN inventory_batches b ON b.id = us.batch_id
+       JOIN ingredients i ON i.id = b.ingredient_id
+       LEFT JOIN units u ON u.id = b.unit_id
+       WHERE cr.scope_id = ? AND cr.deleted_at IS NULL AND b.ingredient_id = ?
+       GROUP BY cr.id, b.unit_id
+       ORDER BY cr.created_at DESC, cr.id`,
+      [activeScope.value, ingredientId],
+    );
+    const byRecord = new Map<string, IngredientCook>();
+    for (const row of rows) {
+      const item = byRecord.get(row.id) ?? {
+        record: toRecord(row),
+        recipe_name: row.recipe_name,
+        parts: [],
+      };
+      item.parts.push({ unit_name: row.unit_name, amount: row.amount ?? 0 });
+      byRecord.set(row.id, item);
+    }
+    return [...byRecord.values()];
   }
 
   /**
@@ -221,18 +319,82 @@ export const useInventoryStore = defineStore("inventory", () => {
     if (rows.length > 0) enqueueSync({ inventory_batches: rows });
   }
 
-  async function enqueueUsages(ids: string[]): Promise<void> {
-    if (ids.length === 0) return;
-    const marks = ids.map(() => "?").join(",");
+  /** 记录与它的使用记录一起入队（服务端按「先父后子」合并）。 */
+  async function enqueueCook(recordId: string, usageIds: string[]): Promise<void> {
+    const records = await getDb().select<CookRecord[]>("SELECT * FROM cook_records WHERE id = ?", [
+      recordId,
+    ]);
+    if (records.length === 0) return;
+    if (usageIds.length === 0) {
+      enqueueSync({ cook_records: records });
+      return;
+    }
+    const marks = usageIds.map(() => "?").join(",");
     const rows = await getDb().select<InventoryUsage[]>(
       `SELECT * FROM inventory_usages WHERE id IN (${marks})`,
-      ids,
+      usageIds,
     );
-    if (rows.length > 0) enqueueSync({ inventory_usages: rows });
+    enqueueSync({ cook_records: records, inventory_usages: rows });
   }
 
-  return { batches, fetchAll, addBatch, removeBatch, remainingByIngredient, commitCook };
+  return {
+    batches,
+    fetchAll,
+    addBatch,
+    removeBatch,
+    remainingByIngredient,
+    commitCook,
+    fetchCookRecords,
+    fetchCookRecord,
+    fetchIngredientCooks,
+  };
 });
+
+/** 作者只在这里解析：自己做的回退到当前账号，队友做的用服务端派生的两列。 */
+function authorOf(record: CookRecord): CookRecordAuthor {
+  const auth = useAuthStore();
+  const mine = record.owner_id === null || record.owner_id === auth.serverUserId;
+  return mine
+    ? { name: auth.nickname, avatar_url: auth.avatarUrl }
+    : { name: record.owner_nickname, avatar_url: record.owner_avatar_url };
+}
+
+function toRecord(row: CookDetailRow): CookRecord {
+  return {
+    id: row.id,
+    scope_id: row.scope_id,
+    owner_id: row.owner_id,
+    recipe_id: row.recipe_id,
+    owner_nickname: row.owner_nickname,
+    owner_avatar_url: row.owner_avatar_url,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    deleted_at: row.deleted_at,
+  };
+}
+
+/** 扁平行 → 每条记录一份明细（保持 SQL 的行顺序）。 */
+function groupDetails(rows: CookDetailRow[]): CookRecordDetail[] {
+  const byRecord = new Map<string, CookRecordDetail>();
+  for (const row of rows) {
+    const item = byRecord.get(row.id) ?? {
+      record: toRecord(row),
+      author: authorOf(toRecord(row)),
+      recipe_name: row.recipe_name,
+      lines: [],
+    };
+    // 没有使用记录（或批次行已不在）时明细为空：页面显示「这次没有扣任何库存」
+    if (row.ingredient_name !== null) {
+      item.lines.push({
+        ingredient_name: row.ingredient_name,
+        unit_name: row.unit_name,
+        amount: row.amount ?? 0,
+      });
+    }
+    byRecord.set(row.id, item);
+  }
+  return [...byRecord.values()];
+}
 
 /** 当前登录用户：未登录为 null（未登录录的批次只有本机的游客范围能看）。 */
 function currentOwnerId(): string | null {

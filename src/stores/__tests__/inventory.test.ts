@@ -279,6 +279,143 @@ describe("commitCook", () => {
   });
 });
 
+describe("commitCook 记录", () => {
+  it("每次确认写一条 cook_records，所有使用记录带同一个 cook_id", async () => {
+    const egg = await newIngredient();
+    const store = useInventoryStore();
+    await store.addBatch(batch({ ingredient_id: egg, amount: 300 }));
+
+    await store.commitCook("r1", [
+      { ingredient_id: egg, ingredient_name: "鸡蛋", unit_id: null, unit_name: null, amount: 100 },
+    ]);
+
+    const records = await db.select<{ id: string; recipe_id: string; created_at: string }[]>(
+      "SELECT id, recipe_id, created_at FROM cook_records",
+    );
+    expect(records).toHaveLength(1);
+    expect(records[0].recipe_id).toBe("r1");
+    const usages = await db.select<{ cook_id: string | null }[]>(
+      "SELECT cook_id FROM inventory_usages",
+    );
+    expect(usages).toEqual([{ cook_id: records[0].id }]);
+    expect(enqueueSync).toHaveBeenCalledWith(
+      expect.objectContaining({ cook_records: [expect.objectContaining({ id: records[0].id })] }),
+    );
+  });
+
+  it("一行都没扣成也留下一条空记录", async () => {
+    const egg = await newIngredient();
+    const store = useInventoryStore();
+
+    await store.commitCook("r1", [
+      { ingredient_id: egg, ingredient_name: "鸡蛋", unit_id: null, unit_name: null, amount: 2 },
+    ]);
+
+    expect(await db.select("SELECT COUNT(*) AS n FROM cook_records")).toEqual([{ n: 1 }]);
+    expect(await countUsages()).toBe(0);
+  });
+});
+
+describe("fetchCookRecords / fetchCookRecord", () => {
+  it("按记录聚合，跨批次同单位合并，只取该菜谱与当前范围，按时间倒序", async () => {
+    const egg = await newIngredient();
+    const wheat = await newIngredient("面粉");
+    const store = useInventoryStore();
+    const now = new Date().toISOString();
+    await db.execute(
+      `INSERT INTO labels (id, scope_id, name, kind, created_at, updated_at)
+       VALUES ('c1','p:local','家常','category',?,?)`,
+      [now, now],
+    );
+    await db.execute(
+      `INSERT INTO recipes (id, scope_id, name, category_id, created_at, updated_at)
+       VALUES ('r1','p:local','红烧肉','c1',?,?), ('r2','p:local','馒头','c1',?,?)`,
+      [now, now, now, now],
+    );
+    await store.addBatch(batch({ ingredient_id: egg, amount: 100 }));
+    await store.addBatch(batch({ ingredient_id: egg, amount: 100 }));
+    await store.addBatch(batch({ ingredient_id: wheat, amount: 100 }));
+
+    // 时间戳要可控：两次 commitCook 在同一毫秒内会让倒序断言不稳定
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-11-01T10:00:00Z"));
+      await store.commitCook("r1", [
+        { ingredient_id: egg, ingredient_name: "鸡蛋", unit_id: null, unit_name: null, amount: 150 },
+      ]);
+      vi.setSystemTime(new Date("2026-11-01T12:00:00Z"));
+      await store.commitCook("r1", [
+        { ingredient_id: wheat, ingredient_name: "面粉", unit_id: null, unit_name: null, amount: 10 },
+      ]);
+      vi.setSystemTime(new Date("2026-11-01T11:00:00Z"));
+      await store.commitCook("r2", [
+        { ingredient_id: egg, ingredient_name: "鸡蛋", unit_id: null, unit_name: null, amount: 5 },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const records = await store.fetchCookRecords("r1");
+
+    expect(records).toHaveLength(2);
+    expect(records[0].recipe_name).toBe("红烧肉");
+    expect(records[0].lines).toEqual([{ ingredient_name: "面粉", unit_name: null, amount: 10 }]);
+    expect(records[1].lines).toEqual([{ ingredient_name: "鸡蛋", unit_name: null, amount: 150 }]);
+    expect(await store.fetchCookRecord(records[1].record.id)).toMatchObject({
+      recipe_name: "红烧肉",
+    });
+  });
+
+  it("删掉批次后历史仍完整（不追改）", async () => {
+    const egg = await newIngredient();
+    const store = useInventoryStore();
+    await store.addBatch(batch({ ingredient_id: egg, amount: 100 }));
+    await store.commitCook("r1", [
+      { ingredient_id: egg, ingredient_name: "鸡蛋", unit_id: null, unit_name: null, amount: 40 },
+    ]);
+    const before = await store.fetchCookRecords("r1");
+    for (const item of store.batches) await store.removeBatch(item.batch.id);
+
+    expect(await store.fetchCookRecords("r1")).toEqual(before);
+  });
+});
+
+describe("fetchIngredientCooks", () => {
+  it("只返回该食材的扣减记录，跨批次合计，菜谱名可空", async () => {
+    const egg = await newIngredient();
+    const wheat = await newIngredient("面粉");
+    const store = useInventoryStore();
+    const now = new Date().toISOString();
+    await db.execute(
+      `INSERT INTO labels (id, scope_id, name, kind, created_at, updated_at)
+       VALUES ('c1','p:local','家常','category',?,?)`,
+      [now, now],
+    );
+    await db.execute(
+      `INSERT INTO recipes (id, scope_id, name, category_id, created_at, updated_at)
+       VALUES ('r1','p:local','红烧肉','c1',?,?)`,
+      [now, now],
+    );
+    await store.addBatch(batch({ ingredient_id: egg, amount: 100 }));
+    await store.addBatch(batch({ ingredient_id: egg, amount: 100 }));
+    await store.addBatch(batch({ ingredient_id: wheat, amount: 100 }));
+    await store.commitCook("r1", [
+      { ingredient_id: egg, ingredient_name: "鸡蛋", unit_id: null, unit_name: null, amount: 150 },
+    ]);
+    await store.commitCook("r2", [
+      { ingredient_id: wheat, ingredient_name: "面粉", unit_id: null, unit_name: null, amount: 10 },
+    ]);
+
+    const cooks = await store.fetchIngredientCooks(egg);
+
+    expect(cooks).toHaveLength(1);
+    expect(cooks[0].recipe_name).toBe("红烧肉");
+    expect(cooks[0].parts).toEqual([{ unit_name: null, amount: 150 }]);
+    // 菜谱行已被清掉（r2 没有 recipes 行）时菜谱名为 null，页面回退「已删除的菜谱」
+    expect((await store.fetchIngredientCooks(wheat))[0].recipe_name).toBeNull();
+  });
+});
+
 describe("库存按范围隔离", () => {
   it("两个范围各录一批同食材批次，fetchAll 只返回当前范围", async () => {
     const egg = await newIngredient();

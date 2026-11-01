@@ -509,6 +509,7 @@ describe("collectPushPayload 按我的范围收集", () => {
 describe("同步载荷范围", () => {
   it("上行载荷的键集被钉死，AI 会话表不许混进来", () => {
     expect(Object.keys(emptyPayload()).sort()).toEqual([
+      "cook_records",
       "files",
       "ingredients",
       "inventory_batches",

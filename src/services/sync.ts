@@ -10,7 +10,15 @@ import { apiFetch, hasBaseUrl } from "./api";
 import { downloadPendingFiles, uploadPendingFiles, type FileRef } from "./syncFiles";
 import { useAuthStore } from "@/stores/auth";
 import { LOCAL_SCOPE, personalScope, teamScope } from "@/services/scope";
-import type { Ingredient, InventoryBatch, InventoryUsage, Label, Recipe, Unit } from "@/types";
+import type {
+  CookRecord,
+  Ingredient,
+  InventoryBatch,
+  InventoryUsage,
+  Label,
+  Recipe,
+  Unit,
+} from "@/types";
 
 /** 菜谱子表在协议里的形状：跟父菜谱整条走，不带各自的 updated_at / deleted_at（spec §7.3）。 */
 export interface RecipeStepPayload {
@@ -47,6 +55,7 @@ export interface SyncPayload {
   /** 库存跟着同步走（spec §8.1）：批次 LWW、使用记录只增不清。 */
   inventory_batches: InventoryBatch[];
   inventory_usages: InventoryUsage[];
+  cook_records: CookRecord[];
   files: FileRef[];
 }
 
@@ -68,6 +77,7 @@ export function emptyPayload(): SyncPayload {
     recipes: [],
     inventory_batches: [],
     inventory_usages: [],
+    cook_records: [],
     files: [],
   };
 }
@@ -989,6 +999,9 @@ export async function collectPushPayload(): Promise<SyncPayload> {
   const usages = uid
     ? await db.select<InventoryUsage[]>("SELECT * FROM inventory_usages WHERE owner_id = ?", [uid])
     : [];
+  const cooks = uid
+    ? await db.select<CookRecord[]>("SELECT * FROM cook_records WHERE owner_id = ?", [uid])
+    : [];
   const recipeRows = uid
     ? await db.select<Recipe[]>("SELECT * FROM recipes WHERE owner_id = ?", [uid])
     : [];
@@ -1022,6 +1035,12 @@ export async function collectPushPayload(): Promise<SyncPayload> {
     inventory_usages: usages.map((row) => ({
       ...row,
       used_at: toIsoTimestamp(row.used_at),
+      updated_at: toIsoTimestamp(row.updated_at),
+      deleted_at: normDeleted(row.deleted_at),
+    })),
+    cook_records: cooks.map((row) => ({
+      ...row,
+      created_at: toIsoTimestamp(row.created_at),
       updated_at: toIsoTimestamp(row.updated_at),
       deleted_at: normDeleted(row.deleted_at),
     })),
