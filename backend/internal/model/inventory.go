@@ -23,9 +23,12 @@ type InventoryBatch struct {
 
 // InventoryUsage 是一条扣减记录：只增不清，used_at 就是发生时间（没有 created_at）。
 type InventoryUsage struct {
-	ID        string     `json:"id"`
-	ScopeID   string     `json:"scope_id"`
-	OwnerID   string     `json:"owner_id"`
+	ID      string `json:"id"`
+	ScopeID string `json:"scope_id"`
+	OwnerID string `json:"owner_id"`
+	// CookID 归属到那条制作记录；老客户端 / 开发库里的存量行是 NULL（不做回填）。
+	// 不做存在性校验：记录被范围校验跳过时宁可保留这条扣减（丢了它余量永久对不上）。
+	CookID    *string    `json:"cook_id"`
 	RecipeID  string     `json:"recipe_id"`
 	BatchID   string     `json:"batch_id"`
 	Amount    float64    `json:"amount"`

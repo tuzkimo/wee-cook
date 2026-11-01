@@ -905,6 +905,160 @@ func TestUsageAppendOnlyIdempotent(t *testing.T) {
 	}
 }
 
+// --- Task 8：制作记录 ---
+
+func newCook(scopeID string, updatedAt time.Time) model.CookRecord {
+	return model.CookRecord{
+		ID:        "cr-" + uuid.NewString(),
+		ScopeID:   scopeID,
+		RecipeID:  "r-1",
+		CreatedAt: updatedAt,
+		UpdatedAt: updatedAt,
+	}
+}
+
+// 记录推送落库、usage 带 cook_id、更旧推送不覆盖、范围不符时记录跳过但扣减仍落库。
+func TestCookRecordMergeAndUsageCookie(t *testing.T) {
+	pool := filesTestDB(t)
+	svc := NewSyncService(pool)
+	ctx := context.Background()
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+
+	now := time.Now().UTC()
+	batch := newBatch(t, personalScopeID(a), now.Add(-time.Hour))
+	mustPush(t, svc, a, model.SyncPayload{InventoryBatches: []model.InventoryBatch{batch}})
+
+	cr := newCook(personalScopeID(a), now)
+	usage := model.InventoryUsage{
+		ID: "us-" + uuid.NewString(), ScopeID: personalScopeID(a),
+		RecipeID: cr.RecipeID, BatchID: batch.ID, Amount: 100, UsedAt: now, UpdatedAt: now,
+		CookID: &cr.ID,
+	}
+	mustPush(t, svc, a, model.SyncPayload{
+		CookRecords:     []model.CookRecord{cr},
+		InventoryUsages: []model.InventoryUsage{usage},
+	})
+
+	var recipeID, owner string
+	if err := pool.QueryRow(ctx, `SELECT recipe_id, owner_id FROM cook_records WHERE id = $1`, cr.ID).
+		Scan(&recipeID, &owner); err != nil {
+		t.Fatalf("查询制作记录失败: %v", err)
+	}
+	if recipeID != cr.RecipeID || owner != a {
+		t.Fatalf("首次推送: recipe_id=%s owner=%s, want %s / A(%s)", recipeID, owner, cr.RecipeID, a)
+	}
+	var cookID *string
+	if err := pool.QueryRow(ctx, `SELECT cook_id FROM inventory_usages WHERE id = $1`, usage.ID).
+		Scan(&cookID); err != nil {
+		t.Fatalf("查询使用记录失败: %v", err)
+	}
+	if cookID == nil || *cookID != cr.ID {
+		t.Errorf("使用记录应带 cook_id=%s, got %v", cr.ID, cookID)
+	}
+
+	// LWW：更旧的一次推送不得覆盖
+	older := cr
+	older.RecipeID = "r-old"
+	older.UpdatedAt = now.Add(-2 * time.Hour)
+	mustPush(t, svc, a, model.SyncPayload{CookRecords: []model.CookRecord{older}})
+	if err := pool.QueryRow(ctx, `SELECT recipe_id FROM cook_records WHERE id = $1`, cr.ID).
+		Scan(&recipeID); err != nil {
+		t.Fatal(err)
+	}
+	if recipeID != cr.RecipeID {
+		t.Errorf("更旧的推送覆盖了新值: recipe_id = %s, want %s", recipeID, cr.RecipeID)
+	}
+
+	// 范围不符：B 不是团队成员的团队记录被跳过
+	teamA := seedTeam(t, pool, a)
+	foreign := newCook(teamScopeID(teamA), now)
+	mustPush(t, svc, b, model.SyncPayload{CookRecords: []model.CookRecord{foreign}})
+	var exists bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM cook_records WHERE id = $1)`, foreign.ID).
+		Scan(&exists); err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Error("非成员推的团队制作记录不该落库")
+	}
+
+	// 记录被跳过时扣减仍要落库：丢了它就永久对不上库存
+	bBatch := newBatch(t, personalScopeID(b), now.Add(-time.Hour))
+	mustPush(t, svc, b, model.SyncPayload{InventoryBatches: []model.InventoryBatch{bBatch}})
+	orphan := model.InventoryUsage{
+		ID: "us-" + uuid.NewString(), ScopeID: personalScopeID(b),
+		RecipeID: "r-1", BatchID: bBatch.ID, Amount: 50, UsedAt: now, UpdatedAt: now,
+		CookID: &foreign.ID,
+	}
+	mustPush(t, svc, b, model.SyncPayload{InventoryUsages: []model.InventoryUsage{orphan}})
+	if err := pool.QueryRow(ctx, `SELECT cook_id FROM inventory_usages WHERE id = $1`, orphan.ID).
+		Scan(&cookID); err != nil {
+		t.Fatalf("记录被跳过时扣减丢了: %v", err)
+	}
+	if cookID == nil || *cookID != foreign.ID {
+		t.Errorf("扣减的 cook_id 应原样保留 %s, got %v", foreign.ID, cookID)
+	}
+}
+
+// 拉取：队友的制作记录带服务端派生的作者昵称，下发的使用记录带 cook_id。
+func TestCookRecordPullWithAuthorAndCookie(t *testing.T) {
+	pool := filesTestDB(t)
+	svc := NewSyncService(pool)
+	ctx := context.Background()
+	a := seedUser(t, pool)
+	b := seedUser(t, pool)
+	if _, err := pool.Exec(ctx, `UPDATE users SET nickname = '甲' WHERE id = $1`, a); err != nil {
+		t.Fatal(err)
+	}
+
+	teamID := seedTeam(t, pool, a)
+	seedTeamMember(t, pool, teamID, b)
+
+	now := time.Now().UTC()
+	batch := newBatch(t, teamScopeID(teamID), now.Add(-time.Hour))
+	cr := newCook(teamScopeID(teamID), now)
+	usage := model.InventoryUsage{
+		ID: "us-" + uuid.NewString(), ScopeID: teamScopeID(teamID),
+		RecipeID: cr.RecipeID, BatchID: batch.ID, Amount: 30, UsedAt: now, UpdatedAt: now,
+		CookID: &cr.ID,
+	}
+	mustPush(t, svc, a, model.SyncPayload{
+		InventoryBatches: []model.InventoryBatch{batch},
+		CookRecords:      []model.CookRecord{cr},
+		InventoryUsages:  []model.InventoryUsage{usage},
+	})
+
+	remote := mustPull(t, svc, b, 0).RemoteChanges
+	var found *model.CookRecord
+	for i := range remote.CookRecords {
+		if remote.CookRecords[i].ID == cr.ID {
+			found = &remote.CookRecords[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("B 应能拉到团队的制作记录，got %+v", remote.CookRecords)
+	}
+	if found.OwnerNickname == nil || *found.OwnerNickname != "甲" {
+		t.Errorf("响应应带服务端派生的作者昵称「甲」，got %v", found.OwnerNickname)
+	}
+	if found.ScopeID != teamScopeID(teamID) {
+		t.Errorf("记录范围应为 %s, got %s", teamScopeID(teamID), found.ScopeID)
+	}
+	var pulled *model.InventoryUsage
+	for i := range remote.InventoryUsages {
+		if remote.InventoryUsages[i].ID == usage.ID {
+			pulled = &remote.InventoryUsages[i]
+		}
+	}
+	if pulled == nil {
+		t.Fatalf("B 应能拉到团队的扣减记录，got %+v", remote.InventoryUsages)
+	}
+	if pulled.CookID == nil || *pulled.CookID != cr.ID {
+		t.Errorf("下发的使用记录应带 cook_id=%s, got %v", cr.ID, pulled.CookID)
+	}
+}
+
 // 非成员推团队批次被跳过；A 的私人批次不出现在 B 的拉取里。
 func TestInventoryScopeIsolation(t *testing.T) {
 	pool := filesTestDB(t)

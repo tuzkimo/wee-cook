@@ -360,13 +360,14 @@ func (s *SyncService) Sync(ctx context.Context, userID string, req model.SyncReq
 	return resp, nil
 }
 
-// maxServerSeqSQL 覆盖全部六条增量通道：游标是它们的最大 server_seq，空库上取 0（而不是 NULL）。
+// maxServerSeqSQL 覆盖全部七条增量通道：游标是它们的最大 server_seq，空库上取 0（而不是 NULL）。
 const maxServerSeqSQL = `SELECT COALESCE(MAX(s), 0) FROM (
 	SELECT MAX(server_seq) AS s FROM ingredients
 	UNION ALL SELECT MAX(server_seq) FROM units
 	UNION ALL SELECT MAX(server_seq) FROM labels
 	UNION ALL SELECT MAX(server_seq) FROM recipes
 	UNION ALL SELECT MAX(server_seq) FROM inventory_batches
+	UNION ALL SELECT MAX(server_seq) FROM cook_records
 	UNION ALL SELECT MAX(server_seq) FROM inventory_usages
 ) m`
 
@@ -499,6 +500,19 @@ func (s *SyncService) mergeLocalChanges(ctx context.Context, tx dbQuerier, userI
 			return fmt.Errorf("merge batch %s: %w", b.ID, err)
 		}
 	}
+	// 制作记录在批次之后、使用记录之前：使用记录要指向它（先父后子）。
+	for _, cr := range req.CookRecords {
+		sc, err := s.resolveScope(ctx, tx, userID, cr.ScopeID)
+		if errors.Is(err, errScopeInvalid) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := s.mergeCookRecord(ctx, tx, userID, sc, cr); err != nil {
+			return fmt.Errorf("merge cook record %s: %w", cr.ID, err)
+		}
+	}
 	for _, u := range req.InventoryUsages {
 		sc, err := s.resolveScope(ctx, tx, userID, u.ScopeID)
 		if errors.Is(err, errScopeInvalid) {
@@ -528,13 +542,14 @@ func (s *SyncService) mergeOneDict(ctx context.Context, tx dbQuerier, spec dictS
 
 // getRemoteChanges 读本次增量：字典全局共享、无过滤；菜谱按可见范围过滤；再补齐引用、列图片清单。
 func (s *SyncService) getRemoteChanges(ctx context.Context, q dbQuerier, userID string, sinceSeq int64) (model.SyncPayload, error) {
-	// 五个集合一律给空切片而不是 nil：客户端拿到响应直接遍历，首轮同步（服务端还没数据）的 null 会炸。
+	// 每个集合一律给空切片而不是 nil：客户端拿到响应直接遍历，首轮同步（服务端还没数据）的 null 会炸。
 	payload := model.SyncPayload{
 		Ingredients:      []model.Ingredient{},
 		Units:            []model.Unit{},
 		Labels:           []model.Label{},
 		Recipes:          []model.Recipe{},
 		InventoryBatches: []model.InventoryBatch{},
+		CookRecords:      []model.CookRecord{},
 		InventoryUsages:  []model.InventoryUsage{},
 		Files:            []model.FileRef{},
 	}
@@ -554,6 +569,9 @@ func (s *SyncService) getRemoteChanges(ctx context.Context, q dbQuerier, userID 
 	}
 	if payload.InventoryBatches, err = queryBatches(ctx, q, userID, sinceSeq); err != nil {
 		return payload, fmt.Errorf("query batches: %w", err)
+	}
+	if payload.CookRecords, err = queryCookRecords(ctx, q, userID, sinceSeq); err != nil {
+		return payload, fmt.Errorf("query cook records: %w", err)
 	}
 	if payload.InventoryUsages, err = queryUsages(ctx, q, userID, sinceSeq); err != nil {
 		return payload, fmt.Errorf("query usages: %w", err)

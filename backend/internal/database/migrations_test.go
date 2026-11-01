@@ -77,7 +77,7 @@ func TestMigrationsCreateAllTables(t *testing.T) {
 	for _, table := range []string{
 		"users", "recipes", "recipe_steps",
 		"recipe_ingredients", "recipe_labels", "ingredients", "units", "labels", "files",
-		"teams", "team_members", "inventory_batches", "inventory_usages",
+		"teams", "team_members", "inventory_batches", "inventory_usages", "cook_records",
 	} {
 		var exists bool
 		if err := pool.QueryRow(context.Background(),
@@ -94,6 +94,16 @@ func TestMigrationsCreateAllTables(t *testing.T) {
 		if tableExists(context.Background(), t, pool, table) {
 			t.Errorf("%s 表应已删除", table)
 		}
+	}
+
+	// 制作记录是真实体：范围两列 + 由 LEFT JOIN users 派生的作者两列（后者只在响应里，不落库）
+	for _, column := range []string{"id", "owner_id", "team_id", "recipe_id", "created_at", "updated_at", "deleted_at", "server_seq"} {
+		if !columnExists(context.Background(), t, pool, "cook_records", column) {
+			t.Errorf("cook_records 应有 %s 列", column)
+		}
+	}
+	if !columnExists(context.Background(), t, pool, "inventory_usages", "cook_id") {
+		t.Error("inventory_usages 应有 cook_id 列")
 	}
 
 	// recipes 带 team_id、不带 is_public

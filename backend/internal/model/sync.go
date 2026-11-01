@@ -14,7 +14,9 @@ type SyncPayload struct {
 	Recipes     []Recipe     `json:"recipes"`
 
 	InventoryBatches []InventoryBatch `json:"inventory_batches"`
-	InventoryUsages  []InventoryUsage `json:"inventory_usages"`
+	// 制作记录先于使用记录合并（使用记录的 cook_id 指向它）；响应里作者两列由服务端派生。
+	CookRecords     []CookRecord     `json:"cook_records"`
+	InventoryUsages []InventoryUsage `json:"inventory_usages"`
 
 	Files []FileRef `json:"files"`
 }

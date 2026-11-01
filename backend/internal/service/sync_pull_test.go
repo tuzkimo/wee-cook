@@ -268,10 +268,10 @@ func TestBackfillAddsReferencedDictRows(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	q := &pullQuerier{rows: map[string][][]any{
-		"FROM recipes r":                      {{"r-1", "me", nil, "红烧肉", nil, "cat-1", now, now, nil, "测试", "data:image/jpeg;base64,AV"}},
-		"FROM recipe_steps":                   {{"r-1", "s-1", 1, "切肉", nil}},
-		"FROM recipe_ingredients":             {{"r-1", "ri-1", "ing-1", 200.0, "unit-1", 1}},
-		"FROM recipe_labels":                  {{"r-1", "lab-1"}},
+		"FROM recipes r":                          {{"r-1", "me", nil, "红烧肉", nil, "cat-1", now, now, nil, "测试", "data:image/jpeg;base64,AV"}},
+		"FROM recipe_steps":                       {{"r-1", "s-1", 1, "切肉", nil}},
+		"FROM recipe_ingredients":                 {{"r-1", "ri-1", "ing-1", 200.0, "unit-1", 1}},
+		"FROM recipe_labels":                      {{"r-1", "lab-1"}},
 		"FROM labels r WHERE r.server_seq":        {{"lab-1", nil, "me", "标签", "tag", now, now, nil}},
 		"FROM labels r WHERE r.id = ANY($1)":      {{"cat-1", nil, "me", "家常菜", "category", now, now, nil}},
 		"FROM ingredients r WHERE r.id = ANY($1)": {{"ing-1", nil, "me", "五花肉", now, now, nil}},
@@ -417,7 +417,7 @@ func TestCursorIsSnapshotMax(t *testing.T) {
 	}
 
 	cq := queryLike(t, q, "MAX(s)")
-	for _, table := range []string{"ingredients", "units", "labels", "recipes", "inventory_batches", "inventory_usages"} {
+	for _, table := range []string{"ingredients", "units", "labels", "recipes", "inventory_batches", "inventory_usages", "cook_records"} {
 		if !strings.Contains(cq.sql, "MAX(server_seq)") || !strings.Contains(cq.sql, "FROM "+table) {
 			t.Errorf("游标要覆盖 %s（少一条通道就会漏推进），got %s", table, cq.sql)
 		}
