@@ -246,6 +246,19 @@ describe("CookPage 确认", () => {
     expect(wrapper.find('[data-test="cook-confirm"]').exists()).toBe(false);
   });
 
+  it("扣减为空时结果态说「没有扣任何库存」，不说「没有记账」", async () => {
+    availability.set("i1", [{ unit_id: "ge", remaining: 5 }]);
+    mocks.commitCook.mockResolvedValue({ deducted: [], shortfall: [] });
+    const wrapper = await open();
+    await rowOf(wrapper, "五花肉").get('[data-test="cook-amount"]').setValue("2");
+
+    await wrapper.get('[data-test="cook-confirm"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("这次没有扣任何库存");
+    expect(wrapper.text()).not.toContain("没有记账");
+  });
+
   it("库存不足的行在确认前就有提示", async () => {
     availability.set("i1", [{ unit_id: "ge", remaining: 1 }]);
     const wrapper = await open();

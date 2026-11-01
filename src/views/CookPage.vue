@@ -175,7 +175,7 @@ async function confirm(): Promise<void> {
           </li>
         </ul>
         <p v-if="result.deducted.length === 0" class="mt-3 text-sm text-text-secondary">
-          没有可扣的库存，这次没有记账
+          没有可扣的库存，这次没有扣任何库存
         </p>
       </div>
       <div data-test="cook-actions" class="shrink-0 px-4 py-3" :style="{ paddingBottom: actionsPadBottom }">
