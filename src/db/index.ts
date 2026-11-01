@@ -135,12 +135,26 @@ const DDL = [
     id          TEXT PRIMARY KEY,
     scope_id    TEXT NOT NULL,
     owner_id    TEXT,
+    cook_id     TEXT,
     recipe_id   TEXT NOT NULL,
     batch_id    TEXT NOT NULL,
     amount      REAL NOT NULL CHECK (amount > 0),
     used_at     TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     deleted_at  TEXT
+  )`,
+  // 一次制作一条记录，使用记录用 cook_id 归到它下面（spec §4.1）。
+  // 两列作者由服务端 JOIN users 派生，本机新建时为 NULL（与 recipes 同构）。
+  `CREATE TABLE IF NOT EXISTS cook_records (
+    id               TEXT PRIMARY KEY,
+    scope_id         TEXT NOT NULL,
+    owner_id         TEXT,
+    recipe_id        TEXT NOT NULL,
+    owner_nickname   TEXT,
+    owner_avatar_url TEXT,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    deleted_at       TEXT
   )`,
 ];
 
@@ -160,6 +174,9 @@ const DDL_INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_inventory_usages_scope  ON inventory_usages(scope_id)`,
   `CREATE INDEX IF NOT EXISTS idx_inventory_batches_ing  ON inventory_batches(ingredient_id)`,
   `CREATE INDEX IF NOT EXISTS idx_inventory_usages_batch ON inventory_usages(batch_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_cook_records_scope  ON cook_records(scope_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_cook_records_recipe ON cook_records(recipe_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_inventory_usages_cook ON inventory_usages(cook_id)`,
   `CREATE INDEX IF NOT EXISTS idx_ai_messages_session ON ai_messages(session_id)`,
 ];
 
@@ -192,6 +209,8 @@ async function migrateTables(db: Db): Promise<void> {
     await addColumnIfMissing(db, table, "scope_id", "TEXT NOT NULL DEFAULT 'p:local'");
     await addColumnIfMissing(db, table, "owner_id", "TEXT");
   }
+  // 老使用记录没有制作记录可归：留 NULL，照旧参与余量计算，但不出现在历史里。
+  await addColumnIfMissing(db, "inventory_usages", "cook_id", "TEXT");
 
   // 老库的 AI 会话没有归属：user_id 为 NULL ⇒ 永不匹配任何账号、不再显示。
   // 不删它们：没人知道这些会话属于谁。

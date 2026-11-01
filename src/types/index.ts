@@ -151,6 +151,8 @@ export interface InventoryUsage {
   id: string;
   scope_id: string;
   owner_id: string | null;
+  /** 归属的制作记录；老库存量行为 NULL（spec §4.1）。 */
+  cook_id: string | null;
   recipe_id: string;
   batch_id: string;
   amount: number;
@@ -203,4 +205,44 @@ export interface CookResult {
   deducted: { ingredient_name: string; unit_name: string | null; amount: number }[];
   /** 扣不满的行 */
   shortfall: { ingredient_name: string; unit_name: string | null; missing: number }[];
+}
+
+/** 一次制作（真实体，spec §6.1）。 */
+export interface CookRecord {
+  id: string;
+  scope_id: string;
+  owner_id: string | null;
+  recipe_id: string;
+  owner_nickname: string | null; // 服务端派生；本机新建为 NULL
+  owner_avatar_url: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+/** 展示用的作者：自己做的回退到当前账号（本机新建的行两列为 NULL）。 */
+export interface CookRecordAuthor {
+  name: string | null;
+  avatar_url: string | null;
+}
+
+export interface CookRecordLine {
+  ingredient_name: string;
+  unit_name: string | null;
+  amount: number;
+}
+
+/** 一条制作记录 + 它扣掉的全部食材（同一食材同一单位跨批次合并） */
+export interface CookRecordDetail {
+  record: CookRecord;
+  author: CookRecordAuthor; // 展示用，store 里算好（自己做的回退到当前账号）
+  recipe_name: string | null; // 菜谱被删时为 null，页面显示「已删除的菜谱」
+  lines: CookRecordLine[];
+}
+
+/** 库存页一行扣减记录：某食材在某次制作里被扣掉多少（可能跨多个单位） */
+export interface IngredientCook {
+  record: CookRecord;
+  recipe_name: string | null;
+  parts: { unit_name: string | null; amount: number }[];
 }

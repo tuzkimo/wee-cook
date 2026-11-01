@@ -680,6 +680,7 @@ function usage(over: Partial<InventoryUsage> & { id: string }): InventoryUsage {
   return {
     scope_id: "p:local",
     owner_id: "u1",
+    cook_id: null,
     recipe_id: "r1",
     batch_id: "b1",
     amount: 10,

@@ -115,4 +115,21 @@ describe("数据库迁移", () => {
     );
     expect(rows).toEqual([{ id: "r1", owner_id: null }]);
   });
+
+  it("旧库升级后 inventory_usages 补上 cook_id，老使用记录留 NULL", async () => {
+    const { db } = await makeTestDb();
+    await db.execute(
+      `CREATE TABLE inventory_usages (id TEXT PRIMARY KEY, scope_id TEXT NOT NULL, owner_id TEXT,
+       recipe_id TEXT NOT NULL, batch_id TEXT NOT NULL, amount REAL NOT NULL, used_at TEXT NOT NULL,
+       updated_at TEXT NOT NULL, deleted_at TEXT)`,
+    );
+    await db.execute(
+      `INSERT INTO inventory_usages (id, scope_id, owner_id, recipe_id, batch_id, amount, used_at, updated_at)
+       VALUES ('us1','p:local',NULL,'r1','b1',10,'2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')`,
+    );
+    await initTables(db);
+    expect(await db.select("SELECT cook_id FROM inventory_usages WHERE id = 'us1'")).toEqual([
+      { cook_id: null },
+    ]);
+  });
 });

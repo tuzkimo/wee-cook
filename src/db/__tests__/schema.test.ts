@@ -9,9 +9,10 @@ const BUSINESS_TABLES = [
   "labels",
   "ingredients",
   "units",
+  "cook_records",
 ];
 
-/** 带范围列的五张表 + 库存两张（库存另带 owner_id）。 */
+/** 带范围列的业务表 + 库存两张（库存另带 owner_id）。 */
 const SCOPED_TABLES = [
   "recipes",
   "ingredients",
@@ -19,10 +20,11 @@ const SCOPED_TABLES = [
   "labels",
   "inventory_batches",
   "inventory_usages",
+  "cook_records",
 ];
 
 describe("数据库表结构", () => {
-  it("七张表都建出来了", async () => {
+  it("八张表都建出来了", async () => {
     const { db } = await freshTestDb();
     const rows = await db.select<{ name: string }[]>(
       "SELECT name FROM sqlite_master WHERE type = 'table'",
@@ -41,7 +43,7 @@ describe("数据库表结构", () => {
     expect(columns.find((column) => column.name === "category_id")?.notnull).toBe(1);
   });
 
-  it("六张业务表都有 id/updated_at/deleted_at", async () => {
+  it("七张业务表都有 id/updated_at/deleted_at", async () => {
     const { db } = await freshTestDb();
     for (const table of BUSINESS_TABLES) {
       const columns = await db.select<{ name: string }[]>(`PRAGMA table_info(${table})`);
@@ -52,7 +54,7 @@ describe("数据库表结构", () => {
     }
   });
 
-  it("范围列：五张表 + 库存两张都带 scope_id，两张库存表还有 owner_id", async () => {
+  it("范围列：业务表与库存表都带 scope_id，两张库存表还有 owner_id", async () => {
     const { db } = await freshTestDb();
     for (const table of SCOPED_TABLES) {
       const columns = await db.select<{ name: string; notnull: number }[]>(
@@ -236,5 +238,33 @@ describe("库存表", () => {
       "idx_inventory_batches_ing",
       "idx_inventory_usages_batch",
     ]);
+  });
+
+  it("inventory_usages 带 cook_id（归属到制作记录）", async () => {
+    const { db } = await freshTestDb();
+    const columns = await db.select<{ name: string }[]>("PRAGMA table_info(inventory_usages)");
+    expect(columns.map((column) => column.name)).toContain("cook_id");
+  });
+});
+
+describe("制作记录表", () => {
+  it("cook_records 有 id / updated_at / deleted_at 与派生作者两列", async () => {
+    const { db } = await freshTestDb();
+    const names = (await db.select<{ name: string }[]>("PRAGMA table_info(cook_records)")).map(
+      (c) => c.name,
+    );
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "id",
+        "scope_id",
+        "owner_id",
+        "recipe_id",
+        "owner_nickname",
+        "owner_avatar_url",
+        "created_at",
+        "updated_at",
+        "deleted_at",
+      ]),
+    );
   });
 });
