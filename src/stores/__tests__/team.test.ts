@@ -183,6 +183,30 @@ describe("登录后的活动范围", () => {
     expect(activeScope.value).toBe("t:t1");
   });
 
+  it("load 拉到列表后就恢复保存的团队（冷启动不再落在我的菜谱）", async () => {
+    localStorage.setItem("current_team:u1", "t1");
+    const store = useTeamStore();
+
+    await store.load();
+
+    expect(store.currentTeamId).toBe("t1");
+    expect(activeScope.value).toBe("t:t1");
+    expect(mocks.fetchRecipeAll).toHaveBeenCalled();
+  });
+
+  it("团队列表没拉到时，恢复不抹掉保存的团队、范围只回落到个人", async () => {
+    localStorage.setItem("current_team:u1", "t1");
+    mocks.fetchTeams.mockRejectedValue(new Error("network"));
+    const store = useTeamStore();
+
+    await expect(store.load()).rejects.toThrow("network");
+    await store.restoreCurrentTeam();
+
+    expect(localStorage.getItem("current_team:u1")).toBe("t1");
+    expect(store.currentTeamId).toBeNull();
+    expect(activeScope.value).toBe("p:u1");
+  });
+
   it("保存过的团队已经不在缓存里就回落个人范围", async () => {
     localStorage.setItem("current_team:u1", "gone");
     const store = useTeamStore();

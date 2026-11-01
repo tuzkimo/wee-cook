@@ -21,6 +21,8 @@ import type { TeamMember, TeamSummary } from "@/types";
 export const useTeamStore = defineStore("team", () => {
   const teams = ref<TeamSummary[]>([]);
   const currentTeamId = ref<string | null>(null);
+  /** 最近一次真正拉到团队列表的账号：没拉到就不许改写已保存的选择。 */
+  const teamsLoadedFor = ref<string | null>(null);
 
   /** 当前范围键：选了团队就是团队，登录了就是个人，否则是本机范围。 */
   const scopeId = computed(() => scopeFor(authUserId(), currentTeamId.value));
@@ -35,9 +37,14 @@ export const useTeamStore = defineStore("team", () => {
     const rows = await api.fetchTeams();
     teams.value = rows;
     await cacheTeams(rows);
-    // 缓存的团队已经不在列表里（被解散 / 被移除）→ 回落「我的菜谱」
+    teamsLoadedFor.value = uid;
+    const saved = savedTeamId(uid);
     if (currentTeamId.value && !rows.some((team) => team.id === currentTeamId.value)) {
+      // 缓存的团队已经不在列表里（被解散 / 被移除）→ 回落「我的菜谱」
       switchTo(null);
+    } else if (currentTeamId.value === null && saved && rows.some((team) => team.id === saved)) {
+      // 冷启动：会话恢复路径只调 load()，上次选中的团队要在这里恢复
+      switchTo(saved);
     } else if (currentTeamId.value === null && activeScope.value === LOCAL_SCOPE) {
       // 登录前是游客范围，登录后要落在个人范围（否则一屏空态）。
       // 这里不走 switchTo：它会把「上次选中的团队」这个持久化键抹掉，冷启动恢复就没了。
@@ -107,6 +114,7 @@ export const useTeamStore = defineStore("team", () => {
   function resetFor(uid: string | null): void {
     teams.value = [];
     currentTeamId.value = null;
+    teamsLoadedFor.value = null;
     // 库可能还没打开（登出发生在冷启动早期）：清缓存失败不影响登出本身
     try {
       void getDb()
@@ -148,6 +156,10 @@ export const useTeamStore = defineStore("team", () => {
 
   const PERSIST_PREFIX = "current_team:";
 
+  function savedTeamId(uid: string): string | null {
+    return localStorage.getItem(PERSIST_PREFIX + uid);
+  }
+
   function persistCurrentTeam(): void {
     const uid = authUserId();
     if (!uid) return;
@@ -164,7 +176,15 @@ export const useTeamStore = defineStore("team", () => {
   async function restoreCurrentTeam(): Promise<void> {
     const uid = authUserId();
     if (!uid) return;
-    const saved = localStorage.getItem(PERSIST_PREFIX + uid);
+    if (teamsLoadedFor.value !== uid) {
+      // 列表没拉到（断网 / 超时）：已保存的选择原样保留，只补上个人范围
+      if (activeScope.value === LOCAL_SCOPE) {
+        setActiveScope(personalScope(uid));
+        void refreshScopedStores();
+      }
+      return;
+    }
+    const saved = savedTeamId(uid);
     switchTo(saved && teams.value.some((team) => team.id === saved) ? saved : null);
   }
 
